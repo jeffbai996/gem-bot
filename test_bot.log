@@ -1,0 +1,4 @@
+◇ injected env (1) from ../../.gemini/channels/discord/.env // tip: ⌘ suppress logs { quiet: true }
+Test Bot logged in as gemini_macos#4656
+(node:71152) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
