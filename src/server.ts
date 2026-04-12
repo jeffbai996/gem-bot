@@ -372,5 +372,4 @@ async function main() {
 main().catch((error) => {
   console.error('Fatal error in main():', error)
   process.exit(1)
-})t(1)
 })
