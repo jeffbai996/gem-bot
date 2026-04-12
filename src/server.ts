@@ -40,7 +40,13 @@ const client = new Client({
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.MessageContent,
   ],
-  partials: [Partials.Channel, Partials.Message]
+  partials: [
+    Partials.Channel,
+    Partials.Message,
+    Partials.User,
+    Partials.GuildMember,
+    Partials.Reaction
+  ]
 })
 
 // Initialize MCP Server
@@ -98,6 +104,8 @@ client.on('ready', async () => {
 })
 
 client.on('messageCreate', async (message: Message) => {
+  console.error(`[DEBUG] Received message from ${message.author.tag} in ${message.channel.type === ChannelType.DM ? 'DM' : 'Channel'}: ${message.content}`)
+  
   if (message.author.bot) return
 
   const isDm = message.channel.type === ChannelType.DM
