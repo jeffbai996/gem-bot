@@ -254,6 +254,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'reply': {
         const { chat_id, text, reply_to, files } = args as { chat_id: string, text: string, reply_to?: string, files?: string[] }
         
+        if (!client.isReady()) {
+          throw new Error('Discord client is not yet connected to the gateway. Please wait a few seconds.')
+        }
+
         if (!accessManager.canSendTo(chat_id)) {
           throw new Error('Access denied to send to this chat_id')
         }
@@ -363,10 +367,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // Start server
 async function main() {
-  await client.login(TOKEN)
   const transport = new StdioServerTransport()
   await server.connect(transport)
   console.error('MCP Server listening on stdio')
+  
+  // Login to Discord asynchronously so MCP initialization finishes quickly
+  client.login(TOKEN).catch((error) => {
+    console.error('Failed to login to Discord:', error)
+    process.exit(1)
+  })
 }
 
 main().catch((error) => {
