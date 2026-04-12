@@ -63,6 +63,7 @@ const recentSentIds = new Set<string>()
 
 client.on('ready', async () => {
   console.error(`[Discord] Logged in as ${client.user?.tag}`)
+  client.user?.setActivity({ name: 'your requests', type: 2 }) // type 2 is LISTENING
   await accessManager.init()
   await fs.mkdir(INBOX_DIR, { recursive: true })
   
