@@ -34,7 +34,7 @@ describe('processAttachments', () => {
       size: pngBytes.length,
       contentType: 'image/png'
     }]
-    const result = await processAttachments('msg1', input)
+    const result = await processAttachments('msg1', input, 'test-api-key')
     srv.close()
 
     assert.equal(result.parts.length, 1)
@@ -51,7 +51,7 @@ describe('processAttachments', () => {
       size: 25 * 1024 * 1024,
       contentType: 'image/png'
     }]
-    const result = await processAttachments('msg2', input)
+    const result = await processAttachments('msg2', input, 'test-api-key')
     srv.close()
 
     assert.equal(result.parts.length, 0)
@@ -67,7 +67,7 @@ describe('processAttachments', () => {
       size: 1024,
       contentType: 'application/pdf'
     }]
-    const result = await processAttachments('msg3', input)
+    const result = await processAttachments('msg3', input, 'test-api-key')
     srv.close()
 
     assert.equal(result.parts.length, 0)
@@ -84,7 +84,7 @@ describe('processAttachments', () => {
       size: pngBytes.length,
       contentType: 'image/png'
     }]
-    const { cleanup } = await processAttachments('msg4', input)
+    const { cleanup } = await processAttachments('msg4', input, 'test-api-key')
     const msgDir = path.join(testDir, 'inbox', 'msg4')
     await fs.access(msgDir)  // exists
     await cleanup()

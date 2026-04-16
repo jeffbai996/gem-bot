@@ -88,7 +88,8 @@ client.on('messageCreate', async (message: Message) => {
           name: a.name,
           size: a.size,
           contentType: a.contentType
-        }))
+        })),
+        GEMINI_API_KEY
       )
     ])
 

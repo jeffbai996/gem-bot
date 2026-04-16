@@ -1,9 +1,11 @@
 import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
+import { GoogleAIFileManager } from '@google/generative-ai/server'
 
 const MAX_BYTES = 20 * 1024 * 1024
 const ALLOWED_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+const ALLOWED_VIDEO_MIMES = new Set(['video/mp4', 'video/webm', 'video/quicktime', 'video/x-mov'])
 
 export interface InputAttachment {
   url: string
@@ -16,13 +18,17 @@ export interface InlinePart {
   inlineData: { mimeType: string; data: string }
 }
 
+export interface FilePart {
+  fileData: { mimeType: string; fileUri: string }
+}
+
 export interface SkippedAttachment {
   name: string
-  reason: 'too_large' | 'unsupported_type' | 'download_failed'
+  reason: 'too_large' | 'unsupported_type' | 'download_failed' | 'processing_timeout'
 }
 
 export interface ProcessResult {
-  parts: InlinePart[]
+  parts: Array<InlinePart | FilePart>
   skipped: SkippedAttachment[]
   cleanup: () => Promise<void>
 }
@@ -31,8 +37,8 @@ function stateDir(): string {
   return process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 }
 
-export async function processAttachments(messageId: string, inputs: InputAttachment[]): Promise<ProcessResult> {
-  const parts: InlinePart[] = []
+export async function processAttachments(messageId: string, inputs: InputAttachment[], apiKey: string): Promise<ProcessResult> {
+  const parts: Array<InlinePart | FilePart> = []
   const skipped: SkippedAttachment[] = []
   const msgDir = path.join(stateDir(), 'inbox', messageId)
 
@@ -44,8 +50,10 @@ export async function processAttachments(messageId: string, inputs: InputAttachm
 
   for (const att of inputs) {
     const mime = att.contentType ?? ''
+    const isImage = ALLOWED_IMAGE_MIMES.has(mime)
+    const isVideo = ALLOWED_VIDEO_MIMES.has(mime)
 
-    if (!ALLOWED_IMAGE_MIMES.has(mime)) {
+    if (!isImage && !isVideo) {
       skipped.push({ name: att.name, reason: 'unsupported_type' })
       continue
     }
@@ -68,8 +76,37 @@ export async function processAttachments(messageId: string, inputs: InputAttachm
         continue
       }
 
-      await fs.writeFile(path.join(msgDir, att.name), buf)
-      parts.push({ inlineData: { mimeType: mime, data: buf.toString('base64') } })
+      const localPath = path.join(msgDir, att.name)
+      await fs.writeFile(localPath, buf)
+
+      if (isImage) {
+        parts.push({ inlineData: { mimeType: mime, data: buf.toString('base64') } })
+      } else {
+        // Video: upload via File API, poll for ACTIVE, then delete local file
+        const fileManager = new GoogleAIFileManager(apiKey)
+        const uploadResult = await fileManager.uploadFile(localPath, { mimeType: mime, displayName: att.name })
+
+        // Delete local file immediately — don't need it after upload
+        fs.rm(localPath, { force: true }).catch(() => {})
+
+        // Poll for ACTIVE state — Gemini may need time to process the video
+        let file = uploadResult.file
+        let retries = 0
+        const MAX_RETRIES = 10
+        while (file.state === 'PROCESSING' && retries < MAX_RETRIES) {
+          await new Promise(r => setTimeout(r, 2000))
+          const refreshed = await fileManager.getFile(file.name)
+          file = refreshed
+          retries++
+        }
+
+        if (file.state !== 'ACTIVE') {
+          skipped.push({ name: att.name, reason: 'processing_timeout' })
+          continue
+        }
+
+        parts.push({ fileData: { mimeType: mime, fileUri: file.uri } })
+      }
     } catch {
       skipped.push({ name: att.name, reason: 'download_failed' })
     }
