@@ -4,8 +4,10 @@ import os from 'os'
 import { GoogleAIFileManager } from '@google/generative-ai/server'
 
 const MAX_BYTES = 20 * 1024 * 1024
-const ALLOWED_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
-const ALLOWED_VIDEO_MIMES = new Set(['video/mp4', 'video/webm', 'video/quicktime', 'video/x-mov'])
+const ALLOWED_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/heic', 'image/heif'])
+const ALLOWED_VIDEO_MIMES = new Set(['video/mp4', 'video/webm', 'video/quicktime', 'video/x-mov', 'video/avi', 'video/x-flv', 'video/mpg', 'video/mpeg', 'video/wmv', 'video/3gpp'])
+const ALLOWED_AUDIO_MIMES = new Set(['audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/webm', 'audio/ogg', 'audio/aac', 'audio/flac', 'audio/x-flac', 'audio/amr', 'audio/opus'])
+const ALLOWED_DOC_MIMES = new Set(['application/pdf', 'text/plain', 'text/html', 'text/css', 'text/javascript', 'application/javascript', 'text/x-typescript', 'text/markdown', 'text/csv', 'text/xml', 'application/rtf'])
 
 export interface InputAttachment {
   url: string
@@ -52,8 +54,10 @@ export async function processAttachments(messageId: string, inputs: InputAttachm
     const mime = att.contentType ?? ''
     const isImage = ALLOWED_IMAGE_MIMES.has(mime)
     const isVideo = ALLOWED_VIDEO_MIMES.has(mime)
+    const isAudio = ALLOWED_AUDIO_MIMES.has(mime)
+    const isDoc = ALLOWED_DOC_MIMES.has(mime)
 
-    if (!isImage && !isVideo) {
+    if (!isImage && !isVideo && !isAudio && !isDoc) {
       skipped.push({ name: att.name, reason: 'unsupported_type' })
       continue
     }
@@ -79,10 +83,10 @@ export async function processAttachments(messageId: string, inputs: InputAttachm
       const localPath = path.join(msgDir, att.name)
       await fs.writeFile(localPath, buf)
 
-      if (isImage) {
+      if (isImage || isDoc) {
         parts.push({ inlineData: { mimeType: mime, data: buf.toString('base64') } })
       } else {
-        // Video: upload via File API, poll for ACTIVE, then delete local file
+        // Video/audio: upload via File API, poll for ACTIVE, then delete local file
         const fileManager = new GoogleAIFileManager(apiKey)
         const uploadResult = await fileManager.uploadFile(localPath, { mimeType: mime, displayName: att.name })
 
