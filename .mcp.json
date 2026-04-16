@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "discord": {
-      "command": "npx",
-      "args": ["-y", "tsx", "${PLUGIN_ROOT}/src/server.ts"]
-    }
-  }
-}
