@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, Partials, type Message } from 'discord.js'
+import { Client, GatewayIntentBits, Partials, ActivityType, type Message } from 'discord.js'
 import path from 'path'
 import os from 'os'
 import dotenv from 'dotenv'
@@ -58,6 +58,10 @@ const client = new Client({
 
 client.once('ready', () => {
   console.error(`Gemma online as ${client.user?.tag} (${client.user?.id})`)
+  client.user?.setPresence({
+    status: 'online',
+    activities: [{ name: 'the squad', type: ActivityType.Watching }]
+  })
 })
 
 client.on('messageCreate', async (message: Message) => {
@@ -73,6 +77,8 @@ client.on('messageCreate', async (message: Message) => {
   if (!gate) return
 
   try {
+    ;(message.channel as any).sendTyping().catch(() => {})
+
     const [history, attachmentResult] = await Promise.all([
       fetchHistory(message.channel as any, message.id).then(msgs => formatHistory(msgs, client.user!.id)),
       processAttachments(
