@@ -60,7 +60,7 @@ client.once('ready', () => {
   console.error(`Gemma online as ${client.user?.tag} (${client.user?.id})`)
   client.user?.setPresence({
     status: 'online',
-    activities: [{ name: 'thinking about electrons', type: ActivityType.Playing }]
+    activities: [{ name: '🧠 hallucinating confidently', type: ActivityType.Playing }]
   })
 })
 
