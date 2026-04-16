@@ -1,112 +1,58 @@
 import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
-import crypto from 'crypto'
 
-export interface Access {
-  dmPolicy: 'pairing' | 'allowlist' | 'disabled'
-  allowFrom: string[]
-  groups: Record<string, {
-    requireMention: boolean
-    allowFrom: string[]
-  }>
-  pending: Record<string, {
-    senderId: string
-    chatId: string
-    createdAt: number
-    expiresAt: number
-    replies: number
-  }>
-  mentionPatterns?: string[]
-  ackReaction?: string
-  replyToMode?: 'off' | 'first' | 'all'
-  textChunkLimit?: number
-  chunkMode?: 'length' | 'newline'
+export interface AccessFile {
+  users: Record<string, { allowed: boolean }>
+  channels: Record<string, { enabled: boolean; requireMention: boolean }>
 }
 
-const DEFAULT_ACCESS: Access = {
-  dmPolicy: 'pairing',
-  allowFrom: [],
-  groups: {},
-  pending: {}
+export interface CanHandleInput {
+  channelId: string
+  userId: string
+  isMention: boolean
 }
+
+const EMPTY: AccessFile = { users: {}, channels: {} }
 
 export class AccessManager {
-  private configDir: string
-  private accessFile: string
-  private approvedDir: string
-  public access: Access = { ...DEFAULT_ACCESS }
+  private stateDir: string
+  private file: string
+  private data: AccessFile = { ...EMPTY }
 
   constructor() {
-    this.configDir = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
-    this.accessFile = path.join(this.configDir, 'access.json')
-    this.approvedDir = path.join(this.configDir, 'approved')
+    this.stateDir = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
+    this.file = path.join(this.stateDir, 'access.json')
   }
 
-  async init() {
-    await fs.mkdir(this.configDir, { recursive: true })
-    await fs.mkdir(this.approvedDir, { recursive: true })
-    await this.load()
-  }
-
-  async load() {
+  async load(): Promise<void> {
+    await fs.mkdir(this.stateDir, { recursive: true })
     try {
-      const data = await fs.readFile(this.accessFile, 'utf-8')
-      this.access = { ...DEFAULT_ACCESS, ...JSON.parse(data) }
+      const raw = await fs.readFile(this.file, 'utf8')
+      const parsed = JSON.parse(raw) as Partial<AccessFile>
+      this.data = {
+        users: parsed.users ?? {},
+        channels: parsed.channels ?? {}
+      }
     } catch (e: any) {
       if (e.code === 'ENOENT') {
-        await this.save()
+        this.data = { ...EMPTY }
+        await fs.writeFile(this.file, JSON.stringify(this.data, null, 2), 'utf8')
       } else {
-        console.error('Failed to load access.json:', e)
+        throw e
       }
     }
   }
 
-  async save() {
-    if (process.env.DISCORD_ACCESS_MODE === 'static') return
-    await fs.writeFile(this.accessFile, JSON.stringify(this.access, null, 2), 'utf-8')
-  }
+  canHandle({ channelId, userId, isMention }: CanHandleInput): boolean {
+    const user = this.data.users[userId]
+    if (!user?.allowed) return false
 
-  // Gate Check for inbound messages
-  canHandle(channelId: string, senderId: string, isDm: boolean, isMention: boolean): 'allow' | 'pair' | 'deny' {
-    if (isDm) {
-      if (this.access.allowFrom.includes(senderId)) return 'allow'
-      if (this.access.dmPolicy === 'pairing') return 'pair'
-      return 'deny'
-    } else {
-      const group = this.access.groups[channelId]
-      if (!group) return 'deny'
-      if (group.requireMention && !isMention) return 'deny'
-      if (group.allowFrom && group.allowFrom.length > 0 && !group.allowFrom.includes(senderId)) return 'deny'
-      return 'allow'
-    }
-  }
+    const channel = this.data.channels[channelId]
+    if (!channel?.enabled) return false
 
-  canSendTo(channelId: string, recipientId?: string): boolean {
-    if (this.access.groups[channelId]) return true
-    if (recipientId && this.access.allowFrom.includes(recipientId)) return true
-    return false
-  }
+    if (channel.requireMention && !isMention) return false
 
-  async generatePairing(senderId: string, chatId: string): Promise<string> {
-    // Clean up expired pending
-    const now = Date.now()
-    for (const [code, p] of Object.entries(this.access.pending)) {
-      if (p.expiresAt < now) delete this.access.pending[code]
-    }
-
-    const existingCode = Object.keys(this.access.pending).find(k => this.access.pending[k].senderId === senderId)
-    if (existingCode) return existingCode
-
-    const code = crypto.randomBytes(3).toString('hex').toLowerCase()
-    this.access.pending[code] = {
-      senderId,
-      chatId,
-      createdAt: now,
-      expiresAt: now + 3600000, // 1 hour
-      replies: 0
-    }
-    await this.save()
-    return code
+    return true
   }
 }
