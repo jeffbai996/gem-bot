@@ -67,7 +67,6 @@ client.once('ready', () => {
 })
 
 client.on('messageCreate', async (message: Message) => {
-  console.error(`messageCreate: author=${message.author.id} channel=${message.channelId} isDM=${message.channel.type === 1} bot=${message.author.bot}`)
   if (message.author.bot) return
   if (!client.user) return
 
@@ -77,7 +76,6 @@ client.on('messageCreate', async (message: Message) => {
     userId: message.author.id,
     isMention
   })
-  console.error(`gate=${gate} userId=${message.author.id} channelId=${message.channelId} isMention=${isMention}`)
   if (!gate) return
 
   try {
