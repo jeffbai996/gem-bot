@@ -51,9 +51,11 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.DirectMessageTyping,
+    GatewayIntentBits.DirectMessageReactions,
     GatewayIntentBits.MessageContent
   ],
-  partials: [Partials.Channel, Partials.Message]
+  partials: [Partials.Channel, Partials.Message, Partials.User]
 })
 
 client.once('ready', () => {
@@ -77,6 +79,8 @@ client.on('messageCreate', async (message: Message) => {
   if (!gate) return
 
   try {
+    // Fetch partial DM channels so we can send/read them
+    if (message.channel.partial) await message.channel.fetch()
     ;(message.channel as any).sendTyping().catch(() => {})
 
     const [history, attachmentResult] = await Promise.all([
