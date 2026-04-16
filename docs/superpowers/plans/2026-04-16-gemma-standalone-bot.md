@@ -356,13 +356,31 @@ git commit -m "refactor: simplify access model — no pairing, explicit allowlis
 
 ---
 
-## Task 4: persona.ts — system-prompt loader with SIGHUP reload
+## Task 4: persona.ts — persona + shared squad context loader
 
 **Files:**
 - Create: `src/persona.ts`
 - Create: `tests/persona.test.ts`
 
-- [ ] **Step 1: Write failing test**
+### Design
+
+Gemma's final system prompt is composed from three sources at request time:
+
+1. **Gemma persona** — `~/.gemini/channels/discord/persona.md` (loaded once at startup; reloaded on SIGHUP)
+2. **Shared squad memories** — all `<your-shared-context-dir>/memories/*.md` files, concatenated (loaded once; reloaded on SIGHUP)
+3. **Channel summary** — `<your-shared-context-dir>/summaries/<channel_id>.md` — read at build-prompt time (fresh each turn, since the hourly `summarise_channels.py` cron rewrites it; reading on every turn is a single small file open and avoids staleness)
+4. **Bot roster** — hard-coded constant listing the known bots (IDs + one-line public descriptions). Gemma's own ID (`1492759800688152637`) is included so she recognizes self-tags.
+
+**What Gemma does NOT read:** individual bot persona files like `<agent-config-dir>/CLAUDE.md`. Those are private to each bot.
+
+The loader exposes a single method `buildSystemPrompt(channelId: string): string` that assembles everything. We test it with fixtures under a temp dir, toggling the presence/absence of each source.
+
+Squad-context dir path resolution:
+- `SQUAD_CONTEXT_DIR` env var wins if set
+- Otherwise `<your-shared-context-dir>` (the HOST convention)
+- Missing dir is fine — loader reports empty shared sections; Gemma still runs with just her persona + roster.
+
+- [ ] **Step 1: Write failing tests**
 
 Create `tests/persona.test.ts`:
 
@@ -374,39 +392,98 @@ import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
 
-const testDir = path.join(os.tmpdir(), `gemma-persona-test-${process.pid}`)
+const stateDir = path.join(os.tmpdir(), `gemma-persona-state-${process.pid}`)
+const squadDir = path.join(os.tmpdir(), `gemma-persona-squad-${process.pid}`)
+
+async function reset() {
+  await fs.rm(stateDir, { recursive: true, force: true })
+  await fs.rm(squadDir, { recursive: true, force: true })
+  await fs.mkdir(stateDir, { recursive: true })
+}
 
 describe('PersonaLoader', () => {
   beforeEach(async () => {
-    process.env.DISCORD_STATE_DIR = testDir
-    await fs.rm(testDir, { recursive: true, force: true })
-    await fs.mkdir(testDir, { recursive: true })
+    process.env.DISCORD_STATE_DIR = stateDir
+    process.env.SQUAD_CONTEXT_DIR = squadDir
+    await reset()
   })
 
-  test('returns default prompt if persona.md missing', async () => {
+  test('uses default prompt + bot roster if everything missing', async () => {
     const loader = new PersonaLoader()
     await loader.load()
-    const text = loader.text()
-    assert.ok(text.length > 0)
-    assert.ok(text.toLowerCase().includes('gemma'))
+    const prompt = loader.buildSystemPrompt('unknown-channel-id')
+    assert.ok(prompt.toLowerCase().includes('gemma'))
+    assert.ok(prompt.includes('1492759800688152637'))  // Gemma's own ID
+    assert.ok(prompt.includes('Fraggy'))              // roster entry
   })
 
-  test('loads persona.md contents', async () => {
-    await fs.writeFile(path.join(testDir, 'persona.md'), 'You are Gemma. Test persona.', 'utf8')
+  test('includes persona.md contents', async () => {
+    await fs.writeFile(path.join(stateDir, 'persona.md'), 'Custom persona text here.', 'utf8')
     const loader = new PersonaLoader()
     await loader.load()
-    assert.equal(loader.text(), 'You are Gemma. Test persona.')
+    const prompt = loader.buildSystemPrompt('c1')
+    assert.ok(prompt.includes('Custom persona text here.'))
   })
 
-  test('reload picks up edits', async () => {
-    await fs.writeFile(path.join(testDir, 'persona.md'), 'v1', 'utf8')
+  test('includes shared memories', async () => {
+    await fs.mkdir(path.join(squadDir, 'memories'), { recursive: true })
+    await fs.writeFile(path.join(squadDir, 'memories', 'jeff_prefs.md'), 'Jeff likes dry humor.', 'utf8')
+    await fs.writeFile(path.join(squadDir, 'memories', 'market_state.md'), 'Market is risk-off.', 'utf8')
+
     const loader = new PersonaLoader()
     await loader.load()
-    assert.equal(loader.text(), 'v1')
+    const prompt = loader.buildSystemPrompt('c1')
+    assert.ok(prompt.includes('Jeff likes dry humor.'))
+    assert.ok(prompt.includes('Market is risk-off.'))
+  })
 
-    await fs.writeFile(path.join(testDir, 'persona.md'), 'v2', 'utf8')
+  test('includes channel-specific summary for the given channel', async () => {
+    await fs.mkdir(path.join(squadDir, 'summaries'), { recursive: true })
+    await fs.writeFile(path.join(squadDir, 'summaries', 'CHAN_A.md'), 'Summary for A.', 'utf8')
+    await fs.writeFile(path.join(squadDir, 'summaries', 'CHAN_B.md'), 'Summary for B.', 'utf8')
+
+    const loader = new PersonaLoader()
     await loader.load()
-    assert.equal(loader.text(), 'v2')
+    const promptA = loader.buildSystemPrompt('CHAN_A')
+    assert.ok(promptA.includes('Summary for A.'))
+    assert.ok(!promptA.includes('Summary for B.'))
+  })
+
+  test('tolerates missing squad-context dir', async () => {
+    await fs.rm(squadDir, { recursive: true, force: true })
+    const loader = new PersonaLoader()
+    await loader.load()                                  // must not throw
+    const prompt = loader.buildSystemPrompt('c1')        // must not throw
+    assert.ok(prompt.length > 0)
+  })
+
+  test('load() picks up persona.md and memory edits on reload', async () => {
+    await fs.writeFile(path.join(stateDir, 'persona.md'), 'v1 persona', 'utf8')
+    const loader = new PersonaLoader()
+    await loader.load()
+    assert.ok(loader.buildSystemPrompt('c1').includes('v1 persona'))
+
+    await fs.writeFile(path.join(stateDir, 'persona.md'), 'v2 persona', 'utf8')
+    await fs.mkdir(path.join(squadDir, 'memories'), { recursive: true })
+    await fs.writeFile(path.join(squadDir, 'memories', 'new.md'), 'new memory', 'utf8')
+
+    await loader.load()
+    const prompt = loader.buildSystemPrompt('c1')
+    assert.ok(prompt.includes('v2 persona'))
+    assert.ok(prompt.includes('new memory'))
+  })
+
+  test('channel summary is read fresh on each buildSystemPrompt call', async () => {
+    await fs.mkdir(path.join(squadDir, 'summaries'), { recursive: true })
+    await fs.writeFile(path.join(squadDir, 'summaries', 'C1.md'), 'summary v1', 'utf8')
+
+    const loader = new PersonaLoader()
+    await loader.load()
+    assert.ok(loader.buildSystemPrompt('C1').includes('summary v1'))
+
+    // cron-driven summary rewrite between turns
+    await fs.writeFile(path.join(squadDir, 'summaries', 'C1.md'), 'summary v2', 'utf8')
+    assert.ok(loader.buildSystemPrompt('C1').includes('summary v2'))
   })
 })
 ```
@@ -423,35 +500,91 @@ Expected: FAIL (module not found).
 
 ```typescript
 import fs from 'fs/promises'
+import fsSync from 'fs'
 import path from 'path'
 import os from 'os'
 
-const DEFAULT_PROMPT = `You are Gemma, a Discord bot backed by Google's Gemini model. You are part of a small squad of AI bots in this server. Be helpful, concise, and match the channel's tone. You can respond with text, an emoji reaction, or both.`
+const DEFAULT_PERSONA = `You are Gemma, a Discord bot backed by Google's Gemini model. You are part of a small squad of AI bots in this server. Be helpful, concise, and match the channel's tone. You can respond with text, an emoji reaction, or both.`
+
+const BOT_ROSTER = `## Other bots in the squad
+
+You are Gemma — Discord user_id 1492759800688152637. When someone says "@Gemma" or tags your ID, they mean you.
+
+Other members (do not impersonate them; respond as Gemma):
+- MacClaude (Scott MacClaude) — user_id 1491304655152746517. Claude-backed, runs on Jeff's Mac. Scottish persona.
+- Fraggy — user_id REDACTED_BOT_ID_A. Claude-backed, runs on HOST. West-Coast/PNW persona.
+- Claudsson (assistant-b) — user_id REDACTED_BOT_ID_B. Claude-backed, runs on HOST. Norwegian fisherman-philosopher, bear case specialist.
+- Claude总 — user_id 1493298328635703306. Claude-backed, runs on HOST. Chinese-native persona, family-warmth counterweight.
+
+Bots do not @mention each other — if another bot is quoted in history, respond to Jeff, not to them.`
+
+function stateDir(): string {
+  return process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
+}
+
+function squadDir(): string {
+  return process.env.SQUAD_CONTEXT_DIR || path.join(os.homedir(), 'claude-agents', 'shared', 'squad-context')
+}
 
 export class PersonaLoader {
-  private file: string
-  private contents: string = DEFAULT_PROMPT
-
-  constructor() {
-    const stateDir = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
-    this.file = path.join(stateDir, 'persona.md')
-  }
+  private persona: string = DEFAULT_PERSONA
+  private memories: string = ''
 
   async load(): Promise<void> {
+    this.persona = await this.readPersona()
+    this.memories = await this.readMemories()
+  }
+
+  private async readPersona(): Promise<string> {
+    const file = path.join(stateDir(), 'persona.md')
     try {
-      this.contents = (await fs.readFile(this.file, 'utf8')).trim()
-      if (!this.contents) this.contents = DEFAULT_PROMPT
+      const text = (await fs.readFile(file, 'utf8')).trim()
+      return text || DEFAULT_PERSONA
     } catch (e: any) {
-      if (e.code === 'ENOENT') {
-        this.contents = DEFAULT_PROMPT
-      } else {
-        throw e
-      }
+      if (e.code === 'ENOENT') return DEFAULT_PERSONA
+      throw e
     }
   }
 
-  text(): string {
-    return this.contents
+  private async readMemories(): Promise<string> {
+    const dir = path.join(squadDir(), 'memories')
+    try {
+      const entries = await fs.readdir(dir)
+      const mdFiles = entries.filter(f => f.endsWith('.md')).sort()
+      const bodies: string[] = []
+      for (const f of mdFiles) {
+        try {
+          const body = (await fs.readFile(path.join(dir, f), 'utf8')).trim()
+          if (body) bodies.push(`### ${f}\n${body}`)
+        } catch { /* skip unreadable file */ }
+      }
+      return bodies.join('\n\n')
+    } catch (e: any) {
+      if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return ''
+      throw e
+    }
+  }
+
+  private readChannelSummary(channelId: string): string {
+    const file = path.join(squadDir(), 'summaries', `${channelId}.md`)
+    try {
+      return fsSync.readFileSync(file, 'utf8').trim()
+    } catch {
+      return ''
+    }
+  }
+
+  buildSystemPrompt(channelId: string): string {
+    const summary = this.readChannelSummary(channelId)
+
+    const sections: string[] = [this.persona, BOT_ROSTER]
+    if (this.memories) {
+      sections.push(`## Shared squad memories\n\n${this.memories}`)
+    }
+    if (summary) {
+      sections.push(`## Current channel summary\n\n${summary}`)
+    }
+    return sections.join('\n\n---\n\n')
   }
 }
 ```
@@ -462,13 +595,13 @@ export class PersonaLoader {
 bun test tests/persona.test.ts
 ```
 
-Expected: all 3 pass.
+Expected: all 7 tests pass.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/persona.ts tests/persona.test.ts
-git commit -m "feat: persona loader with SIGHUP-reloadable persona.md"
+git commit -m "feat: persona loader with shared squad context + per-channel summary"
 ```
 
 ---
@@ -1159,7 +1292,7 @@ client.on('messageCreate', async (message: Message) => {
     }
 
     const parsed = await gemini.respond({
-      systemPrompt: persona.text(),
+      systemPrompt: persona.buildSystemPrompt(message.channelId),
       history,
       userMessageText: message.content,
       userMediaParts: attachmentResult.parts,
@@ -1427,6 +1560,7 @@ After=network-online.target
 
 [Service]
 Type=simple
+Environment=SQUAD_CONTEXT_DIR=<your-shared-context-dir>
 WorkingDirectory=<your-mcp-repo>
 ExecStart=~/.bun/bin/bun src/gemma.ts
 Restart=always
@@ -1481,7 +1615,7 @@ Nothing committed in this task — it's all ops. If you hit any issues that requ
 | Access Control (no pairing, manual edits) | Task 3 |
 | Multimodal (images only v1, 20MB cap) | Task 6 |
 | Emoji Reactions (structured {react,reply}) | Task 7 |
-| System Prompt & Persona (SIGHUP reload) | Task 4, SIGHUP in Task 8 |
+| System Prompt & Persona (persona.md + shared squad context, NOT other bots' personas) | Task 4, SIGHUP + SQUAD_CONTEXT_DIR in Task 8 & 11 |
 | Error Handling (429, API failures, unhandled rejections) | Task 8 (try/catch + process handlers) |
 | State directory layout | Task 10 (local setup), Task 11 (HOST) |
 | systemd user service | Task 11 |

@@ -148,9 +148,21 @@ Gemma can react with an emoji to the user's message, in addition to (or instead 
 
 ## System Prompt & Persona
 
-- Lives in `~/.gemini/channels/discord/persona.md` (editable without code changes, reloadable via SIGHUP).
-- Includes: identity (Gemma, Gemini-backed bot), role in the squad, any stylistic notes, list of custom emoji IDs, list of other bots and their IDs (so Gemma knows when `@Fraggy` is being tagged, etc.).
-- **Out of scope for v1:** personality/voice tuning — that's a later iteration. v1 just gets Gemma conversational.
+The final system prompt Gemma sends to Gemini is composed from three sources, concatenated in order:
+
+1. **Gemma-specific persona** — `~/.gemini/channels/discord/persona.md` (editable without code changes).
+2. **Shared squad context** — relevant files under `<your-shared-context-dir>/`:
+   - `squad-config.json` — channel primaries, observer protocol, bot roster
+   - `summaries/<channel_id>.md` — rolling channel summary for the channel the incoming message is in (selected at request time, not all summaries)
+   - `memories/*.md` — shared observations any bot can write (all read, concatenated)
+3. **Bot roster** — Discord IDs and public descriptions of Fraggy, MacClaude, Claudsson, Claude总, and Gemma herself (`1492759800688152637`) so Gemma recognizes when other bots are mentioned or referenced.
+
+**Explicitly NOT included:** other bots' persona files (`<agent-config-dir>/CLAUDE.md`, any Fraggy/MacClaude prompts). Those are private to each bot. Gemma gets general knowledge about the squad but not their inner voices.
+
+- All three sources reloadable via SIGHUP (no process restart).
+- `persona.md` can be empty/missing — the default built-in persona kicks in.
+- Squad-context dir can be missing (e.g., on dev machines) — just skip those sources silently; Gemma still runs.
+- **Out of scope for v1:** personality/voice tuning — that's a later iteration. v1 just gets Gemma conversational with squad awareness.
 
 ## Error Handling
 
@@ -168,10 +180,21 @@ Gemma can react with an emoji to the user's message, in addition to (or instead 
 ~/.gemini/channels/discord/
   .env             # DISCORD_BOT_TOKEN=..., GEMINI_API_KEY=...  (chmod 600)
   access.json      # allowlist
-  persona.md       # system prompt + persona
+  persona.md       # Gemma-specific prompt (optional)
   inbox/           # per-message attachment temp dirs; cleaned after each turn
   gemma.log        # application log (systemd also captures stderr)
 ```
+
+Shared squad context (already exists on HOST, read-only for Gemma):
+
+```
+<your-shared-context-dir>/
+  squad-config.json
+  summaries/<channel_id>.md
+  memories/*.md
+```
+
+Gemma reads these at startup and on SIGHUP. Location overridable via `SQUAD_CONTEXT_DIR` env var (for dev boxes where the path differs or the dir doesn't exist).
 
 ### systemd user service
 
@@ -230,7 +253,7 @@ src/
   gemini.ts       # Gemini API client, prompt builder, structured parser (new)
   history.ts      # channel history fetcher                              (new)
   chunk.ts        # 2000-char splitter                                   (reuse existing)
-  persona.ts      # persona.md loader + SIGHUP reload                    (new)
+  persona.ts      # persona.md + shared squad context loader, SIGHUP     (new)
 package.json      # deps: discord.js, @google/generative-ai, dotenv
 tsconfig.json
 README.md         # updated — no more MCP talk
