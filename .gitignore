@@ -1,7 +1,10 @@
 node_modules/
 dist/
 .env
+.env.*
 .DS_Store
 inbox/
 *.log
+persona.md
+access.json
 README_PRIVATE.md

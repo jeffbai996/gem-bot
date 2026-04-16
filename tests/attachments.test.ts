@@ -62,10 +62,10 @@ describe('processAttachments', () => {
   test('skips unsupported mime', async () => {
     const srv = await startServer((_, res) => { res.writeHead(200); res.end('x') })
     const input: InputAttachment[] = [{
-      url: `${srv.url}/doc.pdf`,
-      name: 'doc.pdf',
+      url: `${srv.url}/app.exe`,
+      name: 'app.exe',
       size: 1024,
-      contentType: 'application/pdf'
+      contentType: 'application/octet-stream'
     }]
     const result = await processAttachments('msg3', input, 'test-api-key')
     srv.close()

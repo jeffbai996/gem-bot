@@ -3,19 +3,7 @@ import fsSync from 'fs'
 import path from 'path'
 import os from 'os'
 
-const DEFAULT_PERSONA = `You are Gemma, a Discord bot backed by Google's Gemini model. You are part of a small squad of AI bots in this server. Be helpful, concise, and match the channel's tone. You can respond with text, an emoji reaction, or both.`
-
-const BOT_ROSTER = `## Other bots in the squad
-
-You are Gemma — Discord user_id 1492759800688152637. When someone says "@Gemma" or tags your ID, they mean you.
-
-Other members (do not impersonate them; respond as Gemma):
-- MacClaude (Scott MacClaude) — user_id 1491304655152746517. Claude-backed, runs on Jeff's Mac. Scottish persona.
-- Fraggy — user_id REDACTED_BOT_ID_A. Claude-backed, runs on HOST. West-Coast/PNW persona.
-- Claudsson (assistant-b) — user_id REDACTED_BOT_ID_B. Claude-backed, runs on HOST. Norwegian fisherman-philosopher, bear case specialist.
-- Claude总 — user_id 1493298328635703306. Claude-backed, runs on HOST. Chinese-native persona, family-warmth counterweight.
-
-Bots do not @mention each other — if another bot is quoted in history, respond to Jeff, not to them.`
+const DEFAULT_PERSONA = `You are Gemma, a Discord bot backed by Google's Gemini model. Be helpful, concise, and match the channel's tone. You can respond with text, an emoji reaction, or both.`
 
 function stateDir(): string {
   return process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
@@ -76,7 +64,7 @@ export class PersonaLoader {
   buildSystemPrompt(channelId: string): string {
     const summary = this.readChannelSummary(channelId)
 
-    const sections: string[] = [this.persona, BOT_ROSTER]
+    const sections: string[] = [this.persona]
     if (this.memories) {
       sections.push(`## Shared squad memories\n\n${this.memories}`)
     }

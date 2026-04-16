@@ -21,13 +21,11 @@ describe('PersonaLoader', () => {
     await reset()
   })
 
-  test('uses default prompt + bot roster if everything missing', async () => {
+  test('falls back to default persona when persona.md missing', async () => {
     const loader = new PersonaLoader()
     await loader.load()
     const prompt = loader.buildSystemPrompt('unknown-channel-id')
     assert.ok(prompt.toLowerCase().includes('gemma'))
-    assert.ok(prompt.includes('1492759800688152637'))  // Gemma's own ID
-    assert.ok(prompt.includes('Fraggy'))              // roster entry
   })
 
   test('includes persona.md contents', async () => {
@@ -40,14 +38,14 @@ describe('PersonaLoader', () => {
 
   test('includes shared memories', async () => {
     await fs.mkdir(path.join(squadDir, 'memories'), { recursive: true })
-    await fs.writeFile(path.join(squadDir, 'memories', 'jeff_prefs.md'), 'Jeff likes dry humor.', 'utf8')
-    await fs.writeFile(path.join(squadDir, 'memories', 'market_state.md'), 'Market is risk-off.', 'utf8')
+    await fs.writeFile(path.join(squadDir, 'memories', 'user_prefs.md'), 'User likes dry humor.', 'utf8')
+    await fs.writeFile(path.join(squadDir, 'memories', 'context.md'), 'Context snippet.', 'utf8')
 
     const loader = new PersonaLoader()
     await loader.load()
     const prompt = loader.buildSystemPrompt('c1')
-    assert.ok(prompt.includes('Jeff likes dry humor.'))
-    assert.ok(prompt.includes('Market is risk-off.'))
+    assert.ok(prompt.includes('User likes dry humor.'))
+    assert.ok(prompt.includes('Context snippet.'))
   })
 
   test('includes channel-specific summary for the given channel', async () => {
