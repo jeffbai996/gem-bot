@@ -19,7 +19,9 @@ A standalone Discord bot using Discord.js and Gemini 2.0. It acts as an intellig
 - When processing media, use `Promise.allSettled` to maintain high throughput and non-blocking I/O.
 
 ## Future Roadmap (Architectural Debt & New Features)
-- **Token-Aware Context Windowing:** Replace the hardcoded 20-message limit in `history.ts` with a dynamic token counter (e.g., using `js-tiktoken`) to maximize context efficiency.
+- **Real-Time Token Streaming (UX):** Transition from the current "wait and chunk" model to streaming responses directly into Discord via Webhook message editing, providing a ChatGPT-like typing experience for long generations.
+- **Proactive Cron Jobs (Autonomy):** Enable Gemma to run scheduled tasks (e.g., pulling data from `ibkr-mcp`) to drop unprompted daily portfolio briefings, risk alerts, or earnings summaries into a dedicated channel.
+- **Semantic Discord Search & SQLite Memory:** Implement a local vector database (like `sqlite-vss`) to persist facts across sessions and allow semantic searching over months of Discord history (e.g., "What did Dan say about copper prices last month?").
+- **Agent Handoff & Multi-Agent Debates:** Give Gemma the ability to delegate sub-tasks (triggering `code-review-tool` on a GitHub link) or spawn secondary model instances to debate complex topics (e.g., generating a bull case, then calling a bear-case agent to argue against it).
+- **Token-Aware Context Windowing:** Replace the hardcoded 20-message limit in `history.ts` with a dynamic token counter to maximize context efficiency without hitting API limits.
 - **Voice Channel Intake:** Enable the bot to join Discord Voice Channels and transcribe/process audio streams using Gemini's native multimodal capabilities.
-- **Long-term SQLite Memory:** Implement a local SQLite vector/key-value store to persist user facts and preferences across sessions, reducing reliance on the short-term message buffer.
-- **Agent Handoff:** Give Gemma the ability to delegate specific sub-tasks to other local CLI tools or external webhooks (e.g., triggering code reviews via `jules`).
