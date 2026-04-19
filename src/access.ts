@@ -2,9 +2,23 @@ import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
 
+export type ThinkingMode = 'always' | 'auto' | 'never'
+
+export interface ChannelConfig {
+  enabled: boolean
+  requireMention: boolean
+  thinking?: ThinkingMode  // default "auto" — Gemma decides per message
+  showCode?: boolean       // default false — don't render code-exec artifacts
+}
+
+export interface ChannelFlags {
+  thinking: ThinkingMode
+  showCode: boolean
+}
+
 export interface AccessFile {
   users: Record<string, { allowed: boolean }>
-  channels: Record<string, { enabled: boolean; requireMention: boolean }>
+  channels: Record<string, ChannelConfig>
 }
 
 export interface CanHandleInput {
@@ -14,6 +28,7 @@ export interface CanHandleInput {
 }
 
 const EMPTY: AccessFile = { users: {}, channels: {} }
+const VALID_THINKING_MODES: ThinkingMode[] = ['always', 'auto', 'never']
 
 export class AccessManager {
   private stateDir: string
@@ -70,8 +85,31 @@ export class AccessManager {
     await this.save()
   }
 
-  async setChannel(channelId: string, enabled: boolean, requireMention: boolean): Promise<void> {
-    this.data.channels[channelId] = { enabled, requireMention }
+  async setChannel(
+    channelId: string,
+    enabled: boolean,
+    requireMention: boolean,
+    flags?: ChannelFlags
+  ): Promise<void> {
+    if (flags && !VALID_THINKING_MODES.includes(flags.thinking)) {
+      throw new Error(`invalid thinking mode "${flags.thinking}" — must be one of: always, auto, never`)
+    }
+    this.data.channels[channelId] = {
+      enabled,
+      requireMention,
+      thinking: flags?.thinking ?? 'auto',
+      showCode: flags?.showCode ?? false
+    }
     await this.save()
+  }
+
+  // Per-channel rendering flags. Returns defaults for unknown channels and
+  // for old configs that don't have these fields yet.
+  channelFlags(channelId: string): ChannelFlags {
+    const channel = this.data.channels[channelId]
+    return {
+      thinking: channel?.thinking ?? 'auto',
+      showCode: channel?.showCode ?? false
+    }
   }
 }

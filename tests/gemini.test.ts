@@ -1,6 +1,14 @@
 import { describe, test } from 'bun:test'
 import assert from 'node:assert/strict'
-import { parseResponse, extractModelText } from '../src/gemini.ts'
+import {
+  parseResponse,
+  extractModelText,
+  extractGroundingSources,
+  extractCodeArtifacts,
+  extractUsage,
+  extractFlaggedSafety,
+  formatSystemPrompt
+} from '../src/gemini.ts'
 
 describe('extractModelText', () => {
   test('returns empty string for undefined parts', () => {
@@ -123,5 +131,169 @@ describe('parseResponse', () => {
     const r = parseResponse(leaked)
     assert.equal(r.reply, 'Net gain $342,565')
     assert.equal(r.thinking, 'summed boxes')
+  })
+})
+
+describe('formatSystemPrompt', () => {
+  test('auto mode appends only the base format instruction', () => {
+    const out = formatSystemPrompt('You are a bot.', 'auto')
+    assert.match(out, /You are a bot\./)
+    assert.match(out, /Response format \(mandatory\)/)
+    assert.doesNotMatch(out, /Thinking override/)
+  })
+
+  test('always mode adds the ALWAYS addendum', () => {
+    const out = formatSystemPrompt('persona', 'always')
+    assert.match(out, /Thinking override — THIS CHANNEL/)
+    assert.match(out, /forced to ALWAYS/)
+  })
+
+  test('never mode adds the NEVER addendum', () => {
+    const out = formatSystemPrompt('persona', 'never')
+    assert.match(out, /Thinking override — THIS CHANNEL/)
+    assert.match(out, /forced to NEVER/)
+  })
+})
+
+describe('extractGroundingSources', () => {
+  test('returns [] for candidate without grounding metadata', () => {
+    assert.deepEqual(extractGroundingSources({}), [])
+    assert.deepEqual(extractGroundingSources({ groundingMetadata: {} }), [])
+  })
+
+  test('extracts web sources with title + uri', () => {
+    const candidate = {
+      groundingMetadata: {
+        groundingChunks: [
+          { web: { uri: 'https://a.com', title: 'Site A' } },
+          { web: { uri: 'https://b.com', title: 'Site B' } }
+        ]
+      }
+    }
+    const out = extractGroundingSources(candidate)
+    assert.equal(out.length, 2)
+    assert.deepEqual(out[0], { uri: 'https://a.com', title: 'Site A' })
+  })
+
+  test('dedupes by URI', () => {
+    const candidate = {
+      groundingMetadata: {
+        groundingChunks: [
+          { web: { uri: 'https://a.com', title: 'Site A' } },
+          { web: { uri: 'https://a.com', title: 'Site A (dup)' } },
+          { web: { uri: 'https://b.com', title: 'Site B' } }
+        ]
+      }
+    }
+    assert.equal(extractGroundingSources(candidate).length, 2)
+  })
+
+  test('skips chunks with no uri', () => {
+    const candidate = {
+      groundingMetadata: {
+        groundingChunks: [
+          { web: { title: 'No URI' } },
+          { web: { uri: 'https://a.com', title: 'Site A' } }
+        ]
+      }
+    }
+    assert.equal(extractGroundingSources(candidate).length, 1)
+  })
+
+  test('falls back title to uri when title missing', () => {
+    const candidate = {
+      groundingMetadata: {
+        groundingChunks: [{ web: { uri: 'https://a.com' } }]
+      }
+    }
+    assert.equal(extractGroundingSources(candidate)[0].title, 'https://a.com')
+  })
+})
+
+describe('extractCodeArtifacts', () => {
+  test('returns [] for empty parts', () => {
+    assert.deepEqual(extractCodeArtifacts(undefined), [])
+    assert.deepEqual(extractCodeArtifacts([]), [])
+  })
+
+  test('pairs executableCode with following codeExecutionResult', () => {
+    const parts = [
+      { text: 'let me compute' },
+      { executableCode: { language: 'PYTHON', code: 'print(2+2)' } },
+      { codeExecutionResult: { outcome: 'OUTCOME_OK', output: '4\n' } },
+      { text: '{"reply":"4"}' }
+    ]
+    const arts = extractCodeArtifacts(parts)
+    assert.equal(arts.length, 1)
+    assert.equal(arts[0].code, 'print(2+2)')
+    assert.equal(arts[0].output, '4\n')
+    assert.equal(arts[0].outcome, 'OUTCOME_OK')
+    assert.equal(arts[0].language, 'python')
+  })
+
+  test('emits executableCode with null output when no result follows', () => {
+    const parts = [
+      { executableCode: { language: 'PYTHON', code: 'x = 1' } }
+    ]
+    const arts = extractCodeArtifacts(parts)
+    assert.equal(arts.length, 1)
+    assert.equal(arts[0].output, null)
+  })
+
+  test('handles multiple code executions in one response', () => {
+    const parts = [
+      { executableCode: { language: 'PYTHON', code: 'print(1)' } },
+      { codeExecutionResult: { outcome: 'OUTCOME_OK', output: '1\n' } },
+      { executableCode: { language: 'PYTHON', code: 'print(2)' } },
+      { codeExecutionResult: { outcome: 'OUTCOME_OK', output: '2\n' } }
+    ]
+    const arts = extractCodeArtifacts(parts)
+    assert.equal(arts.length, 2)
+    assert.equal(arts[0].output, '1\n')
+    assert.equal(arts[1].output, '2\n')
+  })
+})
+
+describe('extractUsage', () => {
+  test('returns null when usageMetadata missing', () => {
+    assert.equal(extractUsage({}), null)
+    assert.equal(extractUsage({ usageMetadata: null }), null)
+  })
+
+  test('extracts token counts', () => {
+    const u = extractUsage({
+      usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 200, totalTokenCount: 300 }
+    })
+    assert.deepEqual(u, { promptTokens: 100, responseTokens: 200, totalTokens: 300 })
+  })
+})
+
+describe('extractFlaggedSafety', () => {
+  test('returns [] when no ratings', () => {
+    assert.deepEqual(extractFlaggedSafety({}), [])
+  })
+
+  test('drops NEGLIGIBLE and LOW', () => {
+    const candidate = {
+      safetyRatings: [
+        { category: 'HARM_CATEGORY_HARASSMENT', probability: 'NEGLIGIBLE' },
+        { category: 'HARM_CATEGORY_HATE_SPEECH', probability: 'LOW' }
+      ]
+    }
+    assert.deepEqual(extractFlaggedSafety(candidate), [])
+  })
+
+  test('keeps MEDIUM and HIGH', () => {
+    const candidate = {
+      safetyRatings: [
+        { category: 'HARM_CATEGORY_HARASSMENT', probability: 'MEDIUM' },
+        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', probability: 'HIGH' },
+        { category: 'HARM_CATEGORY_HATE_SPEECH', probability: 'LOW' }
+      ]
+    }
+    const out = extractFlaggedSafety(candidate)
+    assert.equal(out.length, 2)
+    assert.equal(out[0].probability, 'MEDIUM')
+    assert.equal(out[1].probability, 'HIGH')
   })
 })

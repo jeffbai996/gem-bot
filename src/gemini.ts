@@ -1,12 +1,13 @@
 import { GoogleGenerativeAI, type Content, type Part } from '@google/generative-ai'
 import type { GeminiContent } from './history.ts'
 import type { MediaPart } from './attachments.ts'
+import type { ThinkingMode } from './access.ts'
 
 // Appended to every system prompt. Needed because tools (googleSearch +
 // codeExecution) are incompatible with responseMimeType:'application/json' +
 // responseSchema, so we can't rely on API-level schema enforcement. Instruct
 // the model to emit the JSON we want; parseResponse then tolerates wrappers.
-const RESPONSE_FORMAT_INSTRUCTION = `
+const RESPONSE_FORMAT_BASE = `
 ## Response format (mandatory)
 
 Your entire response must be a single JSON object with exactly these three string-or-null fields, and nothing else — no markdown fences, no preamble, no commentary outside the JSON:
@@ -18,6 +19,25 @@ Your entire response must be a single JSON object with exactly these three strin
 - \`reply\`: your actual Discord message, or null if you only want to react. Markdown formatting inside the string is fine.
 
 Do NOT wrap this JSON in \`\`\`json ... \`\`\`. Do NOT print anything before or after. Emit the raw JSON object.`
+
+const THINKING_ALWAYS_ADDENDUM = `
+
+## Thinking override — THIS CHANNEL
+
+This channel has thinking mode forced to ALWAYS. You MUST populate the \`thinking\` field with a non-empty scratchpad explaining your reasoning for every reply, no matter how simple. Even for trivial replies, give at least one sentence of reasoning.`
+
+const THINKING_NEVER_ADDENDUM = `
+
+## Thinking override — THIS CHANNEL
+
+This channel has thinking mode forced to NEVER. Set the \`thinking\` field to null on every reply. Do not populate it under any circumstances.`
+
+export function formatSystemPrompt(base: string, mode: ThinkingMode): string {
+  let out = base + '\n\n' + RESPONSE_FORMAT_BASE
+  if (mode === 'always') out += THINKING_ALWAYS_ADDENDUM
+  else if (mode === 'never') out += THINKING_NEVER_ADDENDUM
+  return out
+}
 
 export interface ParsedResponse {
   react: string | null
@@ -95,12 +115,115 @@ export function extractModelText(parts: Array<{ text?: string, executableCode?: 
   return chunks.join('\n').trim()
 }
 
+export interface GroundingSource {
+  uri: string
+  title: string
+}
+
+export interface CodeExecArtifact {
+  code: string
+  language: string
+  output: string | null
+  outcome: string | null   // e.g. "OUTCOME_OK", "OUTCOME_FAILED"
+}
+
+export interface UsageMetadata {
+  promptTokens: number
+  responseTokens: number
+  totalTokens: number
+}
+
+export interface FlaggedSafetyRating {
+  category: string
+  probability: string  // "NEGLIGIBLE" | "LOW" | "MEDIUM" | "HIGH"
+}
+
+// Walk groundingMetadata.groundingChunks[*].web.{uri,title}. The SDK types
+// this loosely, so we probe defensively. Dedupe by URI — one source per row.
+export function extractGroundingSources(candidate: any): GroundingSource[] {
+  const chunks = candidate?.groundingMetadata?.groundingChunks
+  if (!Array.isArray(chunks)) return []
+  const seen = new Set<string>()
+  const out: GroundingSource[] = []
+  for (const c of chunks) {
+    const web = c?.web
+    if (!web?.uri) continue
+    if (seen.has(web.uri)) continue
+    seen.add(web.uri)
+    out.push({ uri: web.uri, title: typeof web.title === 'string' ? web.title : web.uri })
+  }
+  return out
+}
+
+// Pair executableCode parts with the codeExecutionResult that follows them.
+// Order in candidate.content.parts is: text? → executableCode → codeExecutionResult → text?
+// An executableCode without a following result is still reported (output: null).
+export function extractCodeArtifacts(parts: any[] | undefined): CodeExecArtifact[] {
+  if (!parts) return []
+  const out: CodeExecArtifact[] = []
+  let pending: CodeExecArtifact | null = null
+  for (const p of parts) {
+    if (p?.executableCode) {
+      if (pending) out.push(pending)
+      pending = {
+        code: typeof p.executableCode.code === 'string' ? p.executableCode.code : '',
+        language: typeof p.executableCode.language === 'string' ? p.executableCode.language.toLowerCase() : 'python',
+        output: null,
+        outcome: null
+      }
+    } else if (p?.codeExecutionResult) {
+      if (pending) {
+        pending.output = typeof p.codeExecutionResult.output === 'string' ? p.codeExecutionResult.output : null
+        pending.outcome = typeof p.codeExecutionResult.outcome === 'string' ? p.codeExecutionResult.outcome : null
+        out.push(pending)
+        pending = null
+      }
+    }
+  }
+  if (pending) out.push(pending)
+  return out
+}
+
+export function extractUsage(response: any): UsageMetadata | null {
+  const u = response?.usageMetadata
+  if (!u) return null
+  return {
+    promptTokens: u.promptTokenCount ?? 0,
+    responseTokens: u.candidatesTokenCount ?? 0,
+    totalTokens: u.totalTokenCount ?? 0
+  }
+}
+
+// Only report safety ratings above LOW (MEDIUM / HIGH). The model rarely
+// flags stuff we don't already see get censored, so NEGLIGIBLE/LOW is noise.
+export function extractFlaggedSafety(candidate: any): FlaggedSafetyRating[] {
+  const ratings = candidate?.safetyRatings
+  if (!Array.isArray(ratings)) return []
+  return ratings
+    .filter((r: any) => r?.probability === 'MEDIUM' || r?.probability === 'HIGH')
+    .map((r: any) => ({ category: String(r.category ?? 'UNKNOWN'), probability: String(r.probability) }))
+}
+
+export interface RespondMetadata {
+  groundingSources: GroundingSource[]
+  codeArtifacts: CodeExecArtifact[]
+  usage: UsageMetadata | null
+  finishReason: string | null
+  flaggedSafety: FlaggedSafetyRating[]
+}
+
+export interface RespondResult {
+  parsed: ParsedResponse
+  meta: RespondMetadata
+}
+
 export interface BuildRequestArgs {
   systemPrompt: string
   history: GeminiContent[]
   userMessageText: string
   userMediaParts: MediaPart[]
   userName: string
+  thinkingMode?: ThinkingMode  // default "auto"
 }
 
 export function buildUserTurn(args: BuildRequestArgs): Content {
@@ -123,15 +246,24 @@ export class GeminiClient {
     })
   }
 
-  async respond(args: BuildRequestArgs): Promise<ParsedResponse> {
+  async respond(args: BuildRequestArgs): Promise<RespondResult> {
     const userTurn = buildUserTurn(args)
-    const systemText = args.systemPrompt + '\n\n' + RESPONSE_FORMAT_INSTRUCTION
+    const systemText = formatSystemPrompt(args.systemPrompt, args.thinkingMode ?? 'auto')
     const result = await this.model.generateContent({
       systemInstruction: { role: 'system', parts: [{ text: systemText }] },
       contents: [...args.history, userTurn]
     })
-    const parts = result.response.candidates?.[0]?.content?.parts as any[] | undefined
+    const candidate = result.response.candidates?.[0]
+    const parts = candidate?.content?.parts as any[] | undefined
     const text = extractModelText(parts)
-    return parseResponse(text)
+    const parsed = parseResponse(text)
+    const meta: RespondMetadata = {
+      groundingSources: extractGroundingSources(candidate),
+      codeArtifacts: extractCodeArtifacts(parts),
+      usage: extractUsage(result.response),
+      finishReason: typeof candidate?.finishReason === 'string' ? candidate.finishReason : null,
+      flaggedSafety: extractFlaggedSafety(candidate)
+    }
+    return { parsed, meta }
   }
 }

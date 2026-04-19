@@ -8,7 +8,7 @@ import { fetchHistory, formatHistory } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
 import { GeminiClient } from './gemini.ts'
 import { chunk } from './chunk.ts'
-import { adminCommand, executeAdminCommand } from './commands.ts'
+import { geminiCommand, executeGeminiCommand } from './commands.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
@@ -70,7 +70,7 @@ client.once('ready', async () => {
     const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN)
     await rest.put(
       Routes.applicationCommands(client.user!.id),
-      { body: [adminCommand.toJSON()] }
+      { body: [geminiCommand.toJSON()] }
     )
     console.error('Slash commands registered.')
   } catch (error) {
@@ -81,9 +81,9 @@ client.once('ready', async () => {
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return
 
-  if (interaction.commandName === 'admin') {
+  if (interaction.commandName === 'gemini') {
     const adminId = process.env.DISCORD_ADMIN_ID
-    await executeAdminCommand(interaction, access, persona, adminId)
+    await executeGeminiCommand(interaction, access, persona, adminId)
   }
 })
 
@@ -137,13 +137,30 @@ client.on('messageCreate', async (message: Message) => {
       })
     }
 
-    const parsed = await gemini.respond({
+    const flags = access.channelFlags(message.channelId)
+
+    const { parsed, meta } = await gemini.respond({
       systemPrompt: persona.buildSystemPrompt(message.channelId),
       history,
       userMessageText: message.content,
       userMediaParts: allParts,
-      userName: message.author.username
+      userName: message.author.username,
+      thinkingMode: flags.thinking
     })
+
+    // Usage metadata — one line per turn for cost tracking
+    if (meta.usage) {
+      console.error(`[usage] channel=${message.channelId} prompt=${meta.usage.promptTokens} response=${meta.usage.responseTokens} total=${meta.usage.totalTokens}`)
+    }
+    // Non-STOP finish reasons deserve visibility (MAX_TOKENS truncation,
+    // SAFETY filter, RECITATION, etc.)
+    if (meta.finishReason && meta.finishReason !== 'STOP' && meta.finishReason !== 'FINISH_REASON_UNSPECIFIED') {
+      console.error(`[finish] channel=${message.channelId} reason=${meta.finishReason}`)
+    }
+    // Flagged safety categories (MEDIUM/HIGH only)
+    if (meta.flaggedSafety.length > 0) {
+      console.error(`[safety] channel=${message.channelId} flagged=${JSON.stringify(meta.flaggedSafety)}`)
+    }
 
     const tasks: Promise<unknown>[] = []
 
@@ -152,12 +169,50 @@ client.on('messageCreate', async (message: Message) => {
     }
 
     let fullReply = ''
-    if (parsed.thinking) {
+    // Thinking block: "never" suppresses; "always" forces emission (the
+    // system-prompt addendum tells Gemma to always populate it); "auto"
+    // (default) trusts whatever Gemma decided per-message.
+    const showThinking = flags.thinking !== 'never' && !!parsed.thinking
+    if (showThinking && parsed.thinking) {
       const quotedThinking = parsed.thinking.split('\n').map(line => `> ${line}`).join('\n')
       fullReply += `💭 **Thinking:**\n${quotedThinking}\n\n`
     }
+
+    // Code execution artifacts — gated by per-channel showCode flag. Render
+    // before the reply so the reader sees "what she ran" → "what it said" →
+    // "what she concluded" in natural order.
+    if (flags.showCode && meta.codeArtifacts.length > 0) {
+      for (const art of meta.codeArtifacts) {
+        fullReply += `🛠️ **Code (${art.language}):**\n\`\`\`${art.language}\n${art.code}\n\`\`\`\n`
+        if (art.output) {
+          fullReply += `**Output:**\n\`\`\`\n${art.output.trim()}\n\`\`\`\n`
+        }
+        fullReply += '\n'
+      }
+    }
+
     if (parsed.reply) {
       fullReply += parsed.reply
+    }
+
+    // Grounding metadata footer — when googleSearch was used, show sources.
+    // Compact one-line-per-source format. Markdown link syntax so Discord
+    // renders them clickable.
+    if (meta.groundingSources.length > 0 && parsed.reply) {
+      fullReply += '\n\n-# ↳ sources: '
+      fullReply += meta.groundingSources
+        .slice(0, 5)
+        .map((s, i) => `[${i + 1}](<${s.uri}>)`)
+        .join(' · ')
+    }
+
+    // Non-STOP finish surfaced as a user-visible hint (only for MAX_TOKENS
+    // and SAFETY which the user should know about). RECITATION/OTHER stay
+    // in logs only.
+    if (meta.finishReason === 'MAX_TOKENS') {
+      fullReply += '\n\n-# ⚠️ response hit max-tokens limit (reply may be truncated)'
+    } else if (meta.finishReason === 'SAFETY') {
+      fullReply = '⚠️ response blocked by Gemini safety filter. ' + (fullReply || '(no content)')
     }
 
     if (fullReply) {
