@@ -1,6 +1,6 @@
 # gem-discord-bot
 
-A standalone Discord bot backed by Google's Gemini. Runs as a Bun process, responds to allowlisted messages, supports multimodal input (images, video, audio, documents), and can react with emoji.
+A standalone Discord bot backed by Google's Gemini 2.0. Runs as a Node.js/`tsx` process, responds to allowlisted messages, supports multimodal input (images, video, audio, documents), uses native Gemini tools (Google Search, Code Execution), and can react with emoji.
 
 The bot's in-Discord persona is "Gemma" — the repo name was simplified from `discord-mcp` to `gem-discord-bot` once the MCP approach was abandoned.
 
@@ -10,7 +10,7 @@ An earlier version of this repo tried to be a Gemini-CLI MCP plugin. It didn't w
 
 ## Stack
 
-- TypeScript + Bun 1.x
+- TypeScript + Node.js (via `tsx`)
 - `discord.js` v14
 - `@google/generative-ai` (Gemini 2.0 Flash by default; override with `GEMINI_MODEL`)
 
@@ -18,41 +18,34 @@ An earlier version of this repo tried to be a Gemini-CLI MCP plugin. It didn't w
 
 ## Features
 
-### Messaging
-- Responds to messages in configured channels
-- `requireMention` per channel — bot only speaks when directly `@`-tagged
-- Typing indicator while Gemini is processing
-- Splits long responses into ≤2000-char chunks at natural line breaks
-- Fetches last 20 messages of channel history as conversation context
+### Intelligence & Tools
+- **Native Tool Use:** Automatically uses Google Search and Code Execution when appropriate.
+- **Chain-of-Thought (CoT):** Displays a `💭 **Thinking:**` blockquote when reasoning through complex prompts before delivering the final answer.
 
-### Emoji reactions
-- Can react to a message with an emoji in addition to (or instead of) a text reply
-- Picks the emoji itself based on context — Unicode and server custom emoji both work
-- List available custom emoji in `persona.md` so the model knows what's in the server
+### Messaging & UX
+- **Heartbeat Typing:** Discord's typing indicator is maintained recursively until Gemini finishes processing, preventing timeout drop-offs during long tool-use or CoT generations.
+- **Smart Chunking:** Splits long responses into ≤2000-char chunks. Syntax-aware splitting preserves markdown code block formatting (`` ``` ``) across message boundaries.
+- **Context Window:** Fetches the last 20 messages of channel history as conversation context.
+- **Emoji Reactions:** Can react to a message with an emoji based on context.
 
-### Multimodal ingestion
-- **Images** (PNG, JPEG, WebP, GIF, HEIC): inline base64
-- **Video + Audio**: Gemini File API upload → poll until ACTIVE → fileUri reference
-- **Documents** (PDF, plaintext, markdown, CSV, HTML, JS/TS): inline base64
-- Files over the per-type size limit are skipped with a note in-channel
+### Multimodal Ingestion (Parallelized & Cached)
+- **Images** (PNG, JPEG, WebP, GIF, HEIC) & **Documents** (PDF, TXT, HTML, JS/TS): processed inline via base64.
+- **Video + Audio**: Uploaded via the Gemini File API.
+- **Parallel Processing:** Multiple attachments are processed concurrently via `Promise.allSettled` for maximum speed.
+- **URI Caching:** Discord media URLs are cached to Gemini `fileUri`s, preventing redundant uploads and allowing the bot to "remember" images from earlier in the conversation history.
 
-### Persona & optional shared context
-The system prompt is composed at runtime from up to three sources:
-1. `persona.md` in the state dir — personality, instructions, bot roster if desired
-2. Shared memory files — any `*.md` under `$SQUAD_CONTEXT_DIR/memories/` (optional)
-3. Per-channel summary — `$SQUAD_CONTEXT_DIR/summaries/<channel_id>.md` (read fresh each turn, optional)
+### Admin Slash Commands
+Manage the bot directly from Discord without touching terminal files. Requires `DISCORD_ADMIN_ID` in `.env` (or Server Admin permissions).
+- `/admin allow @user`
+- `/admin revoke @user`
+- `/admin channel #channel [enabled] [require_mention]`
+- `/admin persona <filename.md>` (Hot-swaps the active persona)
 
-If `SQUAD_CONTEXT_DIR` is unset or the dirs don't exist, only `persona.md` is used.
-
-### Hot reload
-Edit `access.json` or `persona.md` and send SIGHUP — no restart needed:
-```bash
-# under systemd
-systemctl --user kill -s HUP gemma
-
-# local dev
-kill -HUP $(pgrep -f 'bun src/gemma.ts')
-```
+### Persona & Shared Context
+The system prompt is composed at runtime from:
+1. The active persona file (e.g., `persona.md`) in the state dir.
+2. Shared memory files — any `*.md` under `$SQUAD_CONTEXT_DIR/memories/` (optional).
+3. Per-channel summary — `$SQUAD_CONTEXT_DIR/summaries/<channel_id>.md` (read fresh each turn, optional).
 
 ---
 
@@ -62,11 +55,10 @@ All runtime state lives in `~/.gemini/channels/discord/` (override via `DISCORD_
 
 | File | Purpose |
 |---|---|
-| `.env` | `DISCORD_BOT_TOKEN`, `GEMINI_API_KEY`, optional `GEMINI_MODEL` |
-| `access.json` | User + channel allowlists |
-| `persona.md` | System prompt (optional — built-in default if missing) |
+| `.env` | `DISCORD_BOT_TOKEN`, `GEMINI_API_KEY`, `DISCORD_ADMIN_ID`, optional `GEMINI_MODEL` |
+| `access.json` | User + channel allowlists (Modified via `/admin` commands) |
+| `persona.md` | Default System prompt |
 | `inbox/` | Per-message attachment scratch dir (auto-cleaned after each turn) |
-| `gemma.log` | Application log (when running under systemd) |
 
 ### access.json format
 
@@ -82,19 +74,7 @@ All runtime state lives in `~/.gemini/channels/discord/` (override via `DISCORD_
 ```
 
 - Unknown users or channels are silently ignored — explicit allowlist only.
-- `requireMention: true` — bot only responds when directly `@`-tagged in that channel.
-- `requireMention: false` — bot responds to every message from an allowed user in that channel.
-- Edits picked up on SIGHUP, no restart needed.
-
-### persona.md
-
-Plain markdown. Loaded at startup; reloaded on SIGHUP. If missing, a built-in default persona is used.
-
-Useful things to include:
-- Personality and tone
-- Custom emoji available in the server (so the model can react with them)
-- Any standing instructions or context about the server
-- Bot roster if you run multiple bots (names + Discord user IDs)
+- Can be modified securely via the `/admin` Discord slash commands.
 
 ---
 
@@ -102,7 +82,7 @@ Useful things to include:
 
 ### Prerequisites
 
-- Bun 1.x
+- Node.js (v20+)
 - A Discord bot application with:
   - **Message Content Intent** enabled (Bot → Privileged Gateway Intents)
   - Permissions: View Channels, Send Messages, Send Messages in Threads, Read Message History, Add Reactions, Attach Files
@@ -111,17 +91,19 @@ Useful things to include:
 ### Local dev
 
 ```bash
-bun install
+npm install
 mkdir -p ~/.gemini/channels/discord
 chmod 700 ~/.gemini/channels/discord
 
 cat > ~/.gemini/channels/discord/.env <<EOF
 DISCORD_BOT_TOKEN=your_token_here
 GEMINI_API_KEY=your_key_here
+DISCORD_ADMIN_ID=your_personal_discord_user_id
 # GEMINI_MODEL=gemini-2.0-flash   # optional override
 EOF
 chmod 600 ~/.gemini/channels/discord/.env
 
+# Optionally create a default access.json, though /admin commands can handle this later
 cat > ~/.gemini/channels/discord/access.json <<EOF
 {
   "users": { "YOUR_DISCORD_USER_ID": { "allowed": true } },
@@ -129,39 +111,13 @@ cat > ~/.gemini/channels/discord/access.json <<EOF
 }
 EOF
 
-bun src/gemma.ts
+npm run start
 ```
 
-Expected output: `Gemma online as <bot-username>#XXXX (<bot-id>)`
-
-### Systemd user service (Linux)
-
-Example `~/.config/systemd/user/gemma.service`:
-
-```ini
-[Unit]
-Description=Gemma — Gemini Discord bot
-After=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=%h/repos/gem-discord-bot
-ExecStart=%h/.local/bin/bun src/gemma.ts
-Restart=always
-RestartSec=10
-StandardOutput=append:%h/.gemini/channels/discord/gemma.log
-StandardError=append:%h/.gemini/channels/discord/gemma.log
-
-[Install]
-WantedBy=default.target
+Expected output: 
 ```
-
-Enable and start:
-```bash
-loginctl enable-linger $USER   # so the service survives logout
-systemctl --user daemon-reload
-systemctl --user enable --now gemma
-systemctl --user status gemma
+Gemma online as <bot-username>#XXXX (<bot-id>)
+Slash commands registered.
 ```
 
 ---
@@ -169,7 +125,7 @@ systemctl --user status gemma
 ## Tests
 
 ```bash
-bun test
+npm run test
 ```
 
 Coverage: access filter, attachment processing, history formatting, Gemini response parsing, persona loading, and chunk splitting.
