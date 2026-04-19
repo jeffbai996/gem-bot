@@ -5,7 +5,7 @@ import dotenv from 'dotenv'
 import { AccessManager } from './access.ts'
 import { PersonaLoader } from './persona.ts'
 import { fetchHistory, formatHistory } from './history.ts'
-import { processAttachments, type InputAttachment } from './attachments.ts'
+import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
 import { GeminiClient } from './gemini.ts'
 import { chunk } from './chunk.ts'
 import { adminCommand, executeAdminCommand } from './commands.ts'
@@ -111,7 +111,7 @@ client.on('messageCreate', async (message: Message) => {
       ;(message.channel as any).sendTyping().catch(() => {})
     }, 9000)
 
-    const [history, attachmentResult] = await Promise.all([
+    const [history, attachmentResult, ytResult] = await Promise.all([
       fetchHistory(message.channel as any, message.id).then(msgs => formatHistory(msgs, client.user!.id)),
       processAttachments(
         message.id,
@@ -122,11 +122,15 @@ client.on('messageCreate', async (message: Message) => {
           contentType: a.contentType
         })),
         GEMINI_API_KEY
-      )
+      ),
+      processYouTubeUrls(message.id, message.content, GEMINI_API_KEY)
     ])
 
-    if (attachmentResult.skipped.length > 0) {
-      const notes = attachmentResult.skipped.map(s => `- ${s.name}: ${s.reason}`).join('\n')
+    const allParts = [...attachmentResult.parts, ...ytResult.parts]
+    const allSkipped = [...attachmentResult.skipped, ...ytResult.skipped]
+
+    if (allSkipped.length > 0) {
+      const notes = allSkipped.map(s => `- ${s.name}: ${s.reason}`).join('\n')
       await message.reply({
         content: `skipped some attachments:\n${notes}`,
         allowedMentions: { repliedUser: false }
@@ -137,7 +141,7 @@ client.on('messageCreate', async (message: Message) => {
       systemPrompt: persona.buildSystemPrompt(message.channelId),
       history,
       userMessageText: message.content,
-      userMediaParts: attachmentResult.parts,
+      userMediaParts: allParts,
       userName: message.author.username
     })
 
@@ -167,7 +171,7 @@ client.on('messageCreate', async (message: Message) => {
     }
 
     await Promise.all(tasks)
-    await attachmentResult.cleanup()
+    await Promise.all([attachmentResult.cleanup(), ytResult.cleanup()])
 
   } catch (e: any) {
     console.error('message handler error:', e)

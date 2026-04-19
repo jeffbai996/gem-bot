@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI, SchemaType, type Content, type Part } from '@google/generative-ai'
 import type { GeminiContent } from './history.ts'
-import type { InlinePart, FilePart } from './attachments.ts'
+import type { MediaPart } from './attachments.ts'
 
 export interface ParsedResponse {
   react: string | null
@@ -25,7 +25,7 @@ export interface BuildRequestArgs {
   systemPrompt: string
   history: GeminiContent[]
   userMessageText: string
-  userMediaParts: Array<InlinePart | FilePart>
+  userMediaParts: MediaPart[]
   userName: string
 }
 
