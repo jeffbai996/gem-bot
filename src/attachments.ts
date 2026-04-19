@@ -39,6 +39,10 @@ function stateDir(): string {
   return process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 }
 
+// Cache to map original Discord Attachment URLs to Gemini File API URIs.
+// This prevents redundant uploads of the same media within the bot's lifecycle.
+export const uriCache = new Map<string, string>()
+
 export async function processAttachments(messageId: string, inputs: InputAttachment[], apiKey: string): Promise<ProcessResult> {
   const parts: Array<InlinePart | FilePart> = []
   const skipped: SkippedAttachment[] = []
@@ -50,7 +54,7 @@ export async function processAttachments(messageId: string, inputs: InputAttachm
 
   await fs.mkdir(msgDir, { recursive: true })
 
-  for (const att of inputs) {
+  const processPromises = inputs.map(async (att) => {
     const mime = att.contentType ?? ''
     const isImage = ALLOWED_IMAGE_MIMES.has(mime)
     const isVideo = ALLOWED_VIDEO_MIMES.has(mime)
@@ -59,13 +63,18 @@ export async function processAttachments(messageId: string, inputs: InputAttachm
 
     if (!isImage && !isVideo && !isAudio && !isDoc) {
       skipped.push({ name: att.name, reason: 'unsupported_type' })
-      continue
+      return
     }
 
-    // Check declared size before downloading — skip early to avoid fetching huge files
     if (att.size > MAX_BYTES) {
       skipped.push({ name: att.name, reason: 'too_large' })
-      continue
+      return
+    }
+
+    // Check URI Cache first for media that uses the File API
+    if ((isVideo || isAudio) && uriCache.has(att.url)) {
+      parts.push({ fileData: { mimeType: mime, fileUri: uriCache.get(att.url)! } })
+      return
     }
 
     try {
@@ -74,10 +83,9 @@ export async function processAttachments(messageId: string, inputs: InputAttachm
 
       const buf = Buffer.from(await res.arrayBuffer())
 
-      // Also check actual downloaded size in case declared size was wrong
       if (buf.length > MAX_BYTES) {
         skipped.push({ name: att.name, reason: 'too_large' })
-        continue
+        return
       }
 
       const localPath = path.join(msgDir, att.name)
@@ -86,41 +94,41 @@ export async function processAttachments(messageId: string, inputs: InputAttachm
       if (isImage || isDoc) {
         parts.push({ inlineData: { mimeType: mime, data: buf.toString('base64') } })
       } else {
-        // Video/audio: upload via File API, poll for ACTIVE, then delete local file
         const fileManager = new GoogleAIFileManager(apiKey)
         const uploadResult = await fileManager.uploadFile(localPath, { mimeType: mime, displayName: att.name })
 
-        // Delete local file immediately — don't need it after upload
         fs.rm(localPath, { force: true }).catch(() => {})
 
-        // Poll for ACTIVE state — Gemini may need time to process the video
         let file = uploadResult.file
         let retries = 0
         const MAX_RETRIES = 10
         while (file.state === 'PROCESSING' && retries < MAX_RETRIES) {
           await new Promise(r => setTimeout(r, 2000))
-          const refreshed = await fileManager.getFile(file.name)
-          file = refreshed
+          file = await fileManager.getFile(file.name)
           retries++
         }
 
         if (file.state !== 'ACTIVE') {
           skipped.push({ name: att.name, reason: 'processing_timeout' })
-          continue
+          return
         }
 
+        uriCache.set(att.url, file.uri)
         parts.push({ fileData: { mimeType: mime, fileUri: file.uri } })
       }
     } catch {
       skipped.push({ name: att.name, reason: 'download_failed' })
     }
-  }
+  })
+
+  await Promise.allSettled(processPromises)
 
   return {
     parts,
     skipped,
     cleanup: async () => {
-      await fs.rm(msgDir, { recursive: true, force: true })
+      await fs.rm(msgDir, { recursive: true, force: true }).catch(() => {})
     }
   }
 }
+

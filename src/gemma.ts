@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, Partials, ActivityType, type Message } from 'discord.js'
+import { Client, GatewayIntentBits, Partials, ActivityType, REST, Routes, type Message } from 'discord.js'
 import path from 'path'
 import os from 'os'
 import dotenv from 'dotenv'
@@ -8,6 +8,7 @@ import { fetchHistory, formatHistory } from './history.ts'
 import { processAttachments, type InputAttachment } from './attachments.ts'
 import { GeminiClient } from './gemini.ts'
 import { chunk } from './chunk.ts'
+import { adminCommand, executeAdminCommand } from './commands.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
@@ -58,12 +59,32 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message, Partials.User]
 })
 
-client.once('ready', () => {
+client.once('ready', async () => {
   console.error(`Gemma online as ${client.user?.tag} (${client.user?.id})`)
   client.user?.setPresence({
     status: 'online',
     activities: [{ name: '🧠 hallucinating confidently', type: ActivityType.Playing }]
   })
+
+  try {
+    const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN)
+    await rest.put(
+      Routes.applicationCommands(client.user!.id),
+      { body: [adminCommand.toJSON()] }
+    )
+    console.error('Slash commands registered.')
+  } catch (error) {
+    console.error('Failed to register slash commands:', error)
+  }
+})
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return
+
+  if (interaction.commandName === 'admin') {
+    const adminId = process.env.DISCORD_ADMIN_ID
+    await executeAdminCommand(interaction, access, persona, adminId)
+  }
 })
 
 client.on('messageCreate', async (message: Message) => {
@@ -78,10 +99,17 @@ client.on('messageCreate', async (message: Message) => {
   })
   if (!gate) return
 
+  let typingInterval: ReturnType<typeof setInterval> | null = null
+
   try {
     // Fetch partial DM channels so we can send/read them
     if (message.channel.partial) await message.channel.fetch()
+    
+    // Start typing heartbeat
     ;(message.channel as any).sendTyping().catch(() => {})
+    typingInterval = setInterval(() => {
+      ;(message.channel as any).sendTyping().catch(() => {})
+    }, 9000)
 
     const [history, attachmentResult] = await Promise.all([
       fetchHistory(message.channel as any, message.id).then(msgs => formatHistory(msgs, client.user!.id)),
@@ -119,8 +147,17 @@ client.on('messageCreate', async (message: Message) => {
       tasks.push(message.react(parsed.react).catch(e => console.error('react failed:', e)))
     }
 
+    let fullReply = ''
+    if (parsed.thinking) {
+      const quotedThinking = parsed.thinking.split('\n').map(line => `> ${line}`).join('\n')
+      fullReply += `💭 **Thinking:**\n${quotedThinking}\n\n`
+    }
     if (parsed.reply) {
-      const pieces = chunk(parsed.reply, 2000, 'newline')
+      fullReply += parsed.reply
+    }
+
+    if (fullReply) {
+      const pieces = chunk(fullReply, 2000, 'newline')
       for (const piece of pieces) {
         tasks.push((message.channel as any).send({
           content: piece,
@@ -141,6 +178,8 @@ client.on('messageCreate', async (message: Message) => {
     try {
       await message.reply({ content: msg, allowedMentions: { repliedUser: false } })
     } catch { /* nothing to do */ }
+  } finally {
+    if (typingInterval) clearInterval(typingInterval)
   }
 })
 

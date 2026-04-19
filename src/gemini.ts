@@ -4,6 +4,7 @@ import type { InlinePart, FilePart } from './attachments.ts'
 
 export interface ParsedResponse {
   react: string | null
+  thinking: string | null
   reply: string | null
 }
 
@@ -11,11 +12,12 @@ export function parseResponse(text: string): ParsedResponse {
   try {
     const obj = JSON.parse(text)
     const react = typeof obj.react === 'string' && obj.react.length > 0 ? obj.react : null
+    const thinking = typeof obj.thinking === 'string' && obj.thinking.length > 0 ? obj.thinking : null
     const reply = typeof obj.reply === 'string' && obj.reply.length > 0 ? obj.reply : null
-    return { react, reply }
+    return { react, thinking, reply }
   } catch {
     // Gemini returned something that isn't JSON — treat the whole text as the reply
-    return { react: null, reply: text.trim() || null }
+    return { react: null, thinking: null, reply: text.trim() || null }
   }
 }
 
@@ -40,12 +42,14 @@ export class GeminiClient {
     const genAI = new GoogleGenerativeAI(apiKey)
     this.model = genAI.getGenerativeModel({
       model: modelName,
+      tools: [{ googleSearch: {} }, { codeExecution: {} }],
       generationConfig: {
         responseMimeType: 'application/json',
         responseSchema: {
           type: SchemaType.OBJECT,
           properties: {
             react: { type: SchemaType.STRING, nullable: true },
+            thinking: { type: SchemaType.STRING, nullable: true },
             reply: { type: SchemaType.STRING, nullable: true }
           },
           required: ['react', 'reply']

@@ -2,6 +2,8 @@ export function chunk(text: string, limit: number = 2000, mode: 'length' | 'newl
   if (text.length <= limit) return [text]
   
   const chunks: string[] = []
+  let activeCodeLanguage: string | null = null
+  let inCodeBlock = false
   
   while (text.length > 0) {
     if (text.length <= limit) {
@@ -9,31 +11,56 @@ export function chunk(text: string, limit: number = 2000, mode: 'length' | 'newl
       break
     }
     
+    // We need to leave room to append "```\n" if we have to close an open block.
+    // 4 characters for closing backticks + newline.
+    const effectiveLimit = inCodeBlock ? limit - 4 : limit
+    
     let splitAt = -1
     
     if (mode === 'newline') {
-      // Prefer paragraph break (double newline) if > 50% through
-      const dbl = text.lastIndexOf('\n\n', limit)
-      if (dbl > limit * 0.5) splitAt = dbl + 2
+      const dbl = text.lastIndexOf('\n\n', effectiveLimit)
+      if (dbl > effectiveLimit * 0.5) splitAt = dbl + 2
       
-      // Then line break
       if (splitAt === -1) {
-        const sgl = text.lastIndexOf('\n', limit)
-        if (sgl > limit * 0.5) splitAt = sgl + 1
+        const sgl = text.lastIndexOf('\n', effectiveLimit)
+        if (sgl > effectiveLimit * 0.5) splitAt = sgl + 1
       }
       
-      // Then space
       if (splitAt === -1) {
-        const sp = text.lastIndexOf(' ', limit)
+        const sp = text.lastIndexOf(' ', effectiveLimit)
         if (sp > 0) splitAt = sp + 1
       }
     }
     
-    // Hard cut if no suitable breakpoint
-    if (splitAt === -1) splitAt = limit
+    if (splitAt === -1) splitAt = effectiveLimit
     
-    chunks.push(text.slice(0, splitAt))
-    text = text.slice(splitAt)
+    let currentChunk = text.slice(0, splitAt)
+    let nextChunkStart = text.slice(splitAt)
+
+    // Analyze backticks in the current chunk to update state
+    const backtickRegex = /```(.*?)(\n|$)/g
+    let match
+    while ((match = backtickRegex.exec(currentChunk)) !== null) {
+      inCodeBlock = !inCodeBlock
+      if (inCodeBlock) {
+        activeCodeLanguage = match[1].trim()
+      } else {
+        activeCodeLanguage = null
+      }
+    }
+
+    // If a block is still open at the split point, properly close and reopen it
+    if (inCodeBlock) {
+      // Don't leave hanging partial code block syntax if it was right at the split
+      if (!currentChunk.endsWith('\n')) currentChunk += '\n'
+      currentChunk += '```'
+      
+      const langPrefix = activeCodeLanguage ? activeCodeLanguage : ''
+      nextChunkStart = '```' + langPrefix + '\n' + nextChunkStart
+    }
+
+    chunks.push(currentChunk)
+    text = nextChunkStart
   }
   
   return chunks

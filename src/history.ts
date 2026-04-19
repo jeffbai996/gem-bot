@@ -1,7 +1,9 @@
 import type { TextChannel, DMChannel, ThreadChannel } from 'discord.js'
+import { uriCache } from './attachments.ts'
 
 export interface HistoryAttachment {
   name: string
+  url: string
   mimeType: string | null
 }
 
@@ -14,7 +16,7 @@ export interface HistoryMessage {
 
 export interface GeminiContent {
   role: 'user' | 'model'
-  parts: { text: string }[]
+  parts: Array<{ text: string } | { fileData: { mimeType: string, fileUri: string } }>
 }
 
 const HISTORY_LIMIT = 20
@@ -32,6 +34,7 @@ export async function fetchHistory(
       content: m.content,
       attachments: [...m.attachments.values()].map(a => ({
         name: a.name,
+        url: a.url,
         mimeType: a.contentType
       }))
     })
@@ -52,16 +55,30 @@ function describeAttachment(att: HistoryAttachment): string {
 export function formatHistory(messages: HistoryMessage[], selfId: string): GeminiContent[] {
   return messages.map(m => {
     const isSelf = m.authorId === selfId
-    const attachmentText = m.attachments.map(describeAttachment).join(' ')
+    const parts: GeminiContent['parts'] = []
+    
+    const unCachedAttachments: HistoryAttachment[] = []
+
+    // Inject cached files natively; defer others to text descriptions
+    for (const att of m.attachments) {
+      if (uriCache.has(att.url) && att.mimeType) {
+        parts.push({ fileData: { mimeType: att.mimeType, fileUri: uriCache.get(att.url)! } })
+      } else {
+        unCachedAttachments.push(att)
+      }
+    }
+
+    const attachmentText = unCachedAttachments.map(describeAttachment).join(' ')
     let text: string
     if (isSelf) {
-      // Bot's own messages: no username prefix
       text = [m.content, attachmentText].filter(Boolean).join(' ')
     } else {
-      // Other users: prefix with username
       const body = [m.content, attachmentText].filter(Boolean).join(' ')
       text = `${m.authorName}: ${body}`
     }
-    return { role: isSelf ? 'model' : 'user', parts: [{ text }] } as GeminiContent
+
+    parts.unshift({ text })
+
+    return { role: isSelf ? 'model' : 'user', parts }
   })
 }

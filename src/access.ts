@@ -44,6 +44,10 @@ export class AccessManager {
     }
   }
 
+  async save(): Promise<void> {
+    await fs.writeFile(this.file, JSON.stringify(this.data, null, 2), 'utf8')
+  }
+
   canHandle({ channelId, userId, isMention }: CanHandleInput): boolean {
     const user = this.data.users[userId]
     if (!user?.allowed) return false
@@ -54,5 +58,20 @@ export class AccessManager {
     if (channel.requireMention && !isMention) return false
 
     return true
+  }
+
+  async allowUser(userId: string): Promise<void> {
+    this.data.users[userId] = { allowed: true }
+    await this.save()
+  }
+
+  async revokeUser(userId: string): Promise<void> {
+    this.data.users[userId] = { allowed: false }
+    await this.save()
+  }
+
+  async setChannel(channelId: string, enabled: boolean, requireMention: boolean): Promise<void> {
+    this.data.channels[channelId] = { enabled, requireMention }
+    await this.save()
   }
 }

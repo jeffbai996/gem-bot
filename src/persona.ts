@@ -16,14 +16,16 @@ function squadDir(): string {
 export class PersonaLoader {
   private persona: string = DEFAULT_PERSONA
   private memories: string = ''
+  private activePersonaFile: string = 'persona.md'
 
-  async load(): Promise<void> {
-    this.persona = await this.readPersona()
+  async load(filename?: string): Promise<void> {
+    if (filename) this.activePersonaFile = filename
+    this.persona = await this.readPersona(this.activePersonaFile)
     this.memories = await this.readMemories()
   }
 
-  private async readPersona(): Promise<string> {
-    const file = path.join(stateDir(), 'persona.md')
+  private async readPersona(filename: string): Promise<string> {
+    const file = path.join(stateDir(), filename)
     try {
       const text = (await fs.readFile(file, 'utf8')).trim()
       return text || DEFAULT_PERSONA
