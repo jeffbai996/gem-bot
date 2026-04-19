@@ -49,6 +49,14 @@ The system prompt is composed at runtime from:
 
 ---
 
+## Future Roadmap
+- **Token-Aware Context Windowing:** Replace the hardcoded 20-message limit with a dynamic token counter to maximize context efficiency without hitting API limits.
+- **Voice Channel Intake:** Enable the bot to join Discord Voice Channels and transcribe/process audio streams using Gemini's native multimodal capabilities.
+- **Long-term SQLite Memory:** Implement a local database to persist user facts and preferences across sessions, reducing reliance on the short-term message buffer.
+- **Agent Handoff:** Give Gemma the ability to delegate specific sub-tasks to other local CLI tools or external webhooks (e.g., triggering code reviews via `code-review-tool`).
+
+---
+
 ## State directory
 
 All runtime state lives in `~/.gemini/channels/discord/` (override via `DISCORD_STATE_DIR`):
