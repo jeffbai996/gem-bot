@@ -47,15 +47,8 @@ export const geminiCommand = new SlashCommandBuilder()
       .setDescription('Hot-swap the bot persona')
       .addStringOption(option => option.setName('filename').setDescription('The persona filename (e.g. persona.md)').setRequired(true))
   )
-  .addSubcommand(subcommand =>
-    subcommand
-      .setName('backfill')
-      .setDescription('Backfill historical messages into semantic memory')
-      .addChannelOption(option => option.setName('channel').setDescription('Channel to scrape').setRequired(true))
-      .addIntegerOption(option => option.setName('limit').setDescription('Max messages to embed').setMinValue(1).setMaxValue(500).setRequired(false))
-  )
 
-  export async function executeGeminiCommand(interaction: ChatInputCommandInteraction, access: AccessManager, persona: PersonaLoader, gemini: GeminiClient, adminUserId?: string) {
+export async function executeGeminiCommand(interaction: ChatInputCommandInteraction, access: AccessManager, persona: PersonaLoader, adminUserId?: string) {
   // Extra layer of security: only specific user ID from .env can use this, 
   // or anyone with Server Admin if no specific ID is set.
   if (adminUserId && interaction.user.id !== adminUserId) {
@@ -95,37 +88,8 @@ export const geminiCommand = new SlashCommandBuilder()
       await persona.load(filename)
       return interaction.reply({ content: `✅ Persona swapped to \`${filename}\`.`, ephemeral: true })
     }
-
-    if (subcommand === 'backfill') {
-      const channel = interaction.options.getChannel('channel', true) as TextChannel
-      const limit = interaction.options.getInteger('limit') ?? 100
-      
-      await interaction.reply({ content: `⏳ Beginning backfill for <#${channel.id}> (max ${limit} messages). This might take a while...`, ephemeral: true })
-      
-      try {
-        const messages = await channel.messages.fetch({ limit })
-        let count = 0
-        for (const msg of messages.values()) {
-          if (!msg.content || msg.content.trim().length === 0) continue
-          try {
-            const emb = await gemini.embed(msg.content)
-            insertMessage(msg.id, msg.channelId, msg.author.username, msg.content, msg.createdAt.toISOString(), emb)
-            count++
-          } catch (e) {
-             console.error(`Failed to embed msg ${msg.id}:`, e)
-          }
-        }
-        return interaction.followUp({ content: `✅ Backfill complete. Embedded ${count} messages into semantic memory.`, ephemeral: true })
-      } catch (e: any) {
-        return interaction.followUp({ content: `❌ Backfill failed: ${e.message}`, ephemeral: true })
-      }
-    }
   } catch (error: any) {
     console.error('/gemini command error:', error)
-    if (!interaction.replied) {
-      return interaction.reply({ content: `❌ Error executing command: ${error.message}`, ephemeral: true })
-    } else {
-      return interaction.followUp({ content: `❌ Error executing command: ${error.message}`, ephemeral: true })
-    }
+    return interaction.reply({ content: `❌ Error executing command: ${error.message}`, ephemeral: true })
   }
 }

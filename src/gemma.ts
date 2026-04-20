@@ -9,7 +9,6 @@ import { processAttachments, processYouTubeUrls, type InputAttachment } from './
 import { GeminiClient } from './gemini.ts'
 import { chunk } from './chunk.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
-import { insertMessage } from './db.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
@@ -82,9 +81,9 @@ client.once('ready', async () => {
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return
 
-  if (interaction.commandName === 'admin') {
+  if (interaction.commandName === 'gemini') {
     const adminId = process.env.DISCORD_ADMIN_ID
-    await executeAdminCommand(interaction, access, persona, gemini, adminId)
+    await executeGeminiCommand(interaction, access, persona, adminId)
   }
 })
 
@@ -98,28 +97,6 @@ client.on('messageCreate', async (message: Message) => {
     userId: message.author.id,
     isMention
   })
-  
-  // Background Memory Ingestion
-  // If the user is allowed to speak in the channel, log the message to SQLite VSS.
-  // We do this independently of the `gate` (which requires mention) so the bot
-  // learns from passive conversation in allowed channels.
-  const userAllowed = access.data.users[message.author.id]?.allowed
-  const channelEnabled = access.data.channels[message.channelId]?.enabled
-  if (userAllowed && channelEnabled && message.content.trim()) {
-    gemini.embed(message.content)
-      .then(embedding => {
-        insertMessage(
-          message.id,
-          message.channelId,
-          message.author.username,
-          message.content,
-          message.createdAt.toISOString(),
-          embedding
-        )
-      })
-      .catch(e => console.error('Failed to embed message for memory:', e))
-  }
-
   if (!gate) return
 
   let typingInterval: ReturnType<typeof setInterval> | null = null
