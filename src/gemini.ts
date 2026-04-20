@@ -344,8 +344,10 @@ export function buildUserTurn(args: BuildRequestArgs): Content {
 
 export class GeminiClient {
   private model: ReturnType<GoogleGenerativeAI['getGenerativeModel']>
+  private apiKey: string
 
   constructor(apiKey: string, modelName: string = 'gemini-2.0-flash') {
+    this.apiKey = apiKey
     const genAI = new GoogleGenerativeAI(apiKey)
     this.model = genAI.getGenerativeModel({
       model: modelName,
@@ -370,11 +372,31 @@ export class GeminiClient {
   }
 
   async embed(text: string): Promise<number[]> {
-    // Note: embedContent requires an embedding model. We instantiate a separate model for this.
-    const genAI = new GoogleGenerativeAI(this.model.apiKey)
-    const embeddingModel = genAI.getGenerativeModel({ model: 'text-embedding-004' })
-    const result = await embeddingModel.embedContent(text)
-    return result.embedding.values
+    // gemini-embedding-001 is the current embedding model; text-embedding-004
+    // returned 404 as of 2026-04-20. Requesting 768-dim output to match the
+    // sqlite-vss schema (db.ts creates vss_messages with embedding(768)).
+    // The JS SDK's embedContent doesn't expose outputDimensionality directly,
+    // so we hit the REST endpoint manually.
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${this.apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: { parts: [{ text }] },
+          outputDimensionality: 768
+        })
+      }
+    )
+    if (!res.ok) {
+      throw new Error(`embedContent HTTP ${res.status}: ${await res.text()}`)
+    }
+    const data = await res.json() as { embedding?: { values?: number[] } }
+    const values = data.embedding?.values
+    if (!Array.isArray(values) || values.length !== 768) {
+      throw new Error(`embedContent returned unexpected shape: ${JSON.stringify(data).slice(0, 200)}`)
+    }
+    return values
   }
 
   async respond(
