@@ -163,6 +163,60 @@ describe('parseResponse', () => {
       assert.equal(r.thinking, 'I am ponder')
     })
   })
+
+  // Gemma 2026-04-20 bug: Gemini's streaming/final output inserted literal
+  // newlines BEFORE JSON keys and between tokens — "\nreact" instead of
+  // "react". The field-key regex didn't match, JSON.parse rejected the
+  // literal newlines, and parseResponse dumped the entire JSON blob as
+  // reply. Need a pre-normalizer that strips whitespace OUTSIDE string
+  // literals while preserving it INSIDE strings.
+  describe('newline-tolerant structural parsing', () => {
+    test('tolerates newline between quote and key name', () => {
+      const mangled = `{"\nreact": "😳", "thinking": null, "reply": "yo"}`
+      const r = parseResponse(mangled)
+      assert.equal(r.react, '😳')
+      assert.equal(r.reply, 'yo')
+    })
+
+    test('tolerates newlines between keys, colons, and values', () => {
+      const mangled = `{
+"react"
+: "👍"
+,
+"thinking"
+: null
+,
+"reply"
+: "hi"
+}`
+      const r = parseResponse(mangled)
+      assert.equal(r.react, '👍')
+      assert.equal(r.reply, 'hi')
+    })
+
+    test('preserves literal newlines inside string values', () => {
+      const mangled = `{"react": null, "thinking": null, "reply": "line one\nline two\n\nparagraph two"}`
+      const r = parseResponse(mangled)
+      assert.equal(r.reply, 'line one\nline two\n\nparagraph two')
+    })
+
+    test('preserves escaped newlines inside string values', () => {
+      const r = parseResponse('{"react":null,"thinking":null,"reply":"line one\\nline two"}')
+      assert.equal(r.reply, 'line one\nline two')
+    })
+
+    // The exact bug report's input pattern: newline between { and "key"
+    // plus newlines inside string values. Everything should parse.
+    test('real-world Gemma Apr 20 2026 output', () => {
+      const mangled = `{"\nreact": "😳", "thinking": "Claudsson was looking at current/spot\nNQ or stale data. Search results for April 20, 2026 show 26,600s.", "reply": "Yeah, Claudsson is tripping on the quote\n. He probably looked at spot NDX.\n\nNQ=F is in the 26,600s."}`
+      const r = parseResponse(mangled)
+      assert.equal(r.react, '😳')
+      assert.match(r.thinking ?? '', /Claudsson was looking/)
+      assert.match(r.reply ?? '', /Claudsson is tripping/)
+      // Newlines inside the reply string must be preserved
+      assert.match(r.reply ?? '', /\n\nNQ=F/)
+    })
+  })
 })
 
 describe('formatSystemPrompt', () => {

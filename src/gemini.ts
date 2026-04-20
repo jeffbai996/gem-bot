@@ -77,6 +77,58 @@ function extractJsonObject(s: string): string | null {
   return null
 }
 
+// Gemini's streaming output routinely violates JSON spec in two ways:
+// 1. Literal newlines between structural tokens (even between `"` and the
+//    first char of a key — breaks JSON.parse and the "key" regex)
+// 2. Literal newlines inside string VALUES (JSON spec requires \n escape)
+//
+// This pre-normalizer state-machines the input: outside strings, drops
+// whitespace between tokens; inside strings, escapes control chars so
+// JSON.parse accepts them (and we get the original newlines back via the
+// parse's own unescaping).
+export function normalizeJsonWhitespace(s: string): string {
+  let out = ''
+  let inString = false
+  let escaped = false
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]
+    if (inString) {
+      if (escaped) {
+        out += c
+        escaped = false
+        continue
+      }
+      if (c === '\\') {
+        out += c
+        escaped = true
+        continue
+      }
+      if (c === '"') {
+        out += c
+        inString = false
+        continue
+      }
+      // Control chars INSIDE strings need to be escaped to produce valid JSON.
+      // Tab stays as-is because it's legal in JSON strings (well, actually
+      // also technically not — per RFC 8259 U+0000..U+001F must be escaped —
+      // but JSON.parse accepts raw tabs in practice).
+      if (c === '\n') { out += '\\n'; continue }
+      if (c === '\r') { out += '\\r'; continue }
+      out += c
+    } else {
+      if (c === '"') {
+        inString = true
+        out += c
+      } else if (c === '\n' || c === '\r' || c === '\t') {
+        // drop — whitespace between tokens, not inside a value
+      } else {
+        out += c
+      }
+    }
+  }
+  return out
+}
+
 export function parseResponse(text: string, isPartial: boolean = false): ParsedResponse {
   let cleaned = text.trim()
   const fence = cleaned.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?(?:```)?$/i)
@@ -85,19 +137,24 @@ export function parseResponse(text: string, isPartial: boolean = false): ParsedR
   const jsonStr = extractJsonObject(cleaned)
   if (jsonStr) {
     try {
-      // First attempt: strict JSON parsing (fastest and most reliable if model behaves)
-      // We do a quick sanitize to fix literal newlines in strings, which Gemini often outputs.
-      // A simple regex to replace literal newlines that are inside quotes would be complex,
-      // but we can try replacing all newlines with \n. However, that breaks formatting.
-      // So we just try parsing, and if it fails, fall back to regex.
-      const obj = JSON.parse(jsonStr)
+      // Normalize structural whitespace (newlines between tokens). This
+      // leaves string contents untouched — only whitespace OUTSIDE string
+      // literals is dropped.
+      const obj = JSON.parse(normalizeJsonWhitespace(jsonStr))
+      // Gemini sometimes inserts whitespace INSIDE key names too —
+      // e.g. `{"\nreact": ...}` parses as key "\nreact", not "react".
+      // Trim keys and reassemble so obj.react lookups work.
+      const trimmed: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(obj)) trimmed[k.trim()] = v
       return {
-        react: normalize(obj.react),
-        thinking: normalize(obj.thinking),
-        reply: normalize(obj.reply)
+        react: normalize(trimmed.react),
+        thinking: normalize(trimmed.thinking),
+        reply: normalize(trimmed.reply)
       }
     } catch {
-      // fall through to regex extraction
+      // fall through to regex extraction (handles cases where the model
+      // emitted literal newlines INSIDE a value string — JSON spec forbids
+      // that, so normalize + JSON.parse still fails)
     }
   }
 
