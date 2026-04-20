@@ -77,8 +77,6 @@ function extractJsonObject(s: string): string | null {
 }
 
 export function parseResponse(text: string, isPartial: boolean = false): ParsedResponse {
-  // Strip common code-fence wrappers Gemini adds when tools are enabled and
-  // strict JSON mode is not. ```json ... ``` or bare ``` ... ```.
   let cleaned = text.trim()
   const fence = cleaned.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?(?:```)?$/i)
   if (fence) cleaned = fence[1].trim()
@@ -86,6 +84,11 @@ export function parseResponse(text: string, isPartial: boolean = false): ParsedR
   const jsonStr = extractJsonObject(cleaned)
   if (jsonStr) {
     try {
+      // First attempt: strict JSON parsing (fastest and most reliable if model behaves)
+      // We do a quick sanitize to fix literal newlines in strings, which Gemini often outputs.
+      // A simple regex to replace literal newlines that are inside quotes would be complex,
+      // but we can try replacing all newlines with \n. However, that breaks formatting.
+      // So we just try parsing, and if it fails, fall back to regex.
       const obj = JSON.parse(jsonStr)
       return {
         react: normalize(obj.react),
@@ -93,36 +96,58 @@ export function parseResponse(text: string, isPartial: boolean = false): ParsedR
         reply: normalize(obj.reply)
       }
     } catch {
-      // fall through to plain-text fallback or partial extraction
+      // fall through to regex extraction
     }
   }
 
-  if (isPartial) {
-    const extractString = (key: string) => {
-      const regex = new RegExp(`"${key}"\\s*:\\s*"([^]*?)(?<!\\\\)"(?:\\s*,|\\s*})?`, 'i')
-      const match = cleaned.match(regex)
-      if (match) {
-        try { return JSON.parse(`"${match[1]}"`) } catch { return match[1] }
+  // Regex extraction fallback: works for partial streams AND broken JSON (e.g. literal newlines in strings)
+  const extractString = (key: string) => {
+    // Match the key, then capture everything until the next key or the end of the JSON object.
+    // We look for a trailing quote followed by either a comma, a closing brace, or end of string.
+    const regex = new RegExp(`"${key}"\\s*:\\s*"([^]*?)(?<!\\\\)"(?:\\s*,|\\s*})`, 'i')
+    const match = cleaned.match(regex)
+    if (match) {
+      try { 
+        // We use JSON.parse here to unescape \n, \", etc.
+        // But if the model put literal newlines, JSON.parse fails.
+        // So we sanitize literal newlines into escaped \n for the parse step.
+        const sanitized = match[1].replace(/\n/g, '\\n').replace(/\r/g, '\\r')
+        return JSON.parse(`"${sanitized}"`) 
+      } catch { 
+        return match[1] 
       }
+    }
+    
+    // If it's partial and the value is still open
+    if (isPartial) {
       const openRegex = new RegExp(`"${key}"\\s*:\\s*"([^]*)`, 'i')
       const openMatch = cleaned.match(openRegex)
       if (openMatch) {
         let val = openMatch[1]
         if (val.endsWith('}')) val = val.slice(0, -1).trim()
         if (val.endsWith('"')) val = val.slice(0, -1)
-        try { return JSON.parse(`"${val}"`) } catch { return val }
+        try { 
+          const sanitized = val.replace(/\n/g, '\\n').replace(/\r/g, '\\r')
+          return JSON.parse(`"${sanitized}"`) 
+        } catch { 
+          return val 
+        }
       }
-      return null
     }
-
-    return {
-      react: extractString('react'),
-      thinking: extractString('thinking'),
-      reply: extractString('reply')
-    }
+    return null
   }
 
-  return { react: null, thinking: null, reply: cleaned || null }
+  const react = extractString('react')
+  const thinking = extractString('thinking')
+  const reply = extractString('reply')
+
+  // If we couldn't extract a reply via regex AND we aren't partial,
+  // it means the model completely ignored the JSON instruction. Return raw text.
+  if (!reply && !isPartial && !react && !thinking) {
+    return { react: null, thinking: null, reply: cleaned || null }
+  }
+
+  return { react, thinking, reply }
 }
 
 // When tools (googleSearch/codeExecution) are enabled, the response is a
@@ -270,6 +295,14 @@ export class GeminiClient {
       model: modelName,
       tools: [{ googleSearch: {} }, { codeExecution: {} }]
     })
+  }
+
+  async embed(text: string): Promise<number[]> {
+    // Note: embedContent requires an embedding model. We instantiate a separate model for this.
+    const genAI = new GoogleGenerativeAI(this.model.apiKey)
+    const embeddingModel = genAI.getGenerativeModel({ model: 'text-embedding-004' })
+    const result = await embeddingModel.embedContent(text)
+    return result.embedding.values
   }
 
   async respond(
