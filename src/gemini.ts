@@ -1,7 +1,8 @@
-import { GoogleGenerativeAI, type Content, type Part } from '@google/generative-ai'
+import { GoogleGenerativeAI, SchemaType, type Content, type Part } from '@google/generative-ai'
 import type { GeminiContent } from './history.ts'
 import type { MediaPart } from './attachments.ts'
 import type { ThinkingMode } from './access.ts'
+import { searchMessages } from './db.ts'
 
 // Appended to every system prompt. Needed because tools (googleSearch +
 // codeExecution) are incompatible with responseMimeType:'application/json' +
@@ -274,6 +275,7 @@ export interface BuildRequestArgs {
   userMessageText: string
   userMediaParts: MediaPart[]
   userName: string
+  channelId?: string       // Passed so we can execute channel-specific search_memory
   thinkingMode?: ThinkingMode  // default "auto"
 }
 
@@ -288,12 +290,25 @@ export class GeminiClient {
 
   constructor(apiKey: string, modelName: string = 'gemini-2.0-flash') {
     const genAI = new GoogleGenerativeAI(apiKey)
-    // Can't use responseMimeType:'application/json' + responseSchema together
-    // with tools — Gemini rejects that combo. Structured output comes from the
-    // system prompt instruction + permissive parseResponse.
     this.model = genAI.getGenerativeModel({
       model: modelName,
-      tools: [{ googleSearch: {} }, { codeExecution: {} }]
+      tools: [
+        { googleSearch: {} }, 
+        { codeExecution: {} },
+        {
+          functionDeclarations: [
+            {
+              name: 'search_memory',
+              description: 'Search past Discord messages for context by semantic meaning. Use this when asked about past events, previous discussions, or if you need more context from history.',
+              parameters: {
+                type: SchemaType.OBJECT,
+                properties: { query: { type: SchemaType.STRING, description: 'The semantic search query' } },
+                required: ['query']
+              }
+            }
+          ]
+        }
+      ]
     })
   }
 
@@ -312,52 +327,139 @@ export class GeminiClient {
     const userTurn = buildUserTurn(args)
     const systemText = formatSystemPrompt(args.systemPrompt, args.thinkingMode ?? 'auto')
     
-    if (onProgress) {
-      const result = await this.model.generateContentStream({
-        systemInstruction: { role: 'system', parts: [{ text: systemText }] },
-        contents: [...args.history, userTurn]
-      })
+    let activeContents: Content[] = [...args.history, userTurn]
+    let meta: RespondMetadata | null = null
+    let finalParsed: ParsedResponse = { react: null, thinking: null, reply: null }
 
-      let accumulatedText = ''
-      for await (const chunk of result.stream) {
-        const parts = chunk.candidates?.[0]?.content?.parts as any[] | undefined
-        const textChunk = extractModelText(parts)
-        if (textChunk) {
-          accumulatedText += textChunk
-          onProgress(parseResponse(accumulatedText, true))
+    // RAG loop for function calls (max 3 iterations)
+    for (let iteration = 0; iteration < 3; iteration++) {
+      if (onProgress) {
+        const result = await this.model.generateContentStream({
+          systemInstruction: { role: 'system', parts: [{ text: systemText }] },
+          contents: activeContents
+        })
+
+        let accumulatedText = ''
+        let functionCallReceived: any = null
+
+        for await (const chunk of result.stream) {
+          const parts = chunk.candidates?.[0]?.content?.parts as any[] | undefined
+          
+          // Check if this chunk includes a function call
+          const fnCallPart = parts?.find(p => p.functionCall)
+          if (fnCallPart) functionCallReceived = fnCallPart.functionCall
+
+          const textChunk = extractModelText(parts)
+          if (textChunk && !functionCallReceived) {
+            accumulatedText += textChunk
+            onProgress(parseResponse(accumulatedText, true))
+          }
+        }
+
+        const response = await result.response
+        const candidate = response.candidates?.[0]
+        
+        // If there was no function call, we are done
+        if (!functionCallReceived && (!candidate?.content?.parts || !candidate.content.parts.some(p => p.functionCall))) {
+          const parts = candidate?.content?.parts as any[] | undefined
+          const text = extractModelText(parts)
+          finalParsed = parseResponse(text)
+          meta = {
+            groundingSources: extractGroundingSources(candidate),
+            codeArtifacts: extractCodeArtifacts(parts),
+            usage: extractUsage(response),
+            finishReason: typeof candidate?.finishReason === 'string' ? candidate.finishReason : null,
+            flaggedSafety: extractFlaggedSafety(candidate)
+          }
+          break
+        }
+
+        // We got a function call, execute it
+        const fnCall = functionCallReceived || candidate!.content.parts.find(p => p.functionCall)!.functionCall
+        
+        // Append the model's functionCall to our working history so the API knows the state
+        activeContents.push({ role: 'model', parts: [{ functionCall: fnCall }] })
+
+        if (fnCall.name === 'search_memory' && args.channelId) {
+          const query = fnCall.args.query
+          console.error(`[RAG] Searching memory for query: "${query}" in channel ${args.channelId}`)
+          try {
+            const queryEmb = await this.embed(query)
+            const results = searchMessages(args.channelId, queryEmb, 10)
+            const formattedResults = results.map(r => `[${r.timestamp}] ${r.author_name}: ${r.content}`).join('\n')
+            
+            // Append the function response
+            activeContents.push({
+              role: 'user', // Actually should be function response part in a model/user turn depending on API
+              parts: [{
+                functionResponse: {
+                  name: 'search_memory',
+                  response: { result: formattedResults || "No matching messages found in memory." }
+                }
+              }]
+            })
+            // Loop restarts to generate content again based on this new context
+          } catch (e: any) {
+            console.error('[RAG] Error searching memory:', e)
+            activeContents.push({
+              role: 'user',
+              parts: [{ functionResponse: { name: 'search_memory', response: { error: String(e) } } }]
+            })
+          }
+        } else {
+          // Unsupported function
+          activeContents.push({
+            role: 'user',
+            parts: [{ functionResponse: { name: fnCall.name, response: { error: "Unsupported function" } } }]
+          })
+        }
+      } else {
+        // Non-streaming fallback
+        const result = await this.model.generateContent({
+          systemInstruction: { role: 'system', parts: [{ text: systemText }] },
+          contents: activeContents
+        })
+        const candidate = result.response.candidates?.[0]
+        const fnCall = candidate?.content?.parts?.find(p => p.functionCall)?.functionCall
+        
+        if (!fnCall) {
+          const parts = candidate?.content?.parts as any[] | undefined
+          const text = extractModelText(parts)
+          finalParsed = parseResponse(text)
+          meta = {
+            groundingSources: extractGroundingSources(candidate),
+            codeArtifacts: extractCodeArtifacts(parts),
+            usage: extractUsage(result.response),
+            finishReason: typeof candidate?.finishReason === 'string' ? candidate.finishReason : null,
+            flaggedSafety: extractFlaggedSafety(candidate)
+          }
+          break
+        }
+
+        activeContents.push({ role: 'model', parts: [{ functionCall: fnCall }] })
+
+        if (fnCall.name === 'search_memory' && args.channelId) {
+          try {
+            const queryEmb = await this.embed(fnCall.args.query)
+            const results = searchMessages(args.channelId, queryEmb, 10)
+            const formattedResults = results.map(r => `[${r.timestamp}] ${r.author_name}: ${r.content}`).join('\n')
+            activeContents.push({
+              role: 'user',
+              parts: [{ functionResponse: { name: 'search_memory', response: { result: formattedResults || "No matching messages found." } } }]
+            })
+          } catch (e: any) {
+            activeContents.push({ role: 'user', parts: [{ functionResponse: { name: 'search_memory', response: { error: String(e) } } }] })
+          }
+        } else {
+          activeContents.push({ role: 'user', parts: [{ functionResponse: { name: fnCall.name, response: { error: "Unsupported function" } } }] })
         }
       }
-
-      const response = await result.response
-      const candidate = response.candidates?.[0]
-      const parts = candidate?.content?.parts as any[] | undefined
-      const text = extractModelText(parts)
-      const parsed = parseResponse(text)
-      const meta: RespondMetadata = {
-        groundingSources: extractGroundingSources(candidate),
-        codeArtifacts: extractCodeArtifacts(parts),
-        usage: extractUsage(response),
-        finishReason: typeof candidate?.finishReason === 'string' ? candidate.finishReason : null,
-        flaggedSafety: extractFlaggedSafety(candidate)
-      }
-      return { parsed, meta }
     }
 
-    const result = await this.model.generateContent({
-      systemInstruction: { role: 'system', parts: [{ text: systemText }] },
-      contents: [...args.history, userTurn]
-    })
-    const candidate = result.response.candidates?.[0]
-    const parts = candidate?.content?.parts as any[] | undefined
-    const text = extractModelText(parts)
-    const parsed = parseResponse(text)
-    const meta: RespondMetadata = {
-      groundingSources: extractGroundingSources(candidate),
-      codeArtifacts: extractCodeArtifacts(parts),
-      usage: extractUsage(result.response),
-      finishReason: typeof candidate?.finishReason === 'string' ? candidate.finishReason : null,
-      flaggedSafety: extractFlaggedSafety(candidate)
+    if (!meta) {
+      throw new Error("Failed to complete response after maximum function call iterations.")
     }
-    return { parsed, meta }
+
+    return { parsed: finalParsed, meta }
   }
 }
