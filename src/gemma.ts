@@ -286,19 +286,19 @@ client.on('messageCreate', async (message: Message) => {
     }
 
     if (finalFullReply) {
+      // Delete the streaming preview messages and send fresh ones for the
+      // final output. Editing would mark the message with "(edited)" in
+      // Discord permanently, which looks bad on every reply. Deleting +
+      // resending costs ~200ms and creates a small visual flicker at the
+      // end of a stream, but the final post has a clean timestamp and no
+      // edited tag.
+      await Promise.all(activeMessages.map(m => m.delete().catch(() => {})))
+      activeMessages = []
+
       const pieces = chunk(finalFullReply, 2000, 'newline')
-      for (let i = 0; i < pieces.length; i++) {
-        const piece = pieces[i]
-        if (i < activeMessages.length) {
-          await activeMessages[i].edit(piece).catch(() => {})
-        } else {
-          const msg = await message.reply({ content: piece, allowedMentions: { repliedUser: false } }).catch(() => null)
-          if (msg) activeMessages.push(msg as Message)
-        }
-      }
-      // Delete any leftover active messages if the final chunking shrank the message count
-      for (let i = pieces.length; i < activeMessages.length; i++) {
-        await activeMessages[i].delete().catch(() => {})
+      for (const piece of pieces) {
+        const msg = await message.reply({ content: piece, allowedMentions: { repliedUser: false } }).catch(() => null)
+        if (msg) activeMessages.push(msg as Message)
       }
     } else {
       // If the final reply is empty (e.g. only a react), delete the thinking messages
