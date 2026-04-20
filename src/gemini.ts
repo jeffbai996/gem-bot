@@ -76,11 +76,11 @@ function extractJsonObject(s: string): string | null {
   return null
 }
 
-export function parseResponse(text: string): ParsedResponse {
+export function parseResponse(text: string, isPartial: boolean = false): ParsedResponse {
   // Strip common code-fence wrappers Gemini adds when tools are enabled and
   // strict JSON mode is not. ```json ... ``` or bare ``` ... ```.
   let cleaned = text.trim()
-  const fence = cleaned.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i)
+  const fence = cleaned.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?(?:```)?$/i)
   if (fence) cleaned = fence[1].trim()
 
   const jsonStr = extractJsonObject(cleaned)
@@ -93,9 +93,35 @@ export function parseResponse(text: string): ParsedResponse {
         reply: normalize(obj.reply)
       }
     } catch {
-      // fall through to plain-text fallback
+      // fall through to plain-text fallback or partial extraction
     }
   }
+
+  if (isPartial) {
+    const extractString = (key: string) => {
+      const regex = new RegExp(`"${key}"\\s*:\\s*"([^]*?)(?<!\\\\)"(?:\\s*,|\\s*})?`, 'i')
+      const match = cleaned.match(regex)
+      if (match) {
+        try { return JSON.parse(`"${match[1]}"`) } catch { return match[1] }
+      }
+      const openRegex = new RegExp(`"${key}"\\s*:\\s*"([^]*)`, 'i')
+      const openMatch = cleaned.match(openRegex)
+      if (openMatch) {
+        let val = openMatch[1]
+        if (val.endsWith('}')) val = val.slice(0, -1).trim()
+        if (val.endsWith('"')) val = val.slice(0, -1)
+        try { return JSON.parse(`"${val}"`) } catch { return val }
+      }
+      return null
+    }
+
+    return {
+      react: extractString('react'),
+      thinking: extractString('thinking'),
+      reply: extractString('reply')
+    }
+  }
+
   return { react: null, thinking: null, reply: cleaned || null }
 }
 
@@ -246,9 +272,44 @@ export class GeminiClient {
     })
   }
 
-  async respond(args: BuildRequestArgs): Promise<RespondResult> {
+  async respond(
+    args: BuildRequestArgs,
+    onProgress?: (partial: ParsedResponse) => void
+  ): Promise<RespondResult> {
     const userTurn = buildUserTurn(args)
     const systemText = formatSystemPrompt(args.systemPrompt, args.thinkingMode ?? 'auto')
+    
+    if (onProgress) {
+      const result = await this.model.generateContentStream({
+        systemInstruction: { role: 'system', parts: [{ text: systemText }] },
+        contents: [...args.history, userTurn]
+      })
+
+      let accumulatedText = ''
+      for await (const chunk of result.stream) {
+        const parts = chunk.candidates?.[0]?.content?.parts as any[] | undefined
+        const textChunk = extractModelText(parts)
+        if (textChunk) {
+          accumulatedText += textChunk
+          onProgress(parseResponse(accumulatedText, true))
+        }
+      }
+
+      const response = await result.response
+      const candidate = response.candidates?.[0]
+      const parts = candidate?.content?.parts as any[] | undefined
+      const text = extractModelText(parts)
+      const parsed = parseResponse(text)
+      const meta: RespondMetadata = {
+        groundingSources: extractGroundingSources(candidate),
+        codeArtifacts: extractCodeArtifacts(parts),
+        usage: extractUsage(response),
+        finishReason: typeof candidate?.finishReason === 'string' ? candidate.finishReason : null,
+        flaggedSafety: extractFlaggedSafety(candidate)
+      }
+      return { parsed, meta }
+    }
+
     const result = await this.model.generateContent({
       systemInstruction: { role: 'system', parts: [{ text: systemText }] },
       contents: [...args.history, userTurn]

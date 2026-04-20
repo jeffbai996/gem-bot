@@ -139,6 +139,54 @@ client.on('messageCreate', async (message: Message) => {
 
     const flags = access.channelFlags(message.channelId)
 
+    let latestParsed = { react: null as string | null, thinking: null as string | null, reply: null as string | null }
+    let lastFlushedFullReply = ''
+    let activeMessages: Message[] = []
+    
+    // Initial loading message
+    const initialMsg = await message.reply({ content: '💭 *Thinking...*', allowedMentions: { repliedUser: false } }).catch(() => null)
+    if (initialMsg) activeMessages.push(initialMsg as Message)
+
+    let isFlushing = false
+    const flushStream = async () => {
+      if (isFlushing) return
+      isFlushing = true
+      try {
+        let fullReply = ''
+        const showThinking = flags.thinking !== 'never' && !!latestParsed.thinking
+        if (showThinking && latestParsed.thinking) {
+          const quotedThinking = latestParsed.thinking.split('\n').map(line => `> ${line}`).join('\n')
+          fullReply += `💭 **Thinking:**\n${quotedThinking}\n\n`
+        }
+        if (latestParsed.reply) {
+          fullReply += latestParsed.reply
+        }
+        
+        if (!fullReply) fullReply = '💭 *Thinking...*'
+
+        if (fullReply === lastFlushedFullReply) return
+        lastFlushedFullReply = fullReply
+
+        const pieces = chunk(fullReply, 2000, 'newline')
+        
+        for (let i = 0; i < pieces.length; i++) {
+          const piece = pieces[i]
+          if (i < activeMessages.length) {
+            if (activeMessages[i].content !== piece) {
+              await activeMessages[i].edit(piece).catch(() => {})
+            }
+          } else {
+            const msg = await (message.channel as any).send({ content: piece, allowedMentions: { repliedUser: false } }).catch(() => null)
+            if (msg) activeMessages.push(msg as Message)
+          }
+        }
+      } finally {
+        isFlushing = false
+      }
+    }
+
+    const streamInterval = setInterval(() => { flushStream() }, 1500)
+
     const { parsed, meta } = await gemini.respond({
       systemPrompt: persona.buildSystemPrompt(message.channelId),
       history,
@@ -146,86 +194,90 @@ client.on('messageCreate', async (message: Message) => {
       userMediaParts: allParts,
       userName: message.author.username,
       thinkingMode: flags.thinking
+    }, (partial) => {
+      latestParsed = partial
     })
+
+    clearInterval(streamInterval)
+    // One last flush to ensure we haven't missed anything before final rendering
+    await flushStream()
 
     // Usage metadata — one line per turn for cost tracking
     if (meta.usage) {
       console.error(`[usage] channel=${message.channelId} prompt=${meta.usage.promptTokens} response=${meta.usage.responseTokens} total=${meta.usage.totalTokens}`)
     }
-    // Non-STOP finish reasons deserve visibility (MAX_TOKENS truncation,
-    // SAFETY filter, RECITATION, etc.)
+    // Non-STOP finish reasons deserve visibility
     if (meta.finishReason && meta.finishReason !== 'STOP' && meta.finishReason !== 'FINISH_REASON_UNSPECIFIED') {
       console.error(`[finish] channel=${message.channelId} reason=${meta.finishReason}`)
     }
-    // Flagged safety categories (MEDIUM/HIGH only)
+    // Flagged safety categories
     if (meta.flaggedSafety.length > 0) {
       console.error(`[safety] channel=${message.channelId} flagged=${JSON.stringify(meta.flaggedSafety)}`)
     }
 
-    const tasks: Promise<unknown>[] = []
-
     if (parsed.react) {
-      tasks.push(message.react(parsed.react).catch(e => console.error('react failed:', e)))
+      message.react(parsed.react).catch(e => console.error('react failed:', e))
     }
 
-    let fullReply = ''
-    // Thinking block: "never" suppresses; "always" forces emission (the
-    // system-prompt addendum tells Gemma to always populate it); "auto"
-    // (default) trusts whatever Gemma decided per-message.
-    const showThinking = flags.thinking !== 'never' && !!parsed.thinking
-    if (showThinking && parsed.thinking) {
+    let finalFullReply = ''
+    const showThinkingFinal = flags.thinking !== 'never' && !!parsed.thinking
+    if (showThinkingFinal && parsed.thinking) {
       const quotedThinking = parsed.thinking.split('\n').map(line => `> ${line}`).join('\n')
-      fullReply += `💭 **Thinking:**\n${quotedThinking}\n\n`
+      finalFullReply += `💭 **Thinking:**\n${quotedThinking}\n\n`
     }
 
-    // Code execution artifacts — gated by per-channel showCode flag. Render
-    // before the reply so the reader sees "what she ran" → "what it said" →
-    // "what she concluded" in natural order.
     if (flags.showCode && meta.codeArtifacts.length > 0) {
       for (const art of meta.codeArtifacts) {
-        fullReply += `🛠️ **Code (${art.language}):**\n\`\`\`${art.language}\n${art.code}\n\`\`\`\n`
+        finalFullReply += `🛠️ **Code (${art.language}):**\n\`\`\`${art.language}\n${art.code}\n\`\`\`\n`
         if (art.output) {
-          fullReply += `**Output:**\n\`\`\`\n${art.output.trim()}\n\`\`\`\n`
+          finalFullReply += `**Output:**\n\`\`\`\n${art.output.trim()}\n\`\`\`\n`
         }
-        fullReply += '\n'
+        finalFullReply += '\n'
       }
     }
 
     if (parsed.reply) {
-      fullReply += parsed.reply
+      finalFullReply += parsed.reply
     }
 
-    // Grounding metadata footer — when googleSearch was used, show sources.
-    // Compact one-line-per-source format. Markdown link syntax so Discord
-    // renders them clickable.
     if (meta.groundingSources.length > 0 && parsed.reply) {
-      fullReply += '\n\n-# ↳ sources: '
-      fullReply += meta.groundingSources
+      finalFullReply += '\n\n-# ↳ sources: '
+      finalFullReply += meta.groundingSources
         .slice(0, 5)
         .map((s, i) => `[${i + 1}](<${s.uri}>)`)
         .join(' · ')
     }
 
-    // Non-STOP finish surfaced as a user-visible hint (only for MAX_TOKENS
-    // and SAFETY which the user should know about). RECITATION/OTHER stay
-    // in logs only.
     if (meta.finishReason === 'MAX_TOKENS') {
-      fullReply += '\n\n-# ⚠️ response hit max-tokens limit (reply may be truncated)'
+      finalFullReply += '\n\n-# ⚠️ response hit max-tokens limit (reply may be truncated)'
     } else if (meta.finishReason === 'SAFETY') {
-      fullReply = '⚠️ response blocked by Gemini safety filter. ' + (fullReply || '(no content)')
+      finalFullReply = '⚠️ response blocked by Gemini safety filter. ' + (finalFullReply || '(no content)')
     }
 
-    if (fullReply) {
-      const pieces = chunk(fullReply, 2000, 'newline')
-      for (const piece of pieces) {
-        tasks.push((message.channel as any).send({
-          content: piece,
-          allowedMentions: { repliedUser: false }
-        }).catch((e: any) => console.error('send failed:', e)))
+    if (!finalFullReply && !parsed.react) {
+       finalFullReply = '(Empty response)'
+    }
+
+    if (finalFullReply) {
+      const pieces = chunk(finalFullReply, 2000, 'newline')
+      for (let i = 0; i < pieces.length; i++) {
+        const piece = pieces[i]
+        if (i < activeMessages.length) {
+          await activeMessages[i].edit(piece).catch(() => {})
+        } else {
+          const msg = await (message.channel as any).send({ content: piece, allowedMentions: { repliedUser: false } }).catch(() => null)
+          if (msg) activeMessages.push(msg as Message)
+        }
       }
+      // Delete any leftover active messages if the final chunking shrank the message count
+      for (let i = pieces.length; i < activeMessages.length; i++) {
+        await activeMessages[i].delete().catch(() => {})
+      }
+    } else {
+      // If the final reply is empty (e.g. only a react), delete the thinking messages
+      for (const m of activeMessages) await m.delete().catch(() => {})
     }
 
-    await Promise.all(tasks)
     await Promise.all([attachmentResult.cleanup(), ytResult.cleanup()])
 
   } catch (e: any) {
