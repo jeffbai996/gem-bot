@@ -213,6 +213,13 @@ export function parseResponse(text: string, isPartial: boolean = false): ParsedR
 // functionCall) interleaved with the model's final text. `response.text()`
 // concatenates ALL text-ish parts, which includes code-exec output — that
 // breaks JSON parsing. Extract ONLY the text parts; drop everything else.
+//
+// Concatenate with EMPTY string (not '\n'). Streaming responses split a
+// single logical text output across multiple parts at token boundaries —
+// joining with '\n' injects spurious newlines mid-string that then leak
+// into Gemma's parsed reply. Also: do NOT .trim(), because the first
+// char of a continuation part is often a meaningful space or \u escape
+// continuation — trimming mangles unicode escapes split across parts.
 export function extractModelText(parts: Array<{ text?: string, executableCode?: unknown, codeExecutionResult?: unknown, functionCall?: unknown }> | undefined): string {
   if (!parts) return ''
   const chunks: string[] = []
@@ -221,7 +228,7 @@ export function extractModelText(parts: Array<{ text?: string, executableCode?: 
       chunks.push(p.text)
     }
   }
-  return chunks.join('\n').trim()
+  return chunks.join('')
 }
 
 export interface GroundingSource {

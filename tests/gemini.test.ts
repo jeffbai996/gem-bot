@@ -15,10 +15,32 @@ describe('extractModelText', () => {
     assert.equal(extractModelText(undefined), '')
   })
 
-  test('joins plain text parts', () => {
+  test('concatenates plain text parts with no separator', () => {
+    // Streaming splits a single logical string across parts at token
+    // boundaries — joining them with '\n' injects spurious newlines
+    // that leak into Gemma's parsed reply.
     assert.equal(
-      extractModelText([{ text: 'hello' }, { text: 'world' }]),
-      'hello\nworld'
+      extractModelText([{ text: 'hello ' }, { text: 'world' }]),
+      'hello world'
+    )
+  })
+
+  test('preserves leading whitespace in continuation parts', () => {
+    // When Gemini streams "I am" then " a bot", the leading space in
+    // the continuation matters — can't trim it away.
+    assert.equal(
+      extractModelText([{ text: 'I am' }, { text: ' a bot' }]),
+      'I am a bot'
+    )
+  })
+
+  test('preserves unicode escapes split across parts', () => {
+    // Gemini streaming sometimes cuts a \\u2014 (em-dash) across two
+    // parts: "\\u20" + "14". Joining with '\n' or trimming breaks
+    // the escape and JSON.parse rejects the result.
+    assert.equal(
+      extractModelText([{ text: '"\\u20' }, { text: '14"' }]),
+      '"\\u2014"'
     )
   })
 
