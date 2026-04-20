@@ -1,4 +1,4 @@
-import { describe, test } from 'bun:test'
+import { describe, test } from "node:test"
 import assert from 'node:assert/strict'
 import {
   parseResponse,
@@ -131,6 +131,37 @@ describe('parseResponse', () => {
     const r = parseResponse(leaked)
     assert.equal(r.reply, 'Net gain $342,565')
     assert.equal(r.thinking, 'summed boxes')
+  })
+
+  describe('isPartial mode (Streaming)', () => {
+    test('extracts fields from truncated JSON string', () => {
+      const truncated = '{"react":null,"thinking":"I am pondering this deeply","re'
+      const r = parseResponse(truncated, true)
+      assert.equal(r.react, null)
+      assert.equal(r.thinking, 'I am pondering this deeply')
+      assert.equal(r.reply, null)
+    })
+
+    test('extracts incomplete field value at the end of the stream', () => {
+      const truncated = '{"react":null,"thinking":"I am ponder'
+      const r = parseResponse(truncated, true)
+      assert.equal(r.thinking, 'I am ponder')
+      assert.equal(r.reply, null)
+    })
+
+    test('extracts multiple fields from truncated JSON', () => {
+      const truncated = '{"react":"👍","thinking":"done thinking","reply":"here is the an'
+      const r = parseResponse(truncated, true)
+      assert.equal(r.react, '👍')
+      assert.equal(r.thinking, 'done thinking')
+      assert.equal(r.reply, 'here is the an')
+    })
+    
+    test('gracefully ignores broken trailing quotes', () => {
+      const truncated = '{"react":null,"thinking":"I am ponder"'
+      const r = parseResponse(truncated, true)
+      assert.equal(r.thinking, 'I am ponder')
+    })
   })
 })
 

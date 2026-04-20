@@ -100,6 +100,7 @@ client.on('messageCreate', async (message: Message) => {
   if (!gate) return
 
   let typingInterval: ReturnType<typeof setInterval> | null = null
+  let streamInterval: ReturnType<typeof setInterval> | null = null
 
   try {
     // Fetch partial DM channels so we can send/read them
@@ -176,7 +177,7 @@ client.on('messageCreate', async (message: Message) => {
               await activeMessages[i].edit(piece).catch(() => {})
             }
           } else {
-            const msg = await (message.channel as any).send({ content: piece, allowedMentions: { repliedUser: false } }).catch(() => null)
+            const msg = await message.reply({ content: piece, allowedMentions: { repliedUser: false } }).catch(() => null)
             if (msg) activeMessages.push(msg as Message)
           }
         }
@@ -185,7 +186,7 @@ client.on('messageCreate', async (message: Message) => {
       }
     }
 
-    const streamInterval = setInterval(() => { flushStream() }, 1500)
+    streamInterval = setInterval(() => { flushStream() }, 2000)
 
     const { parsed, meta } = await gemini.respond({
       systemPrompt: persona.buildSystemPrompt(message.channelId),
@@ -198,7 +199,10 @@ client.on('messageCreate', async (message: Message) => {
       latestParsed = partial
     })
 
-    clearInterval(streamInterval)
+    if (streamInterval) {
+      clearInterval(streamInterval)
+      streamInterval = null
+    }
     // One last flush to ensure we haven't missed anything before final rendering
     await flushStream()
 
@@ -265,7 +269,7 @@ client.on('messageCreate', async (message: Message) => {
         if (i < activeMessages.length) {
           await activeMessages[i].edit(piece).catch(() => {})
         } else {
-          const msg = await (message.channel as any).send({ content: piece, allowedMentions: { repliedUser: false } }).catch(() => null)
+          const msg = await message.reply({ content: piece, allowedMentions: { repliedUser: false } }).catch(() => null)
           if (msg) activeMessages.push(msg as Message)
         }
       }
@@ -291,6 +295,7 @@ client.on('messageCreate', async (message: Message) => {
     } catch { /* nothing to do */ }
   } finally {
     if (typingInterval) clearInterval(typingInterval)
+    if (streamInterval) clearInterval(streamInterval)
   }
 })
 
