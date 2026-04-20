@@ -309,7 +309,14 @@ client.on('messageCreate', async (message: Message) => {
 
   } catch (e: any) {
     console.error('message handler error:', e)
-    const isRateLimit = e?.status === 429 || /rate/i.test(String(e?.message || ''))
+    // Match explicit rate-limit language only. The naive /rate/i matched
+    // "generateContent" in every Gemini URL, causing unrelated 400s to look
+    // like rate limits. Anchor on word boundaries + the actual phrase.
+    const msgStr = String(e?.message || '')
+    const isRateLimit = e?.status === 429
+      || /\brate limit\b/i.test(msgStr)
+      || /\bquota\b/i.test(msgStr)
+      || /\btoo many requests\b/i.test(msgStr)
     const msg = isRateLimit
       ? "hitting Gemini's rate limit — give me a minute"
       : "something broke reaching Gemini. check logs."

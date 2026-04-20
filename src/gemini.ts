@@ -349,10 +349,16 @@ export class GeminiClient {
   constructor(apiKey: string, modelName: string = 'gemini-2.0-flash') {
     this.apiKey = apiKey
     const genAI = new GoogleGenerativeAI(apiKey)
+    // Gemini requires `includeServerSideToolInvocations: true` in toolConfig
+    // when mixing built-in tools (googleSearch, codeExecution) with user
+    // functionDeclarations. Without it, the API 400s with:
+    //   "Please enable tool_config.include_server_side_tool_invocations
+    //    to use Built-in tools with Function calling."
+    // The SDK's ToolConfig type doesn't expose this field yet — cast.
     this.model = genAI.getGenerativeModel({
       model: modelName,
       tools: [
-        { googleSearch: {} }, 
+        { googleSearch: {} },
         { codeExecution: {} },
         {
           functionDeclarations: [
@@ -367,7 +373,8 @@ export class GeminiClient {
             }
           ]
         }
-      ]
+      ],
+      toolConfig: { includeServerSideToolInvocations: true } as any
     })
   }
 
