@@ -1,4 +1,4 @@
-import { describe, test, beforeEach } from 'bun:test'
+import { describe, test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { PersonaLoader } from '../src/persona.ts'
 import fs from 'fs/promises'

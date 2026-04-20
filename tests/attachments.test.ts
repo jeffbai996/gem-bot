@@ -1,4 +1,4 @@
-import { describe, test, beforeEach } from 'bun:test'
+import { describe, test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { processAttachments, processYouTubeUrls, parseVttTranscript, type InputAttachment, type MediaPart, type InlinePart, type TextPart } from '../src/attachments.ts'
 import fs from 'fs/promises'
