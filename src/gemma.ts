@@ -82,9 +82,9 @@ client.once('ready', async () => {
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return
 
-  if (interaction.commandName === 'admin') {
+  if (interaction.commandName === 'gemini') {
     const adminId = process.env.DISCORD_ADMIN_ID
-    await executeAdminCommand(interaction, access, persona, gemini, adminId)
+    await executeGeminiCommand(interaction, access, persona, gemini, adminId)
   }
 })
 

@@ -34,12 +34,21 @@ An earlier version of this repo tried to be a Gemini-CLI MCP plugin. It didn't w
 - **Parallel Processing:** Multiple attachments are processed concurrently via `Promise.allSettled` for maximum speed.
 - **URI Caching:** Discord media URLs are cached to Gemini `fileUri`s, preventing redundant uploads and allowing the bot to "remember" images from earlier in the conversation history.
 
+### Semantic Memory (RAG)
+- **Background Ingestion:** Messages from allowed users in allowed channels are embedded (Gemini `text-embedding-004`) and stored in a local SQLite database with the [`sqlite-vss`](https://github.com/asg017/sqlite-vss) vector extension.
+- **Retrieval Tool:** The model can call a `search_memory` tool loop mid-generation to pull semantically-relevant past messages for the current channel. Useful for "what did Dan say about X last month?"-style recall across months of conversation.
+- **Backfill:** `/gemini backfill` embeds recent history from a channel on demand — useful after deploying to a pre-existing channel.
+
+### Real-Time Token Streaming
+- **Incremental editing:** Long responses stream into Discord via message editing as tokens arrive, giving a ChatGPT-like typing experience instead of wait-and-chunk.
+
 ### Admin Slash Commands
 Manage the bot directly from Discord without touching terminal files. Requires `DISCORD_ADMIN_ID` in `.env` (or Server Admin permissions).
-- `/admin allow @user`
-- `/admin revoke @user`
-- `/admin channel #channel [enabled] [require_mention]`
-- `/admin persona <filename.md>` (Hot-swaps the active persona)
+- `/gemini allow @user`
+- `/gemini revoke @user`
+- `/gemini channel #channel [enabled] [require_mention]`
+- `/gemini persona <filename.md>` (Hot-swaps the active persona)
+- `/gemini backfill #channel [limit]` (Embeds recent channel history into semantic memory)
 
 ### Persona & Shared Context
 The system prompt is composed at runtime from:
@@ -50,9 +59,7 @@ The system prompt is composed at runtime from:
 ---
 
 ## Future Roadmap
-- **Real-Time Token Streaming (UX):** Transition from the current "wait and chunk" model to streaming responses directly into Discord via Webhook message editing, providing a ChatGPT-like typing experience for long generations.
 - **Proactive Cron Jobs (Autonomy):** Enable Gemma to run scheduled tasks (e.g., pulling data from `ibkr-mcp`) to drop unprompted daily portfolio briefings, risk alerts, or earnings summaries into a dedicated channel.
-- **Semantic Discord Search & SQLite Memory:** Implement a local vector database (like `sqlite-vss`) to persist facts across sessions and allow semantic searching over months of Discord history (e.g., "What did Dan say about copper prices last month?").
 - **Agent Handoff & Multi-Agent Debates:** Give Gemma the ability to delegate sub-tasks (triggering `code-review-tool` on a GitHub link) or spawn secondary model instances to debate complex topics (e.g., generating a bull case, then calling a bear-case agent to argue against it).
 - **Token-Aware Context Windowing:** Replace the hardcoded 20-message limit with a dynamic token counter to maximize context efficiency without hitting API limits.
 - **Voice Channel Intake:** Enable the bot to join Discord Voice Channels and transcribe/process audio streams natively using Gemini's multimodal capabilities.
@@ -66,7 +73,8 @@ All runtime state lives in `~/.gemini/channels/discord/` (override via `DISCORD_
 | File | Purpose |
 |---|---|
 | `.env` | `DISCORD_BOT_TOKEN`, `GEMINI_API_KEY`, `DISCORD_ADMIN_ID`, optional `GEMINI_MODEL` |
-| `access.json` | User + channel allowlists (Modified via `/admin` commands) |
+| `access.json` | User + channel allowlists (Modified via `/gemini` commands) |
+| `memory.db` | SQLite + sqlite-vss database of embedded messages for semantic recall |
 | `persona.md` | Default System prompt |
 | `inbox/` | Per-message attachment scratch dir (auto-cleaned after each turn) |
 
@@ -84,7 +92,7 @@ All runtime state lives in `~/.gemini/channels/discord/` (override via `DISCORD_
 ```
 
 - Unknown users or channels are silently ignored — explicit allowlist only.
-- Can be modified securely via the `/admin` Discord slash commands.
+- Can be modified securely via the `/gemini` Discord slash commands.
 
 ---
 
@@ -113,7 +121,7 @@ DISCORD_ADMIN_ID=your_personal_discord_user_id
 EOF
 chmod 600 ~/.gemini/channels/discord/.env
 
-# Optionally create a default access.json, though /admin commands can handle this later
+# Optionally create a default access.json, though /gemini commands can handle this later
 cat > ~/.gemini/channels/discord/access.json <<EOF
 {
   "users": { "YOUR_DISCORD_USER_ID": { "allowed": true } },
