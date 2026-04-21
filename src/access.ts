@@ -103,6 +103,28 @@ export class AccessManager {
     await this.save()
   }
 
+  // Update only the rendering flags without touching enabled/requireMention.
+  // Throws if the channel isn't configured yet — admins should run /gemini channel first.
+  async setChannelFlags(
+    channelId: string,
+    patch: Partial<ChannelFlags>
+  ): Promise<ChannelConfig> {
+    const existing = this.data.channels[channelId]
+    if (!existing) {
+      throw new Error(`channel ${channelId} not configured — run /gemini channel first`)
+    }
+    if (patch.thinking !== undefined && !VALID_THINKING_MODES.includes(patch.thinking)) {
+      throw new Error(`invalid thinking mode "${patch.thinking}" — must be one of: always, auto, never`)
+    }
+    this.data.channels[channelId] = {
+      ...existing,
+      ...(patch.thinking !== undefined ? { thinking: patch.thinking } : {}),
+      ...(patch.showCode !== undefined ? { showCode: patch.showCode } : {})
+    }
+    await this.save()
+    return this.data.channels[channelId]
+  }
+
   // Per-channel rendering flags. Returns defaults for unknown channels and
   // for old configs that don't have these fields yet.
   channelFlags(channelId: string): ChannelFlags {

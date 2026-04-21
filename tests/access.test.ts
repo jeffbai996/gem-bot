@@ -153,4 +153,56 @@ describe('AccessManager', () => {
       /thinking.*always.*auto.*never/
     )
   })
+
+  test('setChannelFlags patches thinking without touching requireMention', async () => {
+    await writeAccess({
+      users: {},
+      channels: { C1: { enabled: true, requireMention: true, thinking: 'auto', showCode: false } }
+    })
+    mgr = new AccessManager()
+    await mgr.load()
+    await mgr.setChannelFlags('C1', { thinking: 'always' })
+    const raw = await fs.readFile(path.join(testDir, 'access.json'), 'utf8')
+    const parsed = JSON.parse(raw)
+    assert.equal(parsed.channels.C1.thinking, 'always')
+    assert.equal(parsed.channels.C1.requireMention, true)  // preserved
+    assert.equal(parsed.channels.C1.enabled, true)         // preserved
+    assert.equal(parsed.channels.C1.showCode, false)       // preserved
+  })
+
+  test('setChannelFlags patches showCode independently', async () => {
+    await writeAccess({
+      users: {},
+      channels: { C1: { enabled: true, requireMention: false, thinking: 'never', showCode: false } }
+    })
+    mgr = new AccessManager()
+    await mgr.load()
+    await mgr.setChannelFlags('C1', { showCode: true })
+    const f = mgr.channelFlags('C1')
+    assert.equal(f.showCode, true)
+    assert.equal(f.thinking, 'never')  // preserved
+  })
+
+  test('setChannelFlags throws on unconfigured channel', async () => {
+    await writeAccess({ users: {}, channels: {} })
+    mgr = new AccessManager()
+    await mgr.load()
+    await assert.rejects(
+      () => mgr.setChannelFlags('unknown', { thinking: 'always' }),
+      /not configured/
+    )
+  })
+
+  test('setChannelFlags rejects invalid thinking mode', async () => {
+    await writeAccess({
+      users: {},
+      channels: { C1: { enabled: true, requireMention: false, thinking: 'auto', showCode: false } }
+    })
+    mgr = new AccessManager()
+    await mgr.load()
+    await assert.rejects(
+      () => mgr.setChannelFlags('C1', { thinking: 'maybe' as any }),
+      /thinking.*always.*auto.*never/
+    )
+  })
 })
