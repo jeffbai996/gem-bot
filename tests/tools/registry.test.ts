@@ -77,3 +77,13 @@ describe('ToolRegistry', () => {
     assert.equal((seenCtx as ToolContext).channelId, 'C1')
   })
 })
+
+import { buildDefaultRegistry } from '../../src/tools/index.ts'
+
+describe('buildDefaultRegistry', () => {
+  test('registers search_memory and ibkr_briefing', () => {
+    const r = buildDefaultRegistry()
+    const names = r.getDeclarations().map(d => d.name)
+    assert.deepEqual(names, ['search_memory', 'ibkr_briefing'])
+  })
+})
