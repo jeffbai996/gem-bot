@@ -2,7 +2,6 @@ import { GoogleGenerativeAI, type Content, type Part } from '@google/generative-
 import type { GeminiContent } from './history.ts'
 import type { MediaPart } from './attachments.ts'
 import type { ThinkingMode } from './access.ts'
-import { searchMessages } from './db.ts'
 import { ToolRegistry } from './tools/registry.ts'
 
 // Appended to every system prompt. Needed because tools (googleSearch +
@@ -368,144 +367,104 @@ export class GeminiClient {
     return result.embedding.values
   }
 
+  // One round-trip with the model. Handles both streaming (when onProgress
+  // provided) and non-streaming, returning a unified shape so the caller's
+  // tool loop doesn't branch on streaming vs not.
+  private async runOneTurn(
+    systemText: string,
+    activeContents: Content[],
+    onProgress?: (partial: ParsedResponse) => void
+  ): Promise<{
+    functionCall: any | null
+    candidate: any
+    response: any
+    text: string
+  }> {
+    if (onProgress) {
+      const result = await this.model.generateContentStream({
+        systemInstruction: { role: 'system', parts: [{ text: systemText }] },
+        contents: activeContents
+      })
+
+      let accumulatedText = ''
+      let functionCallReceived: any = null
+
+      for await (const chunk of result.stream) {
+        const parts = chunk.candidates?.[0]?.content?.parts as any[] | undefined
+        const fnCallPart = parts?.find(p => p.functionCall)
+        if (fnCallPart) functionCallReceived = fnCallPart.functionCall
+        const textChunk = extractModelText(parts)
+        if (textChunk && !functionCallReceived) {
+          accumulatedText += textChunk
+          onProgress(parseResponse(accumulatedText, true))
+        }
+      }
+
+      const response = await result.response
+      const candidate = response.candidates?.[0]
+      const parts = candidate?.content?.parts as any[] | undefined
+      // Prefer streamed accumulated text; fall back to joined parts if the
+      // stream yielded nothing text-ish (e.g., pure function-call turn).
+      const text = accumulatedText || extractModelText(parts)
+      const fnCall = functionCallReceived || parts?.find(p => p.functionCall)?.functionCall || null
+      return { functionCall: fnCall, candidate, response, text }
+    }
+
+    const result = await this.model.generateContent({
+      systemInstruction: { role: 'system', parts: [{ text: systemText }] },
+      contents: activeContents
+    })
+    const candidate = result.response.candidates?.[0]
+    const parts = candidate?.content?.parts as any[] | undefined
+    const fnCall = parts?.find(p => p.functionCall)?.functionCall || null
+    const text = extractModelText(parts)
+    return { functionCall: fnCall, candidate, response: result.response, text }
+  }
+
   async respond(
     args: BuildRequestArgs,
     onProgress?: (partial: ParsedResponse) => void
   ): Promise<RespondResult> {
     const userTurn = buildUserTurn(args)
     const systemText = formatSystemPrompt(args.systemPrompt, args.thinkingMode ?? 'auto')
-    
-    let activeContents: Content[] = [...args.history, userTurn]
+
+    const activeContents: Content[] = [...args.history, userTurn]
     let meta: RespondMetadata | null = null
     let finalParsed: ParsedResponse = { react: null, thinking: null, reply: null }
 
-    // RAG loop for function calls (max 3 iterations)
+    // Tool-call loop. Capped at 3 iterations to avoid runaway cost if the
+    // model keeps calling tools in a cycle.
     for (let iteration = 0; iteration < 3; iteration++) {
-      if (onProgress) {
-        const result = await this.model.generateContentStream({
-          systemInstruction: { role: 'system', parts: [{ text: systemText }] },
-          contents: activeContents
-        })
+      const turn = await this.runOneTurn(systemText, activeContents, onProgress)
 
-        let accumulatedText = ''
-        let functionCallReceived: any = null
-
-        for await (const chunk of result.stream) {
-          const parts = chunk.candidates?.[0]?.content?.parts as any[] | undefined
-          
-          // Check if this chunk includes a function call
-          const fnCallPart = parts?.find(p => p.functionCall)
-          if (fnCallPart) functionCallReceived = fnCallPart.functionCall
-
-          const textChunk = extractModelText(parts)
-          if (textChunk && !functionCallReceived) {
-            accumulatedText += textChunk
-            onProgress(parseResponse(accumulatedText, true))
-          }
+      if (!turn.functionCall) {
+        finalParsed = parseResponse(turn.text)
+        meta = {
+          groundingSources: extractGroundingSources(turn.candidate),
+          codeArtifacts: extractCodeArtifacts(turn.candidate?.content?.parts),
+          usage: extractUsage(turn.response),
+          finishReason: typeof turn.candidate?.finishReason === 'string' ? turn.candidate.finishReason : null,
+          flaggedSafety: extractFlaggedSafety(turn.candidate)
         }
-
-        const response = await result.response
-        const candidate = response.candidates?.[0]
-        
-        // If there was no function call, we are done
-        if (!functionCallReceived && (!candidate?.content?.parts || !candidate.content.parts.some(p => p.functionCall))) {
-          const parts = candidate?.content?.parts as any[] | undefined
-          const text = extractModelText(parts)
-          finalParsed = parseResponse(text)
-          meta = {
-            groundingSources: extractGroundingSources(candidate),
-            codeArtifacts: extractCodeArtifacts(parts),
-            usage: extractUsage(response),
-            finishReason: typeof candidate?.finishReason === 'string' ? candidate.finishReason : null,
-            flaggedSafety: extractFlaggedSafety(candidate)
-          }
-          break
-        }
-
-        // We got a function call, execute it
-        const fnCall = functionCallReceived || candidate!.content.parts.find(p => p.functionCall)!.functionCall
-        
-        // Append the model's functionCall to our working history so the API knows the state
-        activeContents.push({ role: 'model', parts: [{ functionCall: fnCall }] })
-
-        if (fnCall.name === 'search_memory' && args.channelId) {
-          const query = fnCall.args.query
-          console.error(`[RAG] Searching memory for query: "${query}" in channel ${args.channelId}`)
-          try {
-            const queryEmb = await this.embed(query)
-            const results = searchMessages(args.channelId, queryEmb, 10)
-            const formattedResults = results.map(r => `[${r.timestamp}] ${r.author_name}: ${r.content}`).join('\n')
-            
-            // Append the function response
-            activeContents.push({
-              role: 'user', // Actually should be function response part in a model/user turn depending on API
-              parts: [{
-                functionResponse: {
-                  name: 'search_memory',
-                  response: { result: formattedResults || "No matching messages found in memory." }
-                }
-              }]
-            })
-            // Loop restarts to generate content again based on this new context
-          } catch (e: any) {
-            console.error('[RAG] Error searching memory:', e)
-            activeContents.push({
-              role: 'user',
-              parts: [{ functionResponse: { name: 'search_memory', response: { error: String(e) } } }]
-            })
-          }
-        } else {
-          // Unsupported function
-          activeContents.push({
-            role: 'user',
-            parts: [{ functionResponse: { name: fnCall.name, response: { error: "Unsupported function" } } }]
-          })
-        }
-      } else {
-        // Non-streaming fallback
-        const result = await this.model.generateContent({
-          systemInstruction: { role: 'system', parts: [{ text: systemText }] },
-          contents: activeContents
-        })
-        const candidate = result.response.candidates?.[0]
-        const fnCall = candidate?.content?.parts?.find(p => p.functionCall)?.functionCall
-        
-        if (!fnCall) {
-          const parts = candidate?.content?.parts as any[] | undefined
-          const text = extractModelText(parts)
-          finalParsed = parseResponse(text)
-          meta = {
-            groundingSources: extractGroundingSources(candidate),
-            codeArtifacts: extractCodeArtifacts(parts),
-            usage: extractUsage(result.response),
-            finishReason: typeof candidate?.finishReason === 'string' ? candidate.finishReason : null,
-            flaggedSafety: extractFlaggedSafety(candidate)
-          }
-          break
-        }
-
-        activeContents.push({ role: 'model', parts: [{ functionCall: fnCall }] })
-
-        if (fnCall.name === 'search_memory' && args.channelId) {
-          try {
-            const queryEmb = await this.embed(fnCall.args.query)
-            const results = searchMessages(args.channelId, queryEmb, 10)
-            const formattedResults = results.map(r => `[${r.timestamp}] ${r.author_name}: ${r.content}`).join('\n')
-            activeContents.push({
-              role: 'user',
-              parts: [{ functionResponse: { name: 'search_memory', response: { result: formattedResults || "No matching messages found." } } }]
-            })
-          } catch (e: any) {
-            activeContents.push({ role: 'user', parts: [{ functionResponse: { name: 'search_memory', response: { error: String(e) } } }] })
-          }
-        } else {
-          activeContents.push({ role: 'user', parts: [{ functionResponse: { name: fnCall.name, response: { error: "Unsupported function" } } }] })
-        }
+        break
       }
+
+      // Record the model's function call, dispatch via the registry, and feed
+      // the result back to the model for the next iteration.
+      activeContents.push({ role: 'model', parts: [{ functionCall: turn.functionCall }] })
+      const result = await this.registry.dispatch(
+        turn.functionCall.name,
+        (turn.functionCall.args ?? {}) as Record<string, unknown>,
+        { channelId: args.channelId, gemini: this }
+      )
+      activeContents.push({
+        role: 'user',
+        parts: [{ functionResponse: { name: turn.functionCall.name, response: { result } } }]
+      })
     }
 
     if (!meta) {
-      throw new Error("Failed to complete response after maximum function call iterations.")
+      throw new Error('Failed to complete response after maximum function call iterations.')
     }
 
     return { parsed: finalParsed, meta }
