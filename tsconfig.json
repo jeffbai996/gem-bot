@@ -6,7 +6,7 @@
     "strict": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["bun-types"],
+    "types": ["node"],
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
