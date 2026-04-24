@@ -10,6 +10,7 @@ import { GeminiClient } from './gemini.ts'
 import { chunk } from './chunk.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
 import { insertMessage } from './db.ts'
+import { buildDefaultRegistry } from './tools/index.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
@@ -29,7 +30,8 @@ if (!GEMINI_API_KEY) {
 
 const access = new AccessManager()
 const persona = new PersonaLoader()
-const gemini = new GeminiClient(GEMINI_API_KEY, MODEL_NAME)
+const toolRegistry = buildDefaultRegistry()
+const gemini = new GeminiClient(GEMINI_API_KEY, MODEL_NAME, toolRegistry)
 
 await access.load()
 await persona.load()

@@ -1,8 +1,9 @@
-import { GoogleGenerativeAI, SchemaType, type Content, type Part } from '@google/generative-ai'
+import { GoogleGenerativeAI, type Content, type Part } from '@google/generative-ai'
 import type { GeminiContent } from './history.ts'
 import type { MediaPart } from './attachments.ts'
 import type { ThinkingMode } from './access.ts'
 import { searchMessages } from './db.ts'
+import { ToolRegistry } from './tools/registry.ts'
 
 // Appended to every system prompt. Needed because tools (googleSearch +
 // codeExecution) are incompatible with responseMimeType:'application/json' +
@@ -344,27 +345,17 @@ export function buildUserTurn(args: BuildRequestArgs): Content {
 
 export class GeminiClient {
   private model: ReturnType<GoogleGenerativeAI['getGenerativeModel']>
+  private registry: ToolRegistry
 
-  constructor(apiKey: string, modelName: string = 'gemini-2.0-flash') {
+  constructor(apiKey: string, modelName: string = 'gemini-2.0-flash', registry: ToolRegistry) {
     const genAI = new GoogleGenerativeAI(apiKey)
+    this.registry = registry
     this.model = genAI.getGenerativeModel({
       model: modelName,
       tools: [
-        { googleSearch: {} }, 
+        { googleSearch: {} },
         { codeExecution: {} },
-        {
-          functionDeclarations: [
-            {
-              name: 'search_memory',
-              description: 'Search past Discord messages for context by semantic meaning. Use this when asked about past events, previous discussions, or if you need more context from history.',
-              parameters: {
-                type: SchemaType.OBJECT,
-                properties: { query: { type: SchemaType.STRING, description: 'The semantic search query' } },
-                required: ['query']
-              }
-            }
-          ]
-        }
+        { functionDeclarations: registry.getDeclarations() }
       ]
     })
   }
