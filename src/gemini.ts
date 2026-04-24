@@ -367,6 +367,11 @@ export class GeminiClient {
     return result.embedding.values
   }
 
+  async countTokens(contents: Content[]): Promise<number> {
+    const result = await this.model.countTokens({ contents })
+    return result.totalTokens
+  }
+
   // One round-trip with the model. Handles both streaming (when onProgress
   // provided) and non-streaming, returning a unified shape so the caller's
   // tool loop doesn't branch on streaming vs not.
