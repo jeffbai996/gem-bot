@@ -31,7 +31,7 @@ if (!GEMINI_API_KEY) {
 
 const access = new AccessManager()
 const persona = new PersonaLoader()
-const toolRegistry = buildDefaultRegistry()
+const toolRegistry = await buildDefaultRegistry()
 const gemini = new GeminiClient(GEMINI_API_KEY, MODEL_NAME, toolRegistry)
 
 await access.load()

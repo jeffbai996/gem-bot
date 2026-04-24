@@ -81,9 +81,12 @@ describe('ToolRegistry', () => {
 import { buildDefaultRegistry } from '../../src/tools/index.ts'
 
 describe('buildDefaultRegistry', () => {
-  test('registers search_memory and ibkr_briefing', () => {
-    const r = buildDefaultRegistry()
+  test('registers search_memory first; IBKR tools or fallback stub second', async () => {
+    const r = await buildDefaultRegistry()
     const names = r.getDeclarations().map(d => d.name)
-    assert.deepEqual(names, ['search_memory', 'ibkr_briefing'])
+    assert.ok(names.length >= 2, `expected at least 2 tools, got ${names.length}`)
+    assert.equal(names[0], 'search_memory')
+    // Second slot is either the fallback `ibkr_briefing` stub (MCP down) or
+    // one of 32 IBKR MCP tool names (MCP up). Don't hard-code the list.
   })
 })
