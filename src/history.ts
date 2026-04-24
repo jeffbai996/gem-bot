@@ -1,5 +1,7 @@
 import type { TextChannel, DMChannel, ThreadChannel } from 'discord.js'
 import { uriCache } from './attachments.ts'
+import { selectWithinBudget } from './token-budget.ts'
+import type { GeminiClient } from './gemini.ts'
 
 export interface HistoryAttachment {
   name: string
@@ -19,13 +21,16 @@ export interface GeminiContent {
   parts: Array<{ text: string } | { fileData: { mimeType: string, fileUri: string } }>
 }
 
-const HISTORY_LIMIT = 20
+// Upper bound for the raw Discord fetch. Actual history length is then
+// trimmed by token budget in buildContextHistory(). Discord caps fetch at
+// 100 messages per call, so don't exceed this without pagination.
+const HISTORY_RAW_LIMIT = 100
 
 export async function fetchHistory(
   channel: TextChannel | DMChannel | ThreadChannel,
   beforeMessageId: string
 ): Promise<HistoryMessage[]> {
-  const fetched = await channel.messages.fetch({ limit: HISTORY_LIMIT, before: beforeMessageId })
+  const fetched = await channel.messages.fetch({ limit: HISTORY_RAW_LIMIT, before: beforeMessageId })
   const arr: HistoryMessage[] = []
   for (const m of fetched.values()) {
     arr.push({
@@ -81,4 +86,21 @@ export function formatHistory(messages: HistoryMessage[], selfId: string): Gemin
 
     return { role: isSelf ? 'model' : 'user', parts }
   })
+}
+
+// Fetch + format + token-budget trim in one call. Use this from gemma.ts;
+// the individual pieces remain exported for testing and future reuse.
+export async function buildContextHistory(
+  channel: TextChannel | DMChannel | ThreadChannel,
+  beforeMessageId: string,
+  gemini: GeminiClient,
+  selfId: string,
+  budget: number
+): Promise<GeminiContent[]> {
+  const raw = await fetchHistory(channel, beforeMessageId)
+  const formatted = formatHistory(raw, selfId)
+  if (budget <= 0) {
+    return formatted.length > 20 ? formatted.slice(-20) : formatted
+  }
+  return selectWithinBudget(formatted, c => gemini.countTokens(c as any), { budget })
 }
