@@ -4,7 +4,7 @@ import os from 'os'
 import dotenv from 'dotenv'
 import { AccessManager } from './access.ts'
 import { PersonaLoader } from './persona.ts'
-import { fetchHistory, formatHistory } from './history.ts'
+import { buildContextHistory } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
 import { GeminiClient } from './gemini.ts'
 import { chunk } from './chunk.ts'
@@ -18,6 +18,7 @@ dotenv.config({ path: path.join(STATE_DIR, '.env') })
 const DISCORD_TOKEN = process.env.DISCORD_BOT_TOKEN
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
 const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-2.0-flash'
+const MAX_HISTORY_TOKENS = parseInt(process.env.MAX_HISTORY_TOKENS ?? '200000', 10)
 
 if (!DISCORD_TOKEN) {
   console.error(`FATAL: DISCORD_BOT_TOKEN missing. Set in ${path.join(STATE_DIR, '.env')}`)
@@ -138,7 +139,7 @@ client.on('messageCreate', async (message: Message) => {
     }, 9000)
 
     const [history, attachmentResult, ytResult] = await Promise.all([
-      fetchHistory(message.channel as any, message.id).then(msgs => formatHistory(msgs, client.user!.id)),
+      buildContextHistory(message.channel as any, message.id, gemini, client.user!.id, MAX_HISTORY_TOKENS),
       processAttachments(
         message.id,
         [...message.attachments.values()].map<InputAttachment>(a => ({
