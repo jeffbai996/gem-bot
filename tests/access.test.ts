@@ -153,4 +153,41 @@ describe('AccessManager', () => {
       /thinking.*always.*auto.*never/
     )
   })
+
+  describe('canReact', () => {
+    test('allowed user in enabled channel can react', async () => {
+      await writeAccess({ users: {}, channels: {} })
+      mgr = new AccessManager()
+      await mgr.load()
+      await mgr.allowUser('U1')
+      await mgr.setChannel('C1', true, false)
+      assert.equal(mgr.canReact('U1', 'C1'), true)
+    })
+
+    test('not-allowed user cannot react', async () => {
+      await writeAccess({ users: {}, channels: {} })
+      mgr = new AccessManager()
+      await mgr.load()
+      await mgr.setChannel('C1', true, false)
+      assert.equal(mgr.canReact('U1', 'C1'), false)
+    })
+
+    test('disabled channel blocks reaction', async () => {
+      await writeAccess({ users: {}, channels: {} })
+      mgr = new AccessManager()
+      await mgr.load()
+      await mgr.allowUser('U1')
+      await mgr.setChannel('C1', false, false)
+      assert.equal(mgr.canReact('U1', 'C1'), false)
+    })
+
+    test('require-mention setting does not affect canReact', async () => {
+      await writeAccess({ users: {}, channels: {} })
+      mgr = new AccessManager()
+      await mgr.load()
+      await mgr.allowUser('U1')
+      await mgr.setChannel('C1', true, true)
+      assert.equal(mgr.canReact('U1', 'C1'), true)
+    })
+  })
 })

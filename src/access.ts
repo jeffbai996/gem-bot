@@ -75,6 +75,16 @@ export class AccessManager {
     return true
   }
 
+  // Reactions don't have a mention concept; they only require the user
+  // to be allowlisted and the channel to be enabled.
+  canReact(userId: string, channelId: string): boolean {
+    const user = this.data.users[userId]
+    if (!user?.allowed) return false
+    const channel = this.data.channels[channelId]
+    if (!channel?.enabled) return false
+    return true
+  }
+
   async allowUser(userId: string): Promise<void> {
     this.data.users[userId] = { allowed: true }
     await this.save()
