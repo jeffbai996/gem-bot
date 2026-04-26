@@ -2,6 +2,7 @@ import fs from 'fs/promises'
 import fsSync from 'fs'
 import path from 'path'
 import os from 'os'
+import { PinnedFactsStore } from './pinned-facts.ts'
 
 const DEFAULT_PERSONA = `You are Gemma, a Discord bot backed by Google's Gemini model. Be helpful, concise, and match the channel's tone. You can respond with text, an emoji reaction, or both.`
 
@@ -17,6 +18,11 @@ export class PersonaLoader {
   private persona: string = DEFAULT_PERSONA
   private memories: string = ''
   private activePersonaFile: string = 'persona.md'
+  private pinnedFacts: PinnedFactsStore | null = null
+
+  setPinnedFactsStore(store: PinnedFactsStore): void {
+    this.pinnedFacts = store
+  }
 
   async load(filename?: string): Promise<void> {
     if (filename) this.activePersonaFile = filename
@@ -65,6 +71,7 @@ export class PersonaLoader {
 
   buildSystemPrompt(channelId: string): string {
     const summary = this.readChannelSummary(channelId)
+    const pinned = this.pinnedFacts?.readForChannelSync(channelId) ?? ''
 
     const sections: string[] = [this.persona]
     if (this.memories) {
@@ -72,6 +79,9 @@ export class PersonaLoader {
     }
     if (summary) {
       sections.push(`## Current channel summary\n\n${summary}`)
+    }
+    if (pinned) {
+      sections.push(`## Pinned facts for this channel\n\n${pinned}`)
     }
     return sections.join('\n\n---\n\n')
   }
