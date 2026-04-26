@@ -11,6 +11,9 @@ import { chunk } from './chunk.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
 import { insertMessage } from './db.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
+import { PendingEditsStore } from './reactions/pending-edits.ts'
+import { PinnedFactsStore } from './pinned-facts.ts'
+import { handleReaction } from './reactions/handler.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
@@ -33,6 +36,9 @@ const access = new AccessManager()
 const persona = new PersonaLoader()
 const toolRegistry = await buildDefaultRegistry()
 const gemini = new GeminiClient(GEMINI_API_KEY, MODEL_NAME, toolRegistry)
+const pendingEdits = new PendingEditsStore()
+const pinnedFacts = new PinnedFactsStore(path.join(STATE_DIR, 'pinned-facts.md'))
+persona.setPinnedFactsStore(pinnedFacts)
 
 await access.load()
 await persona.load()
@@ -55,12 +61,13 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.DirectMessageTyping,
     GatewayIntentBits.DirectMessageReactions,
     GatewayIntentBits.MessageContent
   ],
-  partials: [Partials.Channel, Partials.Message, Partials.User]
+  partials: [Partials.Channel, Partials.Message, Partials.User, Partials.Reaction]
 })
 
 client.once('ready', async () => {
@@ -347,7 +354,46 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 }
 
 client.on('messageCreate', async (message: Message) => {
+  // Pending-edit check from ✏️ flow: if a bot message is marked as
+  // edit-target for this channel, edit it with the user's next reply
+  // instead of producing a brand-new reply.
+  if (!message.author.bot) {
+    const pending = pendingEdits.get(message.channelId)
+    if (pending) {
+      pendingEdits.clear(message.channelId)
+      try {
+        const target = await message.channel.messages.fetch(pending) as Message
+        await handleUserMessage(message, { editTarget: target })
+        return
+      } catch (e) {
+        console.error('[reactions] edit-target fetch failed, falling through:', e)
+      }
+    }
+  }
   await handleUserMessage(message, {})
+})
+
+client.on('messageReactionAdd', async (reaction, user) => {
+  await handleReaction(reaction, user, {
+    client,
+    access,
+    buildContext: (message, reactor) => ({
+      message,
+      reactor,
+      client,
+      gemini,
+      access,
+      persona,
+      pendingEdits,
+      pinnedFacts,
+      rerunHandler: async (originalUserMessage, targetMessage, expansion) => {
+        await handleUserMessage(originalUserMessage, {
+          editTarget: targetMessage ?? undefined,
+          expansion
+        })
+      }
+    })
+  })
 })
 
 await client.login(DISCORD_TOKEN)
