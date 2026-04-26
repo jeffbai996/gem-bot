@@ -91,7 +91,17 @@ client.on('interactionCreate', async (interaction) => {
   }
 })
 
-client.on('messageCreate', async (message: Message) => {
+interface HandleOpts {
+  // When set, edit this message in place for the *first* reply chunk instead
+  // of sending a fresh reply. Additional chunks (rare) still post as new
+  // replies after the edited target.
+  editTarget?: Message
+  // When true, prepend an "expand on previous reply" instruction to the
+  // user message text before passing to Gemini.
+  expansion?: boolean
+}
+
+async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promise<void> {
   if (message.author.bot) return
   if (!client.user) return
 
@@ -169,10 +179,16 @@ client.on('messageCreate', async (message: Message) => {
     let latestParsed = { react: null as string | null, thinking: null as string | null, reply: null as string | null }
     let lastFlushedFullReply = ''
     let activeMessages: Message[] = []
-    
-    // Initial loading message
-    const initialMsg = await message.reply({ content: '💭 *Thinking...*', allowedMentions: { repliedUser: false } }).catch(() => null)
-    if (initialMsg) activeMessages.push(initialMsg as Message)
+
+    // Initial loading message. When opts.editTarget is set, reuse that bot
+    // message (regenerate / ✏️ flow) instead of sending a new reply.
+    if (opts.editTarget) {
+      activeMessages.push(opts.editTarget)
+      await opts.editTarget.edit('💭 *Thinking...*').catch(() => {})
+    } else {
+      const initialMsg = await message.reply({ content: '💭 *Thinking...*', allowedMentions: { repliedUser: false } }).catch(() => null)
+      if (initialMsg) activeMessages.push(initialMsg as Message)
+    }
 
     let isFlushing = false
     const flushStream = async () => {
@@ -214,12 +230,17 @@ client.on('messageCreate', async (message: Message) => {
 
     streamInterval = setInterval(() => { flushStream() }, 2000)
 
+    const userText = opts.expansion
+      ? `[The user wants you to expand on your previous reply with more depth and detail.]\n\n${message.content}`
+      : message.content
+
     const { parsed, meta } = await gemini.respond({
       systemPrompt: persona.buildSystemPrompt(message.channelId),
       history,
-      userMessageText: message.content,
+      userMessageText: userText,
       userMediaParts: allParts,
       userName: message.author.username,
+      channelId: message.channelId,
       thinkingMode: flags.thinking
     }, (partial) => {
       latestParsed = partial
@@ -323,6 +344,10 @@ client.on('messageCreate', async (message: Message) => {
     if (typingInterval) clearInterval(typingInterval)
     if (streamInterval) clearInterval(streamInterval)
   }
+}
+
+client.on('messageCreate', async (message: Message) => {
+  await handleUserMessage(message, {})
 })
 
 await client.login(DISCORD_TOKEN)
