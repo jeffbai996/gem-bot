@@ -1,5 +1,6 @@
 import { ToolRegistry } from './registry.ts'
 import { searchMemoryTool } from './search-memory.ts'
+import { fetchUrlTool } from './fetch-url.ts'
 import { connectMcpClient } from './mcp-client.ts'
 import { loadIbkrTools } from './ibkr-tools.ts'
 import { ibkrUnreachableStub } from './ibkr-unreachable-stub.ts'
@@ -10,6 +11,7 @@ export type { Tool, ToolContext } from './registry.ts'
 export async function buildDefaultRegistry(): Promise<ToolRegistry> {
   const r = new ToolRegistry()
   r.register(searchMemoryTool)
+  r.register(fetchUrlTool)
 
   const ibkrUrl = process.env.IBKR_MCP_URL || 'http://127.0.0.1:8000/mcp'
   try {
