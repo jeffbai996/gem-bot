@@ -10,6 +10,7 @@ export interface HistoryAttachment {
 }
 
 export interface HistoryMessage {
+  id: string
   authorId: string
   authorName: string
   content: string
@@ -34,6 +35,7 @@ export async function fetchHistory(
   const arr: HistoryMessage[] = []
   for (const m of fetched.values()) {
     arr.push({
+      id: m.id,
       authorId: m.author.id,
       authorName: m.author.username,
       content: m.content,
@@ -90,15 +92,26 @@ export function formatHistory(messages: HistoryMessage[], selfId: string): Gemin
 
 // Fetch + format + token-budget trim in one call. Use this from gemma.ts;
 // the individual pieces remain exported for testing and future reuse.
+//
+// `since` (optional): when set, drops raw messages with id <= since before
+// formatting. Used by the conversation-summarization flow to avoid feeding
+// already-summarized messages back into the live context.
 export async function buildContextHistory(
   channel: TextChannel | DMChannel | ThreadChannel,
   beforeMessageId: string,
   gemini: GeminiClient,
   selfId: string,
-  budget: number
+  budget: number,
+  since?: string | null
 ): Promise<GeminiContent[]> {
   const raw = await fetchHistory(channel, beforeMessageId)
-  const formatted = formatHistory(raw, selfId)
+  // Discord snowflake IDs are sortable numerically via BigInt comparison.
+  const filtered = since
+    ? raw.filter(m => {
+        try { return BigInt(m.id) > BigInt(since) } catch { return true }
+      })
+    : raw
+  const formatted = formatHistory(filtered, selfId)
   if (budget <= 0) {
     return formatted.length > 20 ? formatted.slice(-20) : formatted
   }
