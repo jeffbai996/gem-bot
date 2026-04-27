@@ -25,6 +25,15 @@ db.exec(`
   CREATE VIRTUAL TABLE IF NOT EXISTS vss_messages USING vss0(
     embedding(768)
   );
+
+  -- One conversation summary per channel. Updated when un-summarized
+  -- message count exceeds the threshold (see SummarizationScheduler).
+  CREATE TABLE IF NOT EXISTS conversation_summaries (
+    channel_id TEXT PRIMARY KEY,
+    summary TEXT NOT NULL,
+    last_summarized_message_id TEXT NOT NULL,
+    updated_at DATETIME NOT NULL
+  );
 `)
 
 // Prepare statements for efficiency
@@ -84,4 +93,57 @@ const searchStmt = db.prepare(`
 export function searchMessages(channelId: string, queryEmbedding: number[], limit: number = 10): SearchResult[] {
   const queryJson = JSON.stringify(queryEmbedding)
   return searchStmt.all(queryJson, limit, channelId) as SearchResult[]
+}
+
+// Fetch raw messages for summarization, in chronological order. `since` is a
+// Discord message ID; only messages with id > since are returned. Cast to
+// INTEGER for proper numeric ordering of snowflake IDs.
+const fetchMessagesSinceStmt = db.prepare(`
+  SELECT id, channel_id, author_name, content, timestamp
+  FROM messages
+  WHERE channel_id = ?
+    AND (? IS NULL OR CAST(id AS INTEGER) > CAST(? AS INTEGER))
+  ORDER BY CAST(id AS INTEGER) ASC
+  LIMIT ?
+`)
+
+export interface MessageRow {
+  id: string
+  channel_id: string
+  author_name: string
+  content: string
+  timestamp: string
+}
+
+export function fetchMessagesSince(channelId: string, sinceMessageId: string | null, limit: number): MessageRow[] {
+  return fetchMessagesSinceStmt.all(channelId, sinceMessageId, sinceMessageId, limit) as MessageRow[]
+}
+
+const upsertSummaryStmt = db.prepare(`
+  INSERT INTO conversation_summaries (channel_id, summary, last_summarized_message_id, updated_at)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT(channel_id) DO UPDATE SET
+    summary = excluded.summary,
+    last_summarized_message_id = excluded.last_summarized_message_id,
+    updated_at = excluded.updated_at
+`)
+
+const getSummaryStmt = db.prepare(`
+  SELECT channel_id, summary, last_summarized_message_id, updated_at
+  FROM conversation_summaries WHERE channel_id = ?
+`)
+
+export interface SummaryRow {
+  channel_id: string
+  summary: string
+  last_summarized_message_id: string
+  updated_at: string
+}
+
+export function upsertSummary(channelId: string, summary: string, lastMessageId: string): void {
+  upsertSummaryStmt.run(channelId, summary, lastMessageId, new Date().toISOString())
+}
+
+export function getSummary(channelId: string): SummaryRow | null {
+  return (getSummaryStmt.get(channelId) as SummaryRow | undefined) ?? null
 }
