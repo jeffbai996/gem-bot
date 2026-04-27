@@ -372,6 +372,22 @@ export class GeminiClient {
     return result.totalTokens
   }
 
+  // Single-turn text completion. No streaming, no tool dispatch — used for
+  // background tasks like summarization where we just want plain text out.
+  async completeText(systemPrompt: string, userText: string): Promise<string> {
+    const result = await this.model.generateContent({
+      systemInstruction: { role: 'system', parts: [{ text: systemPrompt }] },
+      contents: [{ role: 'user', parts: [{ text: userText }] }]
+    })
+    const candidate = result.response.candidates?.[0]
+    const parts = (candidate?.content?.parts ?? []) as any[]
+    return parts
+      .filter(p => typeof p.text === 'string' && !p.executableCode && !p.codeExecutionResult && !p.functionCall)
+      .map(p => p.text as string)
+      .join('\n')
+      .trim()
+  }
+
   // One round-trip with the model. Handles both streaming (when onProgress
   // provided) and non-streaming, returning a unified shape so the caller's
   // tool loop doesn't branch on streaming vs not.
