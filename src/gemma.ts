@@ -14,6 +14,9 @@ import { buildDefaultRegistry } from './tools/index.ts'
 import { PendingEditsStore } from './reactions/pending-edits.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
 import { handleReaction } from './reactions/handler.ts'
+import { SummaryStore } from './summarization/store.ts'
+import { SummarizationScheduler } from './summarization/scheduler.ts'
+import { fetchMessagesSince } from './db.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
@@ -39,6 +42,26 @@ const gemini = new GeminiClient(GEMINI_API_KEY, MODEL_NAME, toolRegistry)
 const pendingEdits = new PendingEditsStore()
 const pinnedFacts = new PinnedFactsStore(path.join(STATE_DIR, 'pinned-facts.md'))
 persona.setPinnedFactsStore(pinnedFacts)
+
+const summaryStore = new SummaryStore()
+persona.setSummaryStore(summaryStore)
+const SUMMARIZATION_THRESHOLD = parseInt(process.env.MAX_UNSUMMARIZED_MESSAGES ?? '50', 10)
+const SUMMARIZATION_BATCH_LIMIT = parseInt(process.env.SUMMARIZATION_BATCH_LIMIT ?? '500', 10)
+const summarizer = new SummarizationScheduler({
+  store: summaryStore,
+  fetchSinceForSummarization: async (channelId, since, limit) => {
+    const rows = fetchMessagesSince(channelId, since, limit)
+    return rows.map(r => ({
+      authorName: r.author_name,
+      content: r.content,
+      timestamp: r.timestamp,
+      messageId: r.id
+    }))
+  },
+  gemini,
+  threshold: SUMMARIZATION_THRESHOLD,
+  batchLimit: SUMMARIZATION_BATCH_LIMIT
+})
 
 await access.load()
 await persona.load()
@@ -155,8 +178,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       ;(message.channel as any).sendTyping().catch(() => {})
     }, 9000)
 
+    const summaryRecord = summaryStore.get(message.channelId)
+    const sinceMessageId = summaryRecord?.lastSummarizedMessageId ?? null
+
     const [history, attachmentResult, ytResult] = await Promise.all([
-      buildContextHistory(message.channel as any, message.id, gemini, client.user!.id, MAX_HISTORY_TOKENS),
+      buildContextHistory(message.channel as any, message.id, gemini, client.user!.id, MAX_HISTORY_TOKENS, sinceMessageId),
       processAttachments(
         message.id,
         [...message.attachments.values()].map<InputAttachment>(a => ({
@@ -337,6 +363,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     }
 
     await Promise.all([attachmentResult.cleanup(), ytResult.cleanup()])
+
+    // Fire-and-forget: kick off conversation summarization if the channel
+    // has accumulated enough new messages. Single-flight per channel inside
+    // the scheduler — safe to call on every reply.
+    summarizer.scheduleIfNeeded(message.channelId)
 
   } catch (e: any) {
     console.error('message handler error:', e)
