@@ -12,6 +12,7 @@ import { geminiCommand, executeGeminiCommand } from './commands.ts'
 import { insertMessage } from './db.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
 import { PendingEditsStore } from './reactions/pending-edits.ts'
+import { isValidOutboundReactEmoji } from './reactions/vocabulary.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
 import { handleReaction } from './reactions/handler.ts'
 import { SummaryStore } from './summarization/store.ts'
@@ -300,7 +301,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     }
 
     if (parsed.react) {
-      message.react(parsed.react).catch(e => console.error('react failed:', e))
+      if (isValidOutboundReactEmoji(parsed.react)) {
+        message.react(parsed.react).catch(e => console.error('react failed:', e))
+      } else {
+        console.error(`[react skipped] not a valid unicode emoji: ${JSON.stringify(parsed.react)}`)
+      }
     }
 
     let finalFullReply = ''
