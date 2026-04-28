@@ -343,19 +343,33 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     }
 
     if (finalFullReply) {
+      // Edit streaming preview messages in place to become the final output.
+      // The prior approach (delete all streaming messages, then send fresh ones)
+      // produced duplicate messages when a delete silently failed — the send
+      // ran regardless, leaving the old message alive next to the new one.
+      // Trading the "(edited)" marker for zero-duplicate guarantee.
       const pieces = chunk(finalFullReply, 2000, 'newline')
       for (let i = 0; i < pieces.length; i++) {
         const piece = pieces[i]
         if (i < activeMessages.length) {
-          await activeMessages[i].edit(piece).catch(() => {})
+          if (activeMessages[i].content !== piece) {
+            await activeMessages[i].edit(piece).catch(err => {
+              console.error(`final edit failed for chunk ${i}:`, err)
+            })
+          }
         } else {
           const msg = await message.reply({ content: piece, allowedMentions: { repliedUser: false } }).catch(() => null)
           if (msg) activeMessages.push(msg as Message)
         }
       }
-      // Delete any leftover active messages if the final chunking shrank the message count
-      for (let i = pieces.length; i < activeMessages.length; i++) {
-        await activeMessages[i].delete().catch(() => {})
+      // Delete excess streaming messages if final has fewer chunks than streaming.
+      // Delete failure here is cosmetic (stale chunk, not a duplicate) — log instead
+      // of swallowing so problems stay visible.
+      if (pieces.length < activeMessages.length) {
+        const excess = activeMessages.splice(pieces.length)
+        for (const m of excess) {
+          await m.delete().catch(err => console.error(`excess delete failed (cosmetic):`, err))
+        }
       }
     } else {
       // If the final reply is empty (e.g. only a react), delete the thinking messages
@@ -371,7 +385,14 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
   } catch (e: any) {
     console.error('message handler error:', e)
-    const isRateLimit = e?.status === 429 || /rate/i.test(String(e?.message || ''))
+    // Match explicit rate-limit language only. The naive /rate/i matched
+    // "generateContent" in every Gemini URL, causing unrelated 400s to look
+    // like rate limits. Anchor on word boundaries + the actual phrase.
+    const msgStr = String(e?.message || '')
+    const isRateLimit = e?.status === 429
+      || /\brate limit\b/i.test(msgStr)
+      || /\bquota\b/i.test(msgStr)
+      || /\btoo many requests\b/i.test(msgStr)
     const msg = isRateLimit
       ? "hitting Gemini's rate limit — give me a minute"
       : "something broke reaching Gemini. check logs."

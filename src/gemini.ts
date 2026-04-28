@@ -213,6 +213,13 @@ export function parseResponse(text: string, isPartial: boolean = false): ParsedR
 // functionCall) interleaved with the model's final text. `response.text()`
 // concatenates ALL text-ish parts, which includes code-exec output — that
 // breaks JSON parsing. Extract ONLY the text parts; drop everything else.
+//
+// Concatenate with EMPTY string (not '\n'). Streaming responses split a
+// single logical text output across multiple parts at token boundaries —
+// joining with '\n' injects spurious newlines mid-string that then leak
+// into Gemma's parsed reply. Also: do NOT .trim(), because the first
+// char of a continuation part is often a meaningful space or \u escape
+// continuation — trimming mangles unicode escapes split across parts.
 export function extractModelText(parts: Array<{ text?: string, executableCode?: unknown, codeExecutionResult?: unknown, functionCall?: unknown }> | undefined): string {
   if (!parts) return ''
   const chunks: string[] = []
@@ -221,7 +228,7 @@ export function extractModelText(parts: Array<{ text?: string, executableCode?: 
       chunks.push(p.text)
     }
   }
-  return chunks.join('\n').trim()
+  return chunks.join('')
 }
 
 export interface GroundingSource {
@@ -345,26 +352,55 @@ export function buildUserTurn(args: BuildRequestArgs): Content {
 export class GeminiClient {
   private model: ReturnType<GoogleGenerativeAI['getGenerativeModel']>
   private registry: ToolRegistry
+  private apiKey: string
 
   constructor(apiKey: string, modelName: string = 'gemini-2.0-flash', registry: ToolRegistry) {
-    const genAI = new GoogleGenerativeAI(apiKey)
+    this.apiKey = apiKey
     this.registry = registry
+    const genAI = new GoogleGenerativeAI(apiKey)
+    // Gemini requires `includeServerSideToolInvocations: true` in toolConfig
+    // when mixing built-in tools (googleSearch, codeExecution) with user
+    // functionDeclarations. Without it, the API 400s with:
+    //   "Please enable tool_config.include_server_side_tool_invocations
+    //    to use Built-in tools with Function calling."
+    // The SDK's ToolConfig type doesn't expose this field yet — cast.
     this.model = genAI.getGenerativeModel({
       model: modelName,
       tools: [
         { googleSearch: {} },
         { codeExecution: {} },
         { functionDeclarations: registry.getDeclarations() }
-      ]
+      ],
+      toolConfig: { includeServerSideToolInvocations: true } as any
     })
   }
 
   async embed(text: string): Promise<number[]> {
-    // Note: embedContent requires an embedding model. We instantiate a separate model for this.
-    const genAI = new GoogleGenerativeAI(this.model.apiKey)
-    const embeddingModel = genAI.getGenerativeModel({ model: 'text-embedding-004' })
-    const result = await embeddingModel.embedContent(text)
-    return result.embedding.values
+    // gemini-embedding-001 is the current embedding model; text-embedding-004
+    // returned 404 as of 2026-04-20. Requesting 768-dim output to match the
+    // sqlite-vss schema (db.ts creates vss_messages with embedding(768)).
+    // The JS SDK's embedContent doesn't expose outputDimensionality directly,
+    // so we hit the REST endpoint manually.
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${this.apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: { parts: [{ text }] },
+          outputDimensionality: 768
+        })
+      }
+    )
+    if (!res.ok) {
+      throw new Error(`embedContent HTTP ${res.status}: ${await res.text()}`)
+    }
+    const data = await res.json() as { embedding?: { values?: number[] } }
+    const values = data.embedding?.values
+    if (!Array.isArray(values) || values.length !== 768) {
+      throw new Error(`embedContent returned unexpected shape: ${JSON.stringify(data).slice(0, 200)}`)
+    }
+    return values
   }
 
   async countTokens(contents: Content[]): Promise<number> {

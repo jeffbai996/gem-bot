@@ -54,6 +54,29 @@ export const geminiCommand = new SlashCommandBuilder()
       .addChannelOption(option => option.setName('channel').setDescription('Channel to scrape').setRequired(true))
       .addIntegerOption(option => option.setName('limit').setDescription('Max messages to embed').setMinValue(1).setMaxValue(500).setRequired(false))
   )
+  .addSubcommand(subcommand =>
+    subcommand
+      .setName('thinking')
+      .setDescription('Quick toggle: set thinking mode for a channel (defaults to current channel)')
+      .addStringOption(option => option
+        .setName('mode')
+        .setDescription('When to render the 💭 thinking block')
+        .setRequired(true)
+        .addChoices(
+          { name: 'always — force CoT block on every reply', value: 'always' },
+          { name: 'auto — Gemma decides per message', value: 'auto' },
+          { name: 'never — suppress CoT block entirely', value: 'never' }
+        )
+      )
+      .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
+  )
+  .addSubcommand(subcommand =>
+    subcommand
+      .setName('showcode')
+      .setDescription('Quick toggle: render code-execution artifacts (defaults to current channel)')
+      .addBooleanOption(option => option.setName('enabled').setDescription('Show code artifacts').setRequired(true))
+      .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
+  )
 
   export async function executeGeminiCommand(interaction: ChatInputCommandInteraction, access: AccessManager, persona: PersonaLoader, gemini: GeminiClient, adminUserId?: string) {
   // Extra layer of security: only specific user ID from .env can use this, 
@@ -94,6 +117,40 @@ export const geminiCommand = new SlashCommandBuilder()
       const filename = interaction.options.getString('filename', true)
       await persona.load(filename)
       return interaction.reply({ content: `✅ Persona swapped to \`${filename}\`.`, ephemeral: true })
+    }
+
+    if (subcommand === 'thinking') {
+      const mode = interaction.options.getString('mode', true) as 'always' | 'auto' | 'never'
+      const channel = interaction.options.getChannel('channel') ?? interaction.channel
+      if (!channel) {
+        return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
+      }
+      try {
+        const updated = await access.setChannelFlags(channel.id, { thinking: mode })
+        return interaction.reply({
+          content: `✅ <#${channel.id}> thinking → \`${mode}\` (showCode=${updated.showCode}, requireMention=${updated.requireMention})`,
+          ephemeral: true
+        })
+      } catch (e: any) {
+        return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
+      }
+    }
+
+    if (subcommand === 'showcode') {
+      const enabled = interaction.options.getBoolean('enabled', true)
+      const channel = interaction.options.getChannel('channel') ?? interaction.channel
+      if (!channel) {
+        return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
+      }
+      try {
+        const updated = await access.setChannelFlags(channel.id, { showCode: enabled })
+        return interaction.reply({
+          content: `✅ <#${channel.id}> showCode → \`${enabled}\` (thinking=${updated.thinking}, requireMention=${updated.requireMention})`,
+          ephemeral: true
+        })
+      } catch (e: any) {
+        return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
+      }
     }
 
     if (subcommand === 'backfill') {
