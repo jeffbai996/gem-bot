@@ -274,19 +274,36 @@ export function extractGroundingSources(candidate: any): GroundingSource[] {
 // Pair executableCode parts with the codeExecutionResult that follows them.
 // Order in candidate.content.parts is: text? → executableCode → codeExecutionResult → text?
 // An executableCode without a following result is still reported (output: null).
+//
+// Dedupe: Gemini's streaming-aggregated parts array sometimes contains the
+// same executableCode twice (observed in prod 2026-04-28 — single run of
+// `print(math.factorial(25))` rendered as two identical 🛠️ Code blocks in
+// Discord, neither with an Output section). We collapse a duplicate when its
+// (code, language) matches the most-recent artifact (pending or last pushed),
+// preferring whichever copy ended up paired with a result.
 export function extractCodeArtifacts(parts: any[] | undefined): CodeExecArtifact[] {
   if (!parts) return []
   const out: CodeExecArtifact[] = []
   let pending: CodeExecArtifact | null = null
   for (const p of parts) {
     if (p?.executableCode) {
-      if (pending) out.push(pending)
-      pending = {
-        code: typeof p.executableCode.code === 'string' ? p.executableCode.code : '',
-        language: typeof p.executableCode.language === 'string' ? p.executableCode.language.toLowerCase() : 'python',
-        output: null,
-        outcome: null
+      const code = typeof p.executableCode.code === 'string' ? p.executableCode.code : ''
+      const language = typeof p.executableCode.language === 'string' ? p.executableCode.language.toLowerCase() : 'python'
+
+      // Drop a duplicate that matches the in-flight pending artifact — keep
+      // pending so it can still pick up a following codeExecutionResult.
+      if (pending && pending.code === code && pending.language === language) {
+        continue
       }
+      // Drop a duplicate that matches the most-recently pushed artifact — that
+      // copy already had its chance to pair with a result.
+      const last = out[out.length - 1]
+      if (!pending && last && last.code === code && last.language === language) {
+        continue
+      }
+
+      if (pending) out.push(pending)
+      pending = { code, language, output: null, outcome: null }
     } else if (p?.codeExecutionResult) {
       if (pending) {
         pending.output = typeof p.codeExecutionResult.output === 'string' ? p.codeExecutionResult.output : null
