@@ -388,7 +388,16 @@ export class GeminiClient {
         { codeExecution: {} },
         { functionDeclarations: registry.getDeclarations() }
       ],
-      toolConfig: { includeServerSideToolInvocations: true } as any
+      toolConfig: { includeServerSideToolInvocations: true } as any,
+      // Hard cap on output to bound cost when the model degenerates into a
+      // token-repetition loop (seen 2026-04-29 with gemini-3-flash-preview
+      // emitting `5v57_5v57_...` to max output). gemini-3-pro-preview rejects
+      // frequencyPenalty/presencePenalty with 400 ("Penalty is not enabled for
+      // this model") — relying on the pro model's stronger instruction-following
+      // for repetition resistance instead.
+      generationConfig: {
+        maxOutputTokens: 4096
+      } as any
     })
   }
 
