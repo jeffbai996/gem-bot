@@ -281,6 +281,14 @@ export function extractGroundingSources(candidate: any): GroundingSource[] {
 // Discord, neither with an Output section). We collapse a duplicate when its
 // (code, language) matches the most-recent artifact (pending or last pushed),
 // preferring whichever copy ended up paired with a result.
+//
+// gemini-3-pro-preview emits duplicates with subtle whitespace differences
+// (extra trailing newline, indent shift), so we normalize whitespace on the
+// dedupe key — collapse all runs of whitespace and trim — without mutating
+// the artifact's stored code (which still gets rendered verbatim).
+function normalizeCodeForDedupe(code: string): string {
+  return code.replace(/\s+/g, ' ').trim()
+}
 export function extractCodeArtifacts(parts: any[] | undefined): CodeExecArtifact[] {
   if (!parts) return []
   const out: CodeExecArtifact[] = []
@@ -289,16 +297,17 @@ export function extractCodeArtifacts(parts: any[] | undefined): CodeExecArtifact
     if (p?.executableCode) {
       const code = typeof p.executableCode.code === 'string' ? p.executableCode.code : ''
       const language = typeof p.executableCode.language === 'string' ? p.executableCode.language.toLowerCase() : 'python'
+      const codeKey = normalizeCodeForDedupe(code)
 
       // Drop a duplicate that matches the in-flight pending artifact — keep
       // pending so it can still pick up a following codeExecutionResult.
-      if (pending && pending.code === code && pending.language === language) {
+      if (pending && normalizeCodeForDedupe(pending.code) === codeKey && pending.language === language) {
         continue
       }
       // Drop a duplicate that matches the most-recently pushed artifact — that
       // copy already had its chance to pair with a result.
       const last = out[out.length - 1]
-      if (!pending && last && last.code === code && last.language === language) {
+      if (!pending && last && normalizeCodeForDedupe(last.code) === codeKey && last.language === language) {
         continue
       }
 
