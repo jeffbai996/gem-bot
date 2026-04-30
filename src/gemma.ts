@@ -300,13 +300,18 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       console.error(`[safety] channel=${message.channelId} flagged=${JSON.stringify(meta.flaggedSafety)}`)
     }
 
-    if (parsed.react) {
-      if (isValidOutboundReactEmoji(parsed.react)) {
-        message.react(parsed.react).catch(e => console.error('react failed:', e))
-      } else {
-        console.error(`[react skipped] not a valid unicode emoji: ${JSON.stringify(parsed.react)}`)
-      }
+    // gemini-3-pro-preview frequently omits the `react` field despite the
+    // persona instruction. Default to 👀 to guarantee a reaction.
+    let reactToFire: string | null = null
+    if (parsed.react && isValidOutboundReactEmoji(parsed.react)) {
+      reactToFire = parsed.react
+    } else if (parsed.react) {
+      console.error(`[react skipped] not a valid unicode emoji: ${JSON.stringify(parsed.react)}`)
+      reactToFire = '👀'
+    } else {
+      reactToFire = '👀'
     }
+    message.react(reactToFire).catch(e => console.error('react failed:', e))
 
     let finalFullReply = ''
     const showThinkingFinal = flags.thinking !== 'never' && !!parsed.thinking
