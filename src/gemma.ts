@@ -67,6 +67,15 @@ const summarizer = new SummarizationScheduler({
 await access.load()
 await persona.load()
 
+// Compact token count: under 1000 raw, 1.2K from 1000-99999, 123K from
+// 100000+. Keeps the verbose footer readable without scientific notation
+// when prompts get large (history + tool results stack up fast).
+function formatTokenCount(n: number): string {
+  if (n < 1000) return `${n}`
+  if (n < 100_000) return `${(n / 1000).toFixed(1)}K`
+  return `${Math.round(n / 1000)}K`
+}
+
 // Compact display of tool-call args. Strings get quoted + truncated; objects
 // get JSON-stringified + truncated. Keeps the inline `tool(arg1, arg2)`
 // rendering readable when args are long URLs or big payloads.
@@ -287,6 +296,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       ? `[The user wants you to expand on your previous reply with more depth and detail.]\n\n${message.content}`
       : message.content
 
+    const respondT0 = Date.now()
     const { parsed, meta } = await gemini.respond({
       systemPrompt: persona.buildSystemPrompt(message.channelId),
       history,
@@ -298,6 +308,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     }, (partial) => {
       latestParsed = partial
     })
+    const respondElapsedMs = Date.now() - respondT0
 
     if (streamInterval) {
       clearInterval(streamInterval)
@@ -403,19 +414,23 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         .join(' · ')
     }
 
-    // Verbose ops footer — token usage. Mirrors ticker-tape's footer
-    // (see chat.py _last_usage emission). finishReason is dropped here; it's
-    // only useful when non-STOP, and the MAX_TOKENS / SAFETY cases below
-    // already surface the unhappy paths explicitly.
+    // Verbose ops footer — token usage + response time. Format:
+    //   `↑ 14.2K · ↓ 310 · 4.2s`
+    // ↑ = prompt tokens (sent up), ↓ = response tokens (came down). Wrapped
+    // in backticks so it reads as a discrete data badge, distinct from the
+    // bot's prose. Response time replaces total-tokens — wall-clock is more
+    // actionable than the sum (you can derive thinking-token spend from
+    // total - prompt - response if you need it from the logs).
     if (flags.verbose) {
       const u = meta.usage
+      const respondElapsedSec = (respondElapsedMs / 1000).toFixed(1)
       const tokenStr = u
-        ? `${(u.promptTokens / 1000).toFixed(1)}K in / ${u.responseTokens} out / ${u.totalTokens} tot`
-        : 'no usage data'
+        ? `\`↑ ${formatTokenCount(u.promptTokens)} · ↓ ${formatTokenCount(u.responseTokens)} · ${respondElapsedSec}s\``
+        : `\`${respondElapsedSec}s — no usage data\``
       const safetyStr = meta.flaggedSafety.length > 0
-        ? ` / ⚠️ ${meta.flaggedSafety.map(s => `${s.category.replace('HARM_CATEGORY_', '')}=${s.probability}`).join(',')}`
+        ? ` ⚠️ ${meta.flaggedSafety.map(s => `${s.category.replace('HARM_CATEGORY_', '')}=${s.probability}`).join(',')}`
         : ''
-      finalFullReply += `\n-# 📊 ${tokenStr}${safetyStr}`
+      finalFullReply += `\n-# ${tokenStr}${safetyStr}`
     }
 
     if (meta.finishReason === 'MAX_TOKENS') {
