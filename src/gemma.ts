@@ -428,7 +428,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       const safetyStr = meta.flaggedSafety.length > 0
         ? ` ⚠️ ${meta.flaggedSafety.map(s => `${s.category.replace('HARM_CATEGORY_', '')}=${s.probability}`).join(',')}`
         : ''
-      finalFullReply += `\n-# ${tokenStr}${safetyStr}`
+      finalFullReply += `\n\n-# ${tokenStr}${safetyStr}`
     }
 
     if (meta.finishReason === 'MAX_TOKENS') {
