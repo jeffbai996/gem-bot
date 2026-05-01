@@ -289,6 +289,29 @@ export function extractGroundingSources(candidate: any): GroundingSource[] {
 function normalizeCodeForDedupe(code: string): string {
   return code.replace(/\s+/g, ' ').trim()
 }
+
+// gemini-3-pro-preview often emits the same code twice — once in its prose
+// reply as a markdown fenced block, and once via the codeExecution tool as an
+// executableCode part. The artifact path is rendered separately by gemma.ts
+// when showCode is on; the prose copy is a duplicate that the user explicitly
+// opted in to seeing once via the artifact rendering.
+//
+// When artifacts exist with a given language, strip ALL fenced blocks of that
+// language from the reply text. Pro paraphrases the executed code with subtle
+// edits (renamed vars, simplified print line) so byte-for-byte dedupe misses;
+// the right call is to treat the artifact as canonical. Languages that didn't
+// produce an artifact pass through untouched (rare edge — model writes a JS
+// snippet alongside an executed Python artifact).
+export function stripDuplicateCodeBlocks(reply: string, artifacts: CodeExecArtifact[]): string {
+  if (!reply || artifacts.length === 0) return reply
+  const stripLangs = new Set(artifacts.map(a => a.language.toLowerCase()))
+  // Also strip unlabeled fenced blocks — pro often omits the language tag on
+  // the duplicated copy.
+  return reply.replace(/```([a-zA-Z0-9_+-]*)\n([\s\S]*?)\n?```/g, (full, lang: string, _body: string) => {
+    const langKey = (lang || '').toLowerCase()
+    return stripLangs.has(langKey) ? '' : full
+  }).replace(/\n{3,}/g, '\n\n').trim()
+}
 export function extractCodeArtifacts(parts: any[] | undefined): CodeExecArtifact[] {
   if (!parts) return []
   const out: CodeExecArtifact[] = []

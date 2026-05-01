@@ -6,7 +6,7 @@ import { AccessManager } from './access.ts'
 import { PersonaLoader } from './persona.ts'
 import { buildContextHistory } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
-import { GeminiClient } from './gemini.ts'
+import { GeminiClient, stripDuplicateCodeBlocks } from './gemini.ts'
 import { chunk } from './chunk.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
 import { insertMessage } from './db.ts'
@@ -330,8 +330,14 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       }
     }
 
-    if (parsed.reply) {
-      finalFullReply += parsed.reply
+    // Strip prose-side fenced code blocks that duplicate an artifact we already
+    // rendered above. gemini-3-pro-preview repeats executed code in its reply
+    // text; the artifact block is the canonical render.
+    const replyText = parsed.reply
+      ? (flags.showCode ? stripDuplicateCodeBlocks(parsed.reply, meta.codeArtifacts) : parsed.reply)
+      : null
+    if (replyText) {
+      finalFullReply += replyText
     }
 
     if (meta.groundingSources.length > 0 && parsed.reply) {
