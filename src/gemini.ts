@@ -1,8 +1,24 @@
 import { GoogleGenerativeAI, type Content, type Part } from '@google/generative-ai'
 import type { GeminiContent } from './history.ts'
 import type { MediaPart } from './attachments.ts'
+import { isAllowedMime } from './attachments.ts'
 import type { ThinkingMode } from './access.ts'
 import { ToolRegistry } from './tools/registry.ts'
+
+// Thrown when Gemini rejects the request payload itself (HTTP 400). The
+// gemma.ts message handler catches this to surface a specific error to the
+// user instead of the generic "something broke" fallback. Don't retry — the
+// payload is bad; same payload will fail the same way.
+export class GeminiRequestRejected extends Error {
+  readonly reason: string
+  readonly status: number
+  constructor(reason: string, status: number = 400) {
+    super(`Gemini rejected request: ${reason}`)
+    this.name = 'GeminiRequestRejected'
+    this.reason = reason
+    this.status = status
+  }
+}
 
 // Appended to every system prompt. Needed because tools (googleSearch +
 // codeExecution) are incompatible with responseMimeType:'application/json' +
@@ -458,6 +474,26 @@ export function buildUserTurn(args: BuildRequestArgs): Content {
   return { role: 'user', parts }
 }
 
+// Strip fileData/inlineData parts whose mime is outside Gemini's allowlist.
+// Belt-and-suspenders: attachments.ts filters at upload time and history.ts
+// filters at cache-resurrect time, but a single rogue part anywhere in the
+// request 400s the entire turn (seen with `video/text/timestamp` 2026-05-01).
+// This is the last gate before the SDK call.
+export function sanitizeContents(contents: Content[]): { sanitized: Content[]; dropped: Array<{ mime: string }> } {
+  const dropped: Array<{ mime: string }> = []
+  const sanitized = contents.map((c) => {
+    const cleanedParts = (c.parts ?? []).filter((p: any) => {
+      const mime = p?.fileData?.mimeType ?? p?.inlineData?.mimeType
+      if (!mime) return true
+      if (isAllowedMime(mime)) return true
+      dropped.push({ mime })
+      return false
+    })
+    return { ...c, parts: cleanedParts }
+  })
+  return { sanitized, dropped }
+}
+
 export class GeminiClient {
   private model: ReturnType<GoogleGenerativeAI['getGenerativeModel']>
   private registry: ToolRegistry
@@ -595,6 +631,16 @@ export class GeminiClient {
         const msg = e?.message ?? String(e)
         if (msg.includes('Failed to parse stream')) {
           console.error('[stream parse failed, falling back to non-streaming]', msg)
+          // Fall through to non-streaming path below.
+        } else if (e?.status === 400 || /\b400 Bad Request\b/.test(msg) || e?.name === 'GoogleGenerativeAIFetchError') {
+          // Payload-level rejection — bad mime type, malformed parts, etc.
+          // Don't retry on the non-streaming path; same payload will fail.
+          // Pull the human-readable bit out of the noisy SDK message. Format:
+          //   "[GoogleGenerativeAI Error]: Error fetching from <url>: [400 ...] <reason>."
+          const reasonMatch = msg.match(/\[400 Bad Request\]\s*(.+?)(?:\n|$)/)
+          const reason = reasonMatch ? reasonMatch[1].trim() : msg
+          console.error('[gemini 400]', reason)
+          throw new GeminiRequestRejected(reason, 400)
         } else {
           throw e
         }
@@ -619,7 +665,12 @@ export class GeminiClient {
     const userTurn = buildUserTurn(args)
     const systemText = formatSystemPrompt(args.systemPrompt, args.thinkingMode ?? 'auto')
 
-    const activeContents: Content[] = [...args.history, userTurn]
+    // Last-gate mime sanitization. Rogue mimes from history-cache resurrection
+    // or unexpected sub-track types would 400 the entire request otherwise.
+    const { sanitized: activeContents, dropped } = sanitizeContents([...args.history, userTurn])
+    if (dropped.length > 0) {
+      console.error(`[sanitize] dropped ${dropped.length} parts with disallowed mime: ${dropped.map(d => d.mime).join(', ')}`)
+    }
     let meta: RespondMetadata | null = null
     let finalParsed: ParsedResponse = { react: null, thinking: null, reply: null }
     const toolCalls: ToolCall[] = []

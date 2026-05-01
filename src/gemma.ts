@@ -6,7 +6,7 @@ import { AccessManager } from './access.ts'
 import { PersonaLoader } from './persona.ts'
 import { buildContextHistory } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
-import { GeminiClient, stripDuplicateCodeBlocks } from './gemini.ts'
+import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected } from './gemini.ts'
 import { chunk } from './chunk.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
 import { insertMessage } from './db.ts'
@@ -479,9 +479,16 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       || /\brate limit\b/i.test(msgStr)
       || /\bquota\b/i.test(msgStr)
       || /\btoo many requests\b/i.test(msgStr)
-    const msg = isRateLimit
-      ? "hitting Gemini's rate limit — give me a minute"
-      : "something broke reaching Gemini. check logs."
+    let msg: string
+    if (e instanceof GeminiRequestRejected) {
+      // Surface the actual rejection reason — usually unsupported mime type
+      // or malformed part. User can retry without the offending attachment.
+      msg = `⚠️ Gemini rejected the request: ${e.reason}`
+    } else if (isRateLimit) {
+      msg = "hitting Gemini's rate limit — give me a minute"
+    } else {
+      msg = "something broke reaching Gemini. check logs."
+    }
     try {
       await message.reply({ content: msg, allowedMentions: { repliedUser: false } })
     } catch { /* nothing to do */ }
