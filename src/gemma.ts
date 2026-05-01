@@ -67,13 +67,11 @@ const summarizer = new SummarizationScheduler({
 await access.load()
 await persona.load()
 
-// Compact token count: under 1000 raw, 1.2K from 1000-99999, 123K from
-// 100000+. Keeps the verbose footer readable without scientific notation
-// when prompts get large (history + tool results stack up fast).
+// Token count formatter — thousands-separated decimal (e.g. 14,200 not
+// 14.2K). Easier to compare against per-call cost calculations and matches
+// the format Jeff prefers for reading raw numbers.
 function formatTokenCount(n: number): string {
-  if (n < 1000) return `${n}`
-  if (n < 100_000) return `${(n / 1000).toFixed(1)}K`
-  return `${Math.round(n / 1000)}K`
+  return n.toLocaleString('en-US')
 }
 
 // Compact display of tool-call args. Strings get quoted + truncated; objects
