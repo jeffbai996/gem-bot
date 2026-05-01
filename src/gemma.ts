@@ -347,25 +347,28 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // `thought: true`). Distinct from `parsed.thinking` (our JSON-wrapper
     // CoT prose). Only render when verbose is on — otherwise this floods the
     // chat with reasoning the user didn't ask for.
+    // Header and body both blockquoted so the whole block shifts right,
+    // distinct from the bot's main prose at column 0.
     if (flags.verbose && meta.nativeThoughts) {
       const quoted = meta.nativeThoughts.split('\n').map(line => `> ${line}`).join('\n')
-      finalFullReply += `🧠 **Reasoning:**\n${quoted}\n\n`
+      finalFullReply += `> 🧠 **Reasoning:**\n${quoted}\n\n`
     }
 
     const showThinkingFinal = flags.thinking !== 'never' && !!parsed.thinking
     if (showThinkingFinal && parsed.thinking) {
       const quotedThinking = parsed.thinking.split('\n').map(line => `> ${line}`).join('\n')
-      finalFullReply += `💭 **Thinking:**\n${quotedThinking}\n\n`
+      finalFullReply += `> 💭 **Thinking:**\n${quotedThinking}\n\n`
     }
 
     // Search queries Gemma typed into Google. Lets the user catch misframed
     // queries without parsing the output. Same gate as code artifacts — same
     // audience that wants "show your work" wants this. Format mirrors
-    // ticker-tape's chat.py: header line + bullet per query.
+    // ticker-tape's chat.py: header line + bullet per query, all blockquoted
+    // so the section visually sits in its own indent column.
     if (flags.showCode && meta.searchQueries.length > 0) {
-      finalFullReply += `🔍 **Web search**\n`
+      finalFullReply += `> 🔍 **Web search**\n`
       for (const q of meta.searchQueries) {
-        finalFullReply += `· ${q}\n`
+        finalFullReply += `> · ${q}\n`
       }
       finalFullReply += '\n'
     }
