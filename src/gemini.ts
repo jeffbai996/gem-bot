@@ -220,10 +220,14 @@ export function parseResponse(text: string, isPartial: boolean = false): ParsedR
 // into Gemma's parsed reply. Also: do NOT .trim(), because the first
 // char of a continuation part is often a meaningful space or \u escape
 // continuation — trimming mangles unicode escapes split across parts.
-export function extractModelText(parts: Array<{ text?: string, executableCode?: unknown, codeExecutionResult?: unknown, functionCall?: unknown }> | undefined): string {
+export function extractModelText(parts: Array<{ text?: string, executableCode?: unknown, codeExecutionResult?: unknown, functionCall?: unknown, thought?: boolean }> | undefined): string {
   if (!parts) return ''
   const chunks: string[] = []
   for (const p of parts) {
+    // Skip thought-summary parts (gemini-3 thinking models). They're surfaced
+    // separately via extractNativeThoughts so they don't get glued into the
+    // user-facing text.
+    if (p.thought === true) continue
     if (typeof p.text === 'string' && !p.executableCode && !p.codeExecutionResult && !p.functionCall) {
       chunks.push(p.text)
     }
@@ -359,6 +363,50 @@ export function extractUsage(response: any): UsageMetadata | null {
   }
 }
 
+// Google's "search suggestion" chip — required by Gemini ToS to be shown
+// whenever grounding is used. Returns the rendered HTML widget. Discord can't
+// render HTML, but we can stash the URL the chip points at as a fallback link.
+export function extractSearchEntryPointHtml(candidate: any): string | null {
+  const html = candidate?.groundingMetadata?.searchEntryPoint?.renderedContent
+  return typeof html === 'string' && html.length > 0 ? html : null
+}
+
+// Compact preview of a tool result for in-chat display. Strings get truncated;
+// objects are JSON-stringified and truncated. Long results would clutter the
+// reply, so we cap aggressively.
+export function previewToolResult(result: unknown): string {
+  let s: string
+  if (typeof result === 'string') {
+    s = result
+  } else {
+    try { s = JSON.stringify(result) } catch { s = String(result) }
+  }
+  s = s.replace(/\s+/g, ' ').trim()
+  return s.length > 120 ? s.slice(0, 117) + '...' : s
+}
+
+// Pull the queries Gemma actually typed into Google. Lets the user see when
+// the model is misframing what it's looking up, and confirms grounding fired.
+export function extractSearchQueries(candidate: any): string[] {
+  const queries = candidate?.groundingMetadata?.webSearchQueries
+  if (!Array.isArray(queries)) return []
+  return queries.filter((q: unknown): q is string => typeof q === 'string' && q.trim().length > 0)
+}
+
+// Gemini 3 thinking models emit thought-summary parts with `thought: true`.
+// extractModelText filters these out (they're not part of the user-facing
+// text), so we pull them separately for optional rendering.
+export function extractNativeThoughts(parts: Array<{ text?: string, thought?: boolean }> | undefined): string {
+  if (!parts) return ''
+  const chunks: string[] = []
+  for (const p of parts) {
+    if (p?.thought === true && typeof p.text === 'string') {
+      chunks.push(p.text)
+    }
+  }
+  return chunks.join('\n').trim()
+}
+
 // Only report safety ratings above LOW (MEDIUM / HIGH). The model rarely
 // flags stuff we don't already see get censored, so NEGLIGIBLE/LOW is noise.
 export function extractFlaggedSafety(candidate: any): FlaggedSafetyRating[] {
@@ -369,12 +417,24 @@ export function extractFlaggedSafety(candidate: any): FlaggedSafetyRating[] {
     .map((r: any) => ({ category: String(r.category ?? 'UNKNOWN'), probability: String(r.probability) }))
 }
 
+export interface ToolCall {
+  name: string
+  args: Record<string, unknown>
+  durationMs: number
+  resultPreview: string
+  failed: boolean
+}
+
 export interface RespondMetadata {
   groundingSources: GroundingSource[]
   codeArtifacts: CodeExecArtifact[]
   usage: UsageMetadata | null
   finishReason: string | null
   flaggedSafety: FlaggedSafetyRating[]
+  searchQueries: string[]
+  nativeThoughts: string | null
+  toolCalls: ToolCall[]
+  searchEntryPointHtml: string | null
 }
 
 export interface RespondResult {
@@ -562,35 +622,61 @@ export class GeminiClient {
     const activeContents: Content[] = [...args.history, userTurn]
     let meta: RespondMetadata | null = null
     let finalParsed: ParsedResponse = { react: null, thinking: null, reply: null }
+    const toolCalls: ToolCall[] = []
+    const searchQueriesAcc = new Set<string>()
 
     // Tool-call loop. Capped at 3 iterations to avoid runaway cost if the
     // model keeps calling tools in a cycle.
     for (let iteration = 0; iteration < 3; iteration++) {
       const turn = await this.runOneTurn(systemText, activeContents, onProgress)
+      // Aggregate grounding-search queries across iterations — googleSearch can
+      // fire on any turn, not just the final one.
+      for (const q of extractSearchQueries(turn.candidate)) searchQueriesAcc.add(q)
 
       if (!turn.functionCall) {
         finalParsed = parseResponse(turn.text)
+        const parts = turn.candidate?.content?.parts as any[] | undefined
+        const nt = extractNativeThoughts(parts)
         meta = {
           groundingSources: extractGroundingSources(turn.candidate),
-          codeArtifacts: extractCodeArtifacts(turn.candidate?.content?.parts),
+          codeArtifacts: extractCodeArtifacts(parts),
           usage: extractUsage(turn.response),
           finishReason: typeof turn.candidate?.finishReason === 'string' ? turn.candidate.finishReason : null,
-          flaggedSafety: extractFlaggedSafety(turn.candidate)
+          flaggedSafety: extractFlaggedSafety(turn.candidate),
+          searchQueries: [...searchQueriesAcc],
+          nativeThoughts: nt || null,
+          toolCalls,
+          searchEntryPointHtml: extractSearchEntryPointHtml(turn.candidate)
         }
         break
       }
 
-      // Record the model's function call, dispatch via the registry, and feed
-      // the result back to the model for the next iteration.
+      // Record the model's function call, dispatch via the registry with
+      // timing + result-preview capture, and feed the result back for the next
+      // iteration.
       activeContents.push({ role: 'model', parts: [{ functionCall: turn.functionCall }] })
-      const result = await this.registry.dispatch(
-        turn.functionCall.name,
-        (turn.functionCall.args ?? {}) as Record<string, unknown>,
-        { channelId: args.channelId, gemini: this }
-      )
+      const fnName = turn.functionCall.name
+      const fnArgs = (turn.functionCall.args ?? {}) as Record<string, unknown>
+      const t0 = Date.now()
+      let result: unknown
+      let failed = false
+      try {
+        result = await this.registry.dispatch(fnName, fnArgs, { channelId: args.channelId, gemini: this })
+      } catch (e: any) {
+        failed = true
+        result = { error: e?.message ?? String(e) }
+      }
+      const durationMs = Date.now() - t0
+      toolCalls.push({
+        name: fnName,
+        args: fnArgs,
+        durationMs,
+        resultPreview: previewToolResult(result),
+        failed
+      })
       activeContents.push({
         role: 'user',
-        parts: [{ functionResponse: { name: turn.functionCall.name, response: { result } } }]
+        parts: [{ functionResponse: { name: fnName, response: { result } } }]
       })
     }
 

@@ -9,11 +9,13 @@ export interface ChannelConfig {
   requireMention: boolean
   thinking?: ThinkingMode  // default "auto" — Gemma decides per message
   showCode?: boolean       // default false — don't render code-exec artifacts
+  verbose?: boolean        // default false — surface usage/finishReason footer
 }
 
 export interface ChannelFlags {
   thinking: ThinkingMode
   showCode: boolean
+  verbose: boolean
 }
 
 export interface AccessFile {
@@ -99,16 +101,17 @@ export class AccessManager {
     channelId: string,
     enabled: boolean,
     requireMention: boolean,
-    flags?: ChannelFlags
+    flags?: Partial<ChannelFlags>
   ): Promise<void> {
-    if (flags && !VALID_THINKING_MODES.includes(flags.thinking)) {
+    if (flags?.thinking !== undefined && !VALID_THINKING_MODES.includes(flags.thinking)) {
       throw new Error(`invalid thinking mode "${flags.thinking}" — must be one of: always, auto, never`)
     }
     this.data.channels[channelId] = {
       enabled,
       requireMention,
       thinking: flags?.thinking ?? 'auto',
-      showCode: flags?.showCode ?? false
+      showCode: flags?.showCode ?? false,
+      verbose: flags?.verbose ?? false
     }
     await this.save()
   }
@@ -129,7 +132,8 @@ export class AccessManager {
     this.data.channels[channelId] = {
       ...existing,
       ...(patch.thinking !== undefined ? { thinking: patch.thinking } : {}),
-      ...(patch.showCode !== undefined ? { showCode: patch.showCode } : {})
+      ...(patch.showCode !== undefined ? { showCode: patch.showCode } : {}),
+      ...(patch.verbose !== undefined ? { verbose: patch.verbose } : {})
     }
     await this.save()
     return this.data.channels[channelId]
@@ -141,7 +145,8 @@ export class AccessManager {
     const channel = this.data.channels[channelId]
     return {
       thinking: channel?.thinking ?? 'auto',
-      showCode: channel?.showCode ?? false
+      showCode: channel?.showCode ?? false,
+      verbose: channel?.verbose ?? false
     }
   }
 }

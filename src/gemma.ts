@@ -67,6 +67,25 @@ const summarizer = new SummarizationScheduler({
 await access.load()
 await persona.load()
 
+// Compact display of tool-call args. Strings get quoted + truncated; objects
+// get JSON-stringified + truncated. Keeps the inline `tool(arg1, arg2)`
+// rendering readable when args are long URLs or big payloads.
+function formatToolArgs(args: Record<string, unknown>): string {
+  const entries = Object.entries(args)
+  if (entries.length === 0) return ''
+  const formatted = entries.map(([k, v]) => {
+    let val: string
+    if (typeof v === 'string') {
+      val = v.length > 60 ? `"${v.slice(0, 57)}..."` : `"${v}"`
+    } else {
+      try { val = JSON.stringify(v) } catch { val = String(v) }
+      if (val.length > 60) val = val.slice(0, 57) + '...'
+    }
+    return `${k}=${val}`
+  })
+  return formatted.join(', ')
+}
+
 process.on('SIGHUP', async () => {
   console.error('SIGHUP received — reloading access.json and persona.md')
   try {
@@ -314,10 +333,42 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     message.react(reactToFire).catch(e => console.error('react failed:', e))
 
     let finalFullReply = ''
+
+    // Native thinking summaries from gemini-3 thinking models (parts with
+    // `thought: true`). Distinct from `parsed.thinking` (our JSON-wrapper
+    // CoT prose). Only render when verbose is on — otherwise this floods the
+    // chat with reasoning the user didn't ask for.
+    if (flags.verbose && meta.nativeThoughts) {
+      const quoted = meta.nativeThoughts.split('\n').map(line => `> ${line}`).join('\n')
+      finalFullReply += `🧠 **Reasoning:**\n${quoted}\n\n`
+    }
+
     const showThinkingFinal = flags.thinking !== 'never' && !!parsed.thinking
     if (showThinkingFinal && parsed.thinking) {
       const quotedThinking = parsed.thinking.split('\n').map(line => `> ${line}`).join('\n')
       finalFullReply += `💭 **Thinking:**\n${quotedThinking}\n\n`
+    }
+
+    // Search queries Gemma typed into Google. Lets the user catch misframed
+    // queries without parsing the output. Same gate as code artifacts — same
+    // audience that wants "show your work" wants this.
+    if (flags.showCode && meta.searchQueries.length > 0) {
+      const formatted = meta.searchQueries.map(q => `"${q}"`).join(', ')
+      finalFullReply += `🔍 **Searched:** ${formatted}\n\n`
+    }
+
+    // Tool calls (fetch_url, search_memory, IBKR tools, etc). googleSearch +
+    // codeExecution are server-side, surfaced via their own dedicated blocks.
+    if (flags.showCode && meta.toolCalls.length > 0) {
+      for (const call of meta.toolCalls) {
+        const argSummary = formatToolArgs(call.args)
+        const failedMark = call.failed ? ' ❌' : ''
+        finalFullReply += `🛠️ \`${call.name}(${argSummary})\`${failedMark} *[${call.durationMs}ms]*\n`
+        if (call.resultPreview) {
+          finalFullReply += `   ↳ \`${call.resultPreview}\`\n`
+        }
+      }
+      finalFullReply += '\n'
     }
 
     if (flags.showCode && meta.codeArtifacts.length > 0) {
@@ -346,6 +397,26 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         .slice(0, 5)
         .map((s, i) => `[${i + 1}](<${s.uri}>)`)
         .join(' · ')
+    }
+
+    // Gemini ToS requires showing Google's search-suggestions chip when
+    // grounding fires. We can't render the HTML widget in Discord, but acking
+    // the Powered-by attribution is the next-best compliance gesture.
+    if (meta.searchEntryPointHtml && meta.groundingSources.length > 0) {
+      finalFullReply += '\n-# 🌐 grounded via Google Search'
+    }
+
+    // Verbose ops footer — token usage, model status. Only when explicitly on.
+    if (flags.verbose) {
+      const u = meta.usage
+      const tokenStr = u
+        ? `${(u.promptTokens / 1000).toFixed(1)}K in / ${u.responseTokens} out / ${u.totalTokens} tot`
+        : 'no usage data'
+      const finishStr = meta.finishReason ?? '—'
+      const safetyStr = meta.flaggedSafety.length > 0
+        ? ` / ⚠️ ${meta.flaggedSafety.map(s => `${s.category.replace('HARM_CATEGORY_', '')}=${s.probability}`).join(',')}`
+        : ''
+      finalFullReply += `\n-# 📊 ${tokenStr} / finish=${finishStr}${safetyStr}`
     }
 
     if (meta.finishReason === 'MAX_TOKENS') {
