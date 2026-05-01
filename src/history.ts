@@ -1,5 +1,5 @@
 import type { TextChannel, DMChannel, ThreadChannel } from 'discord.js'
-import { uriCache } from './attachments.ts'
+import { uriCache, isAllowedMime } from './attachments.ts'
 import { selectWithinBudget } from './token-budget.ts'
 import type { GeminiClient } from './gemini.ts'
 
@@ -66,9 +66,13 @@ export function formatHistory(messages: HistoryMessage[], selfId: string): Gemin
     
     const unCachedAttachments: HistoryAttachment[] = []
 
-    // Inject cached files natively; defer others to text descriptions
+    // Inject cached files natively; defer others to text descriptions.
+    // Re-validate mime against the allowlist — Discord can report weird
+    // sub-track mimes (e.g. `video/text/timestamp`) that Gemini's codeExecution
+    // tool 400s the entire request on. Drop those to a text description so
+    // they never reach the request payload.
     for (const att of m.attachments) {
-      if (uriCache.has(att.url) && att.mimeType) {
+      if (uriCache.has(att.url) && att.mimeType && isAllowedMime(att.mimeType)) {
         parts.push({ fileData: { mimeType: att.mimeType, fileUri: uriCache.get(att.url)! } })
       } else {
         unCachedAttachments.push(att)
