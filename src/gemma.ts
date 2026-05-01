@@ -425,13 +425,14 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     if (flags.verbose) {
       const u = meta.usage
       const respondElapsedSec = (respondElapsedMs / 1000).toFixed(1)
-      // Format: `↑ N · ↓ N · » Xs`. Middle-dot separators + » double-angle
-      // quote (U+00BB) prefixing the elapsed-time field. Picked over ⏱
-      // stopwatch because ⏱ renders as a color emoji on iOS instead of
-      // a clean ASCII glyph. » stays monochrome glyph everywhere.
+      // Format: ↑ N · ↓ N · » Xs as plain `-#` small-text (no inline-code
+      // backticks). The boxed code-block style was rendering with cramped
+      // padding on iOS and collided with Discord's "(edited)" badge. »
+      // (U+00BB) prefixes the elapsed-time field — clean ASCII glyph,
+      // monochrome everywhere, no iOS emoji autopromotion like ⏱ had.
       const tokenStr = u
-        ? `\`↑ ${formatTokenCount(u.promptTokens)} · ↓ ${formatTokenCount(u.responseTokens)} · » ${respondElapsedSec}s\``
-        : `\`» ${respondElapsedSec}s — no usage data\``
+        ? `↑ ${formatTokenCount(u.promptTokens)} · ↓ ${formatTokenCount(u.responseTokens)} · » ${respondElapsedSec}s`
+        : `» ${respondElapsedSec}s — no usage data`
       const safetyStr = meta.flaggedSafety.length > 0
         ? ` ⚠️ ${meta.flaggedSafety.map(s => `${s.category.replace('HARM_CATEGORY_', '')}=${s.probability}`).join(',')}`
         : ''
