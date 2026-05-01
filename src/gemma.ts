@@ -425,12 +425,13 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     if (flags.verbose) {
       const u = meta.usage
       const respondElapsedSec = (respondElapsedMs / 1000).toFixed(1)
-      // Format: `↑ N · ↓ N · ⏱ Xs`. Middle-dot separators + ⏱ stopwatch
-      // (U+23F1) prefixing the elapsed-time field. Bare token counts (no
-      // `t` suffix); the arrows do the disambiguation.
+      // Format: `↑ N · ↓ N · » Xs`. Middle-dot separators + » double-angle
+      // quote (U+00BB) prefixing the elapsed-time field. Picked over ⏱
+      // stopwatch because ⏱ renders as a color emoji on iOS instead of
+      // a clean ASCII glyph. » stays monochrome glyph everywhere.
       const tokenStr = u
-        ? `\`↑ ${formatTokenCount(u.promptTokens)} · ↓ ${formatTokenCount(u.responseTokens)} · ⏱ ${respondElapsedSec}s\``
-        : `\`⏱ ${respondElapsedSec}s — no usage data\``
+        ? `\`↑ ${formatTokenCount(u.promptTokens)} · ↓ ${formatTokenCount(u.responseTokens)} · » ${respondElapsedSec}s\``
+        : `\`» ${respondElapsedSec}s — no usage data\``
       const safetyStr = meta.flaggedSafety.length > 0
         ? ` ⚠️ ${meta.flaggedSafety.map(s => `${s.category.replace('HARM_CATEGORY_', '')}=${s.probability}`).join(',')}`
         : ''
