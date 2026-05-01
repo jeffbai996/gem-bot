@@ -403,13 +403,6 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         .join(' · ')
     }
 
-    // Gemini ToS requires showing Google's search-suggestions chip when
-    // grounding fires. We can't render the HTML widget in Discord, but acking
-    // the Powered-by attribution is the next-best compliance gesture.
-    if (meta.searchEntryPointHtml && meta.groundingSources.length > 0) {
-      finalFullReply += '\n-# 🌐 grounded via Google Search'
-    }
-
     // Verbose ops footer — token usage. Mirrors ticker-tape's footer
     // (see chat.py _last_usage emission). finishReason is dropped here; it's
     // only useful when non-STOP, and the MAX_TOKENS / SAFETY cases below
