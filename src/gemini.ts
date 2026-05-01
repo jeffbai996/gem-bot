@@ -387,6 +387,25 @@ export function extractSearchEntryPointHtml(candidate: any): string | null {
   return typeof html === 'string' && html.length > 0 ? html : null
 }
 
+// True iff any part in any content has an audio/* or video/* mime, either
+// inline (base64 in payload) or via fileData URI (uploaded to File API).
+// Used to decide whether to drop the codeExecution tool for this turn —
+// see GeminiClient.buildTools.
+export function contentsHaveAudioVideo(contents: Array<{ parts?: Array<any> }>): boolean {
+  for (const c of contents) {
+    const parts = c?.parts
+    if (!Array.isArray(parts)) continue
+    for (const p of parts) {
+      const inlineMime = p?.inlineData?.mimeType
+      const fileMime = p?.fileData?.mimeType
+      const m = (typeof inlineMime === 'string' ? inlineMime : '') ||
+                (typeof fileMime === 'string' ? fileMime : '')
+      if (m.startsWith('audio/') || m.startsWith('video/')) return true
+    }
+  }
+  return false
+}
+
 // Compact preview of a tool result for in-chat display. Strings get truncated;
 // objects are JSON-stringified and truncated. Long results would clutter the
 // reply, so we cap aggressively.
@@ -511,11 +530,7 @@ export class GeminiClient {
     // The SDK's ToolConfig type doesn't expose this field yet — cast.
     this.model = genAI.getGenerativeModel({
       model: modelName,
-      tools: [
-        { googleSearch: {} },
-        { codeExecution: {} },
-        { functionDeclarations: registry.getDeclarations() }
-      ],
+      tools: this.buildTools(false),
       toolConfig: { includeServerSideToolInvocations: true } as any,
       // Hard cap on output to bound cost when the model degenerates into a
       // token-repetition loop (seen 2026-04-29 with gemini-3-flash-preview
@@ -527,6 +542,27 @@ export class GeminiClient {
         maxOutputTokens: 4096
       } as any
     })
+  }
+
+  // Tool list. codeExecution is omitted when the request payload contains
+  // video or audio: gemini's codeExecution tool spec has stricter mime checks
+  // than vanilla video understanding, and a .mov/.mp4 with embedded timed-text
+  // tracks (common from QuickTime/screen recordings) trips a 400 with
+  // `video/text/timestamp is not supported for code execution`. Dropping it
+  // for media-bearing turns lets the model just *understand* the video
+  // without the tool-spec rejecting the payload. Text-only turns keep all
+  // three tools.
+  private buildTools(dropCodeExec: boolean): any[] {
+    const tools: any[] = [
+      { googleSearch: {} },
+      { functionDeclarations: this.registry.getDeclarations() }
+    ]
+    if (!dropCodeExec) {
+      // Insert codeExecution between googleSearch and functionDeclarations to
+      // preserve the order the API was previously seeing.
+      tools.splice(1, 0, { codeExecution: {} })
+    }
+    return tools
   }
 
   async embed(text: string): Promise<number[]> {
@@ -591,11 +627,18 @@ export class GeminiClient {
     response: any
     text: string
   }> {
+    // Decide whether to drop codeExecution for this turn (see buildTools
+    // comment for why). Scan all contents — not just the latest — because
+    // tool-loop iterations preserve the original media in activeContents.
+    const dropCodeExec = contentsHaveAudioVideo(activeContents)
+    const tools = this.buildTools(dropCodeExec)
     if (onProgress) {
       try {
         const result = await this.model.generateContentStream({
           systemInstruction: { role: 'system', parts: [{ text: systemText }] },
-          contents: activeContents
+          contents: activeContents,
+          tools,
+          toolConfig: { includeServerSideToolInvocations: true } as any
         })
 
         let accumulatedText = ''
@@ -649,7 +692,9 @@ export class GeminiClient {
 
     const result = await this.model.generateContent({
       systemInstruction: { role: 'system', parts: [{ text: systemText }] },
-      contents: activeContents
+      contents: activeContents,
+      tools,
+      toolConfig: { includeServerSideToolInvocations: true } as any
     })
     const candidate = result.response.candidates?.[0]
     const parts = candidate?.content?.parts as any[] | undefined
