@@ -425,9 +425,12 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     if (flags.verbose) {
       const u = meta.usage
       const respondElapsedSec = (respondElapsedMs / 1000).toFixed(1)
+      // Match ticker-tape's app.py footer format: `↑ Nt  ↓ Nt  ⏱ Xs`.
+      // Double-space separator + `t` suffix on token counts + ⏱ stopwatch
+      // (U+23F1) on the elapsed-time field, instead of middle-dots.
       const tokenStr = u
-        ? `\`↑ ${formatTokenCount(u.promptTokens)} · ↓ ${formatTokenCount(u.responseTokens)} · ${respondElapsedSec}s\``
-        : `\`${respondElapsedSec}s — no usage data\``
+        ? `\`↑ ${formatTokenCount(u.promptTokens)}t  ↓ ${formatTokenCount(u.responseTokens)}t  ⏱ ${respondElapsedSec}s\``
+        : `\`⏱ ${respondElapsedSec}s — no usage data\``
       const safetyStr = meta.flaggedSafety.length > 0
         ? ` ⚠️ ${meta.flaggedSafety.map(s => `${s.category.replace('HARM_CATEGORY_', '')}=${s.probability}`).join(',')}`
         : ''
