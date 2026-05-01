@@ -1,8 +1,24 @@
 import { GoogleGenerativeAI, type Content, type Part } from '@google/generative-ai'
 import type { GeminiContent } from './history.ts'
 import type { MediaPart } from './attachments.ts'
+import { isAllowedMime } from './attachments.ts'
 import type { ThinkingMode } from './access.ts'
 import { ToolRegistry } from './tools/registry.ts'
+
+// Thrown when Gemini rejects the request payload itself (HTTP 400). The
+// gemma.ts message handler catches this to surface a specific error to the
+// user instead of the generic "something broke" fallback. Don't retry — the
+// payload is bad; same payload will fail the same way.
+export class GeminiRequestRejected extends Error {
+  readonly reason: string
+  readonly status: number
+  constructor(reason: string, status: number = 400) {
+    super(`Gemini rejected request: ${reason}`)
+    this.name = 'GeminiRequestRejected'
+    this.reason = reason
+    this.status = status
+  }
+}
 
 // Appended to every system prompt. Needed because tools (googleSearch +
 // codeExecution) are incompatible with responseMimeType:'application/json' +
@@ -220,10 +236,14 @@ export function parseResponse(text: string, isPartial: boolean = false): ParsedR
 // into Gemma's parsed reply. Also: do NOT .trim(), because the first
 // char of a continuation part is often a meaningful space or \u escape
 // continuation — trimming mangles unicode escapes split across parts.
-export function extractModelText(parts: Array<{ text?: string, executableCode?: unknown, codeExecutionResult?: unknown, functionCall?: unknown }> | undefined): string {
+export function extractModelText(parts: Array<{ text?: string, executableCode?: unknown, codeExecutionResult?: unknown, functionCall?: unknown, thought?: boolean }> | undefined): string {
   if (!parts) return ''
   const chunks: string[] = []
   for (const p of parts) {
+    // Skip thought-summary parts (gemini-3 thinking models). They're surfaced
+    // separately via extractNativeThoughts so they don't get glued into the
+    // user-facing text.
+    if (p.thought === true) continue
     if (typeof p.text === 'string' && !p.executableCode && !p.codeExecutionResult && !p.functionCall) {
       chunks.push(p.text)
     }
@@ -289,6 +309,29 @@ export function extractGroundingSources(candidate: any): GroundingSource[] {
 function normalizeCodeForDedupe(code: string): string {
   return code.replace(/\s+/g, ' ').trim()
 }
+
+// gemini-3-pro-preview often emits the same code twice — once in its prose
+// reply as a markdown fenced block, and once via the codeExecution tool as an
+// executableCode part. The artifact path is rendered separately by gemma.ts
+// when showCode is on; the prose copy is a duplicate that the user explicitly
+// opted in to seeing once via the artifact rendering.
+//
+// When artifacts exist with a given language, strip ALL fenced blocks of that
+// language from the reply text. Pro paraphrases the executed code with subtle
+// edits (renamed vars, simplified print line) so byte-for-byte dedupe misses;
+// the right call is to treat the artifact as canonical. Languages that didn't
+// produce an artifact pass through untouched (rare edge — model writes a JS
+// snippet alongside an executed Python artifact).
+export function stripDuplicateCodeBlocks(reply: string, artifacts: CodeExecArtifact[]): string {
+  if (!reply || artifacts.length === 0) return reply
+  const stripLangs = new Set(artifacts.map(a => a.language.toLowerCase()))
+  // Also strip unlabeled fenced blocks — pro often omits the language tag on
+  // the duplicated copy.
+  return reply.replace(/```([a-zA-Z0-9_+-]*)\n([\s\S]*?)\n?```/g, (full, lang: string, _body: string) => {
+    const langKey = (lang || '').toLowerCase()
+    return stripLangs.has(langKey) ? '' : full
+  }).replace(/\n{3,}/g, '\n\n').trim()
+}
 export function extractCodeArtifacts(parts: any[] | undefined): CodeExecArtifact[] {
   if (!parts) return []
   const out: CodeExecArtifact[] = []
@@ -336,6 +379,69 @@ export function extractUsage(response: any): UsageMetadata | null {
   }
 }
 
+// Google's "search suggestion" chip — required by Gemini ToS to be shown
+// whenever grounding is used. Returns the rendered HTML widget. Discord can't
+// render HTML, but we can stash the URL the chip points at as a fallback link.
+export function extractSearchEntryPointHtml(candidate: any): string | null {
+  const html = candidate?.groundingMetadata?.searchEntryPoint?.renderedContent
+  return typeof html === 'string' && html.length > 0 ? html : null
+}
+
+// True iff any part in any content has an audio/* or video/* mime, either
+// inline (base64 in payload) or via fileData URI (uploaded to File API).
+// Used to decide whether to drop the codeExecution tool for this turn —
+// see GeminiClient.buildTools.
+export function contentsHaveAudioVideo(contents: Array<{ parts?: Array<any> }>): boolean {
+  for (const c of contents) {
+    const parts = c?.parts
+    if (!Array.isArray(parts)) continue
+    for (const p of parts) {
+      const inlineMime = p?.inlineData?.mimeType
+      const fileMime = p?.fileData?.mimeType
+      const m = (typeof inlineMime === 'string' ? inlineMime : '') ||
+                (typeof fileMime === 'string' ? fileMime : '')
+      if (m.startsWith('audio/') || m.startsWith('video/')) return true
+    }
+  }
+  return false
+}
+
+// Compact preview of a tool result for in-chat display. Strings get truncated;
+// objects are JSON-stringified and truncated. Long results would clutter the
+// reply, so we cap aggressively.
+export function previewToolResult(result: unknown): string {
+  let s: string
+  if (typeof result === 'string') {
+    s = result
+  } else {
+    try { s = JSON.stringify(result) } catch { s = String(result) }
+  }
+  s = s.replace(/\s+/g, ' ').trim()
+  return s.length > 120 ? s.slice(0, 117) + '...' : s
+}
+
+// Pull the queries Gemma actually typed into Google. Lets the user see when
+// the model is misframing what it's looking up, and confirms grounding fired.
+export function extractSearchQueries(candidate: any): string[] {
+  const queries = candidate?.groundingMetadata?.webSearchQueries
+  if (!Array.isArray(queries)) return []
+  return queries.filter((q: unknown): q is string => typeof q === 'string' && q.trim().length > 0)
+}
+
+// Gemini 3 thinking models emit thought-summary parts with `thought: true`.
+// extractModelText filters these out (they're not part of the user-facing
+// text), so we pull them separately for optional rendering.
+export function extractNativeThoughts(parts: Array<{ text?: string, thought?: boolean }> | undefined): string {
+  if (!parts) return ''
+  const chunks: string[] = []
+  for (const p of parts) {
+    if (p?.thought === true && typeof p.text === 'string') {
+      chunks.push(p.text)
+    }
+  }
+  return chunks.join('\n').trim()
+}
+
 // Only report safety ratings above LOW (MEDIUM / HIGH). The model rarely
 // flags stuff we don't already see get censored, so NEGLIGIBLE/LOW is noise.
 export function extractFlaggedSafety(candidate: any): FlaggedSafetyRating[] {
@@ -346,12 +452,24 @@ export function extractFlaggedSafety(candidate: any): FlaggedSafetyRating[] {
     .map((r: any) => ({ category: String(r.category ?? 'UNKNOWN'), probability: String(r.probability) }))
 }
 
+export interface ToolCall {
+  name: string
+  args: Record<string, unknown>
+  durationMs: number
+  resultPreview: string
+  failed: boolean
+}
+
 export interface RespondMetadata {
   groundingSources: GroundingSource[]
   codeArtifacts: CodeExecArtifact[]
   usage: UsageMetadata | null
   finishReason: string | null
   flaggedSafety: FlaggedSafetyRating[]
+  searchQueries: string[]
+  nativeThoughts: string | null
+  toolCalls: ToolCall[]
+  searchEntryPointHtml: string | null
 }
 
 export interface RespondResult {
@@ -375,6 +493,26 @@ export function buildUserTurn(args: BuildRequestArgs): Content {
   return { role: 'user', parts }
 }
 
+// Strip fileData/inlineData parts whose mime is outside Gemini's allowlist.
+// Belt-and-suspenders: attachments.ts filters at upload time and history.ts
+// filters at cache-resurrect time, but a single rogue part anywhere in the
+// request 400s the entire turn (seen with `video/text/timestamp` 2026-05-01).
+// This is the last gate before the SDK call.
+export function sanitizeContents(contents: Content[]): { sanitized: Content[]; dropped: Array<{ mime: string }> } {
+  const dropped: Array<{ mime: string }> = []
+  const sanitized = contents.map((c) => {
+    const cleanedParts = (c.parts ?? []).filter((p: any) => {
+      const mime = p?.fileData?.mimeType ?? p?.inlineData?.mimeType
+      if (!mime) return true
+      if (isAllowedMime(mime)) return true
+      dropped.push({ mime })
+      return false
+    })
+    return { ...c, parts: cleanedParts }
+  })
+  return { sanitized, dropped }
+}
+
 export class GeminiClient {
   private model: ReturnType<GoogleGenerativeAI['getGenerativeModel']>
   private registry: ToolRegistry
@@ -392,11 +530,7 @@ export class GeminiClient {
     // The SDK's ToolConfig type doesn't expose this field yet — cast.
     this.model = genAI.getGenerativeModel({
       model: modelName,
-      tools: [
-        { googleSearch: {} },
-        { codeExecution: {} },
-        { functionDeclarations: registry.getDeclarations() }
-      ],
+      tools: this.buildTools(false),
       toolConfig: { includeServerSideToolInvocations: true } as any,
       // Hard cap on output to bound cost when the model degenerates into a
       // token-repetition loop (seen 2026-04-29 with gemini-3-flash-preview
@@ -408,6 +542,27 @@ export class GeminiClient {
         maxOutputTokens: 4096
       } as any
     })
+  }
+
+  // Tool list. codeExecution is omitted when the request payload contains
+  // video or audio: gemini's codeExecution tool spec has stricter mime checks
+  // than vanilla video understanding, and a .mov/.mp4 with embedded timed-text
+  // tracks (common from QuickTime/screen recordings) trips a 400 with
+  // `video/text/timestamp is not supported for code execution`. Dropping it
+  // for media-bearing turns lets the model just *understand* the video
+  // without the tool-spec rejecting the payload. Text-only turns keep all
+  // three tools.
+  private buildTools(dropCodeExec: boolean): any[] {
+    const tools: any[] = [
+      { googleSearch: {} },
+      { functionDeclarations: this.registry.getDeclarations() }
+    ]
+    if (!dropCodeExec) {
+      // Insert codeExecution between googleSearch and functionDeclarations to
+      // preserve the order the API was previously seeing.
+      tools.splice(1, 0, { codeExecution: {} })
+    }
+    return tools
   }
 
   async embed(text: string): Promise<number[]> {
@@ -472,39 +627,74 @@ export class GeminiClient {
     response: any
     text: string
   }> {
+    // Decide whether to drop codeExecution for this turn (see buildTools
+    // comment for why). Scan all contents — not just the latest — because
+    // tool-loop iterations preserve the original media in activeContents.
+    const dropCodeExec = contentsHaveAudioVideo(activeContents)
+    const tools = this.buildTools(dropCodeExec)
     if (onProgress) {
-      const result = await this.model.generateContentStream({
-        systemInstruction: { role: 'system', parts: [{ text: systemText }] },
-        contents: activeContents
-      })
+      try {
+        const result = await this.model.generateContentStream({
+          systemInstruction: { role: 'system', parts: [{ text: systemText }] },
+          contents: activeContents,
+          tools,
+          toolConfig: { includeServerSideToolInvocations: true } as any
+        })
 
-      let accumulatedText = ''
-      let functionCallReceived: any = null
+        let accumulatedText = ''
+        let functionCallReceived: any = null
 
-      for await (const chunk of result.stream) {
-        const parts = chunk.candidates?.[0]?.content?.parts as any[] | undefined
-        const fnCallPart = parts?.find(p => p.functionCall)
-        if (fnCallPart) functionCallReceived = fnCallPart.functionCall
-        const textChunk = extractModelText(parts)
-        if (textChunk && !functionCallReceived) {
-          accumulatedText += textChunk
-          onProgress(parseResponse(accumulatedText, true))
+        for await (const chunk of result.stream) {
+          const parts = chunk.candidates?.[0]?.content?.parts as any[] | undefined
+          const fnCallPart = parts?.find(p => p.functionCall)
+          if (fnCallPart) functionCallReceived = fnCallPart.functionCall
+          const textChunk = extractModelText(parts)
+          if (textChunk && !functionCallReceived) {
+            accumulatedText += textChunk
+            onProgress(parseResponse(accumulatedText, true))
+          }
+        }
+
+        const response = await result.response
+        const candidate = response.candidates?.[0]
+        const parts = candidate?.content?.parts as any[] | undefined
+        // Prefer streamed accumulated text; fall back to joined parts if the
+        // stream yielded nothing text-ish (e.g., pure function-call turn).
+        const text = accumulatedText || extractModelText(parts)
+        const fnCall = functionCallReceived || parts?.find(p => p.functionCall)?.functionCall || null
+        return { functionCall: fnCall, candidate, response, text }
+      } catch (e: any) {
+        // @google/generative-ai 0.21–0.24 throws "Failed to parse stream" when
+        // gemini-3-pro emits SSE chunks without the trailing \n\n the SDK regex
+        // requires (responseLineRE in dist/index.mjs:653). The model reply may
+        // already be complete server-side — fall back to non-streaming so the
+        // user actually gets it. The non-streaming JSON path doesn't share the
+        // SSE parser. Bug isn't fixed in 0.24.1; proper fix is migrating to
+        // @google/genai. Logged here so we can track frequency.
+        const msg = e?.message ?? String(e)
+        if (msg.includes('Failed to parse stream')) {
+          console.error('[stream parse failed, falling back to non-streaming]', msg)
+          // Fall through to non-streaming path below.
+        } else if (e?.status === 400 || /\b400 Bad Request\b/.test(msg) || e?.name === 'GoogleGenerativeAIFetchError') {
+          // Payload-level rejection — bad mime type, malformed parts, etc.
+          // Don't retry on the non-streaming path; same payload will fail.
+          // Pull the human-readable bit out of the noisy SDK message. Format:
+          //   "[GoogleGenerativeAI Error]: Error fetching from <url>: [400 ...] <reason>."
+          const reasonMatch = msg.match(/\[400 Bad Request\]\s*(.+?)(?:\n|$)/)
+          const reason = reasonMatch ? reasonMatch[1].trim() : msg
+          console.error('[gemini 400]', reason)
+          throw new GeminiRequestRejected(reason, 400)
+        } else {
+          throw e
         }
       }
-
-      const response = await result.response
-      const candidate = response.candidates?.[0]
-      const parts = candidate?.content?.parts as any[] | undefined
-      // Prefer streamed accumulated text; fall back to joined parts if the
-      // stream yielded nothing text-ish (e.g., pure function-call turn).
-      const text = accumulatedText || extractModelText(parts)
-      const fnCall = functionCallReceived || parts?.find(p => p.functionCall)?.functionCall || null
-      return { functionCall: fnCall, candidate, response, text }
     }
 
     const result = await this.model.generateContent({
       systemInstruction: { role: 'system', parts: [{ text: systemText }] },
-      contents: activeContents
+      contents: activeContents,
+      tools,
+      toolConfig: { includeServerSideToolInvocations: true } as any
     })
     const candidate = result.response.candidates?.[0]
     const parts = candidate?.content?.parts as any[] | undefined
@@ -520,38 +710,69 @@ export class GeminiClient {
     const userTurn = buildUserTurn(args)
     const systemText = formatSystemPrompt(args.systemPrompt, args.thinkingMode ?? 'auto')
 
-    const activeContents: Content[] = [...args.history, userTurn]
+    // Last-gate mime sanitization. Rogue mimes from history-cache resurrection
+    // or unexpected sub-track types would 400 the entire request otherwise.
+    const { sanitized: activeContents, dropped } = sanitizeContents([...args.history, userTurn])
+    if (dropped.length > 0) {
+      console.error(`[sanitize] dropped ${dropped.length} parts with disallowed mime: ${dropped.map(d => d.mime).join(', ')}`)
+    }
     let meta: RespondMetadata | null = null
     let finalParsed: ParsedResponse = { react: null, thinking: null, reply: null }
+    const toolCalls: ToolCall[] = []
+    const searchQueriesAcc = new Set<string>()
 
     // Tool-call loop. Capped at 3 iterations to avoid runaway cost if the
     // model keeps calling tools in a cycle.
     for (let iteration = 0; iteration < 3; iteration++) {
       const turn = await this.runOneTurn(systemText, activeContents, onProgress)
+      // Aggregate grounding-search queries across iterations — googleSearch can
+      // fire on any turn, not just the final one.
+      for (const q of extractSearchQueries(turn.candidate)) searchQueriesAcc.add(q)
 
       if (!turn.functionCall) {
         finalParsed = parseResponse(turn.text)
+        const parts = turn.candidate?.content?.parts as any[] | undefined
+        const nt = extractNativeThoughts(parts)
         meta = {
           groundingSources: extractGroundingSources(turn.candidate),
-          codeArtifacts: extractCodeArtifacts(turn.candidate?.content?.parts),
+          codeArtifacts: extractCodeArtifacts(parts),
           usage: extractUsage(turn.response),
           finishReason: typeof turn.candidate?.finishReason === 'string' ? turn.candidate.finishReason : null,
-          flaggedSafety: extractFlaggedSafety(turn.candidate)
+          flaggedSafety: extractFlaggedSafety(turn.candidate),
+          searchQueries: [...searchQueriesAcc],
+          nativeThoughts: nt || null,
+          toolCalls,
+          searchEntryPointHtml: extractSearchEntryPointHtml(turn.candidate)
         }
         break
       }
 
-      // Record the model's function call, dispatch via the registry, and feed
-      // the result back to the model for the next iteration.
+      // Record the model's function call, dispatch via the registry with
+      // timing + result-preview capture, and feed the result back for the next
+      // iteration.
       activeContents.push({ role: 'model', parts: [{ functionCall: turn.functionCall }] })
-      const result = await this.registry.dispatch(
-        turn.functionCall.name,
-        (turn.functionCall.args ?? {}) as Record<string, unknown>,
-        { channelId: args.channelId, gemini: this }
-      )
+      const fnName = turn.functionCall.name
+      const fnArgs = (turn.functionCall.args ?? {}) as Record<string, unknown>
+      const t0 = Date.now()
+      let result: unknown
+      let failed = false
+      try {
+        result = await this.registry.dispatch(fnName, fnArgs, { channelId: args.channelId, gemini: this })
+      } catch (e: any) {
+        failed = true
+        result = { error: e?.message ?? String(e) }
+      }
+      const durationMs = Date.now() - t0
+      toolCalls.push({
+        name: fnName,
+        args: fnArgs,
+        durationMs,
+        resultPreview: previewToolResult(result),
+        failed
+      })
       activeContents.push({
         role: 'user',
-        parts: [{ functionResponse: { name: turn.functionCall.name, response: { result } } }]
+        parts: [{ functionResponse: { name: fnName, response: { result } } }]
       })
     }
 

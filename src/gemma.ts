@@ -6,7 +6,7 @@ import { AccessManager } from './access.ts'
 import { PersonaLoader } from './persona.ts'
 import { buildContextHistory } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
-import { GeminiClient } from './gemini.ts'
+import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected } from './gemini.ts'
 import { chunk } from './chunk.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
 import { insertMessage } from './db.ts'
@@ -66,6 +66,32 @@ const summarizer = new SummarizationScheduler({
 
 await access.load()
 await persona.load()
+
+// Token count formatter — thousands-separated decimal (e.g. 14,200 not
+// 14.2K). Easier to compare against per-call cost calculations and matches
+// the format Jeff prefers for reading raw numbers.
+function formatTokenCount(n: number): string {
+  return n.toLocaleString('en-US')
+}
+
+// Compact display of tool-call args. Strings get quoted + truncated; objects
+// get JSON-stringified + truncated. Keeps the inline `tool(arg1, arg2)`
+// rendering readable when args are long URLs or big payloads.
+function formatToolArgs(args: Record<string, unknown>): string {
+  const entries = Object.entries(args)
+  if (entries.length === 0) return ''
+  const formatted = entries.map(([k, v]) => {
+    let val: string
+    if (typeof v === 'string') {
+      val = v.length > 60 ? `"${v.slice(0, 57)}..."` : `"${v}"`
+    } else {
+      try { val = JSON.stringify(v) } catch { val = String(v) }
+      if (val.length > 60) val = val.slice(0, 57) + '...'
+    }
+    return `${k}=${val}`
+  })
+  return formatted.join(', ')
+}
 
 process.on('SIGHUP', async () => {
   console.error('SIGHUP received — reloading access.json and persona.md')
@@ -268,6 +294,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       ? `[The user wants you to expand on your previous reply with more depth and detail.]\n\n${message.content}`
       : message.content
 
+    const respondT0 = Date.now()
     const { parsed, meta } = await gemini.respond({
       systemPrompt: persona.buildSystemPrompt(message.channelId),
       history,
@@ -279,6 +306,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     }, (partial) => {
       latestParsed = partial
     })
+    const respondElapsedMs = Date.now() - respondT0
 
     if (streamInterval) {
       clearInterval(streamInterval)
@@ -314,10 +342,49 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     message.react(reactToFire).catch(e => console.error('react failed:', e))
 
     let finalFullReply = ''
+
+    // Native thinking summaries from gemini-3 thinking models (parts with
+    // `thought: true`). Distinct from `parsed.thinking` (our JSON-wrapper
+    // CoT prose). Only render when verbose is on — otherwise this floods the
+    // chat with reasoning the user didn't ask for.
+    // Header sits at column 0; body blockquoted so the inner content visually
+    // indents under the header without doubling up the indent on the title.
+    if (flags.verbose && meta.nativeThoughts) {
+      const quoted = meta.nativeThoughts.split('\n').map(line => `> ${line}`).join('\n')
+      finalFullReply += `🧠 **Reasoning:**\n${quoted}\n\n`
+    }
+
     const showThinkingFinal = flags.thinking !== 'never' && !!parsed.thinking
     if (showThinkingFinal && parsed.thinking) {
       const quotedThinking = parsed.thinking.split('\n').map(line => `> ${line}`).join('\n')
       finalFullReply += `💭 **Thinking:**\n${quotedThinking}\n\n`
+    }
+
+    // Search queries Gemma typed into Google. Lets the user catch misframed
+    // queries without parsing the output. Same gate as code artifacts — same
+    // audience that wants "show your work" wants this. Format mirrors
+    // ticker-tape's chat.py: header at column 0, query bullets blockquoted
+    // for visual indent under the header.
+    if (flags.showCode && meta.searchQueries.length > 0) {
+      finalFullReply += `🔍 **Web search**\n`
+      for (const q of meta.searchQueries) {
+        finalFullReply += `> · ${q}\n`
+      }
+      finalFullReply += '\n'
+    }
+
+    // Tool calls (fetch_url, search_memory, IBKR tools, etc). googleSearch +
+    // codeExecution are server-side, surfaced via their own dedicated blocks.
+    if (flags.showCode && meta.toolCalls.length > 0) {
+      for (const call of meta.toolCalls) {
+        const argSummary = formatToolArgs(call.args)
+        const failedMark = call.failed ? ' ❌' : ''
+        finalFullReply += `🛠️ \`${call.name}(${argSummary})\`${failedMark} *[${call.durationMs}ms]*\n`
+        if (call.resultPreview) {
+          finalFullReply += `   ↳ \`${call.resultPreview}\`\n`
+        }
+      }
+      finalFullReply += '\n'
     }
 
     if (flags.showCode && meta.codeArtifacts.length > 0) {
@@ -330,8 +397,14 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       }
     }
 
-    if (parsed.reply) {
-      finalFullReply += parsed.reply
+    // Strip prose-side fenced code blocks that duplicate an artifact we already
+    // rendered above. gemini-3-pro-preview repeats executed code in its reply
+    // text; the artifact block is the canonical render.
+    const replyText = parsed.reply
+      ? (flags.showCode ? stripDuplicateCodeBlocks(parsed.reply, meta.codeArtifacts) : parsed.reply)
+      : null
+    if (replyText) {
+      finalFullReply += replyText
     }
 
     if (meta.groundingSources.length > 0 && parsed.reply) {
@@ -340,6 +413,34 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         .slice(0, 5)
         .map((s, i) => `[${i + 1}](<${s.uri}>)`)
         .join(' · ')
+    }
+
+    // Verbose ops footer — token usage + response time. Format:
+    //   `↑ 14.2K · ↓ 310 · 4.2s`
+    // ↑ = prompt tokens (sent up), ↓ = response tokens (came down). Wrapped
+    // in backticks so it reads as a discrete data badge, distinct from the
+    // bot's prose. Response time replaces total-tokens — wall-clock is more
+    // actionable than the sum (you can derive thinking-token spend from
+    // total - prompt - response if you need it from the logs).
+    if (flags.verbose) {
+      const u = meta.usage
+      const respondElapsedSec = (respondElapsedMs / 1000).toFixed(1)
+      // Format: `↑ N · ↓ N · ⏱ Xs`. Middle-dot separators + ⏱ stopwatch
+      // (U+23F1) prefixing the elapsed-time field. Bare token counts (no
+      // `t` suffix); the arrows do the disambiguation.
+      const tokenStr = u
+        ? `\`↑ ${formatTokenCount(u.promptTokens)} · ↓ ${formatTokenCount(u.responseTokens)} · ⏱ ${respondElapsedSec}s\``
+        : `\`⏱ ${respondElapsedSec}s — no usage data\``
+      const safetyStr = meta.flaggedSafety.length > 0
+        ? ` ⚠️ ${meta.flaggedSafety.map(s => `${s.category.replace('HARM_CATEGORY_', '')}=${s.probability}`).join(',')}`
+        : ''
+      // Trim trailing whitespace then insert a single blank line before the
+      // badge — keeps spacing consistent whether or not there's a main reply
+      // body. Reply-less turns (just thinking + token badge) used to render
+      // 3 stacked blank lines from the trailing newlines on each upstream
+      // block; this normalizes to one.
+      finalFullReply = finalFullReply.replace(/\s+$/, '')
+      finalFullReply += `\n\n-# ${tokenStr}${safetyStr}`
     }
 
     if (meta.finishReason === 'MAX_TOKENS') {
@@ -403,9 +504,16 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       || /\brate limit\b/i.test(msgStr)
       || /\bquota\b/i.test(msgStr)
       || /\btoo many requests\b/i.test(msgStr)
-    const msg = isRateLimit
-      ? "hitting Gemini's rate limit — give me a minute"
-      : "something broke reaching Gemini. check logs."
+    let msg: string
+    if (e instanceof GeminiRequestRejected) {
+      // Surface the actual rejection reason — usually unsupported mime type
+      // or malformed part. User can retry without the offending attachment.
+      msg = `⚠️ Gemini rejected the request: ${e.reason}`
+    } else if (isRateLimit) {
+      msg = "hitting Gemini's rate limit — give me a minute"
+    } else {
+      msg = "something broke reaching Gemini. check logs."
+    }
     try {
       await message.reply({ content: msg, allowedMentions: { repliedUser: false } })
     } catch { /* nothing to do */ }

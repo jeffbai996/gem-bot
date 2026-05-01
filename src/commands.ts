@@ -40,6 +40,11 @@ export const geminiCommand = new SlashCommandBuilder()
         .setDescription('Render code-execution artifacts (default: false)')
         .setRequired(false)
       )
+      .addBooleanOption(option => option
+        .setName('verbose')
+        .setDescription('Surface usage/finishReason footer (default: false)')
+        .setRequired(false)
+      )
   )
   .addSubcommand(subcommand =>
     subcommand
@@ -77,6 +82,13 @@ export const geminiCommand = new SlashCommandBuilder()
       .addBooleanOption(option => option.setName('enabled').setDescription('Show code artifacts').setRequired(true))
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
   )
+  .addSubcommand(subcommand =>
+    subcommand
+      .setName('verbose')
+      .setDescription('Quick toggle: surface usage/finishReason footer (defaults to current channel)')
+      .addBooleanOption(option => option.setName('enabled').setDescription('Show verbose footer').setRequired(true))
+      .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
+  )
 
   export async function executeGeminiCommand(interaction: ChatInputCommandInteraction, access: AccessManager, persona: PersonaLoader, gemini: GeminiClient, adminUserId?: string) {
   // Extra layer of security: only specific user ID from .env can use this, 
@@ -106,9 +118,10 @@ export const geminiCommand = new SlashCommandBuilder()
       const requireMention = interaction.options.getBoolean('require_mention', true)
       const thinking = (interaction.options.getString('thinking') ?? 'auto') as 'always' | 'auto' | 'never'
       const showCode = interaction.options.getBoolean('show_code') ?? false
-      await access.setChannel(channel.id, enabled, requireMention, { thinking, showCode })
+      const verbose = interaction.options.getBoolean('verbose') ?? false
+      await access.setChannel(channel.id, enabled, requireMention, { thinking, showCode, verbose })
       return interaction.reply({
-        content: `✅ Channel <#${channel.id}> configured. Enabled: ${enabled}, Require Mention: ${requireMention}, Thinking: ${thinking}, Show Code: ${showCode}.`,
+        content: `✅ Channel <#${channel.id}> configured. Enabled: ${enabled}, Require Mention: ${requireMention}, Thinking: ${thinking}, Show Code: ${showCode}, Verbose: ${verbose}.`,
         ephemeral: true
       })
     }
@@ -146,6 +159,23 @@ export const geminiCommand = new SlashCommandBuilder()
         const updated = await access.setChannelFlags(channel.id, { showCode: enabled })
         return interaction.reply({
           content: `✅ <#${channel.id}> showCode → \`${enabled}\` (thinking=${updated.thinking}, requireMention=${updated.requireMention})`,
+          ephemeral: true
+        })
+      } catch (e: any) {
+        return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
+      }
+    }
+
+    if (subcommand === 'verbose') {
+      const enabled = interaction.options.getBoolean('enabled', true)
+      const channel = interaction.options.getChannel('channel') ?? interaction.channel
+      if (!channel) {
+        return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
+      }
+      try {
+        const updated = await access.setChannelFlags(channel.id, { verbose: enabled })
+        return interaction.reply({
+          content: `✅ <#${channel.id}> verbose → \`${enabled}\` (thinking=${updated.thinking}, showCode=${updated.showCode})`,
           ephemeral: true
         })
       } catch (e: any) {

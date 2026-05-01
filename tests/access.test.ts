@@ -113,15 +113,15 @@ describe('AccessManager', () => {
     })
     mgr = new AccessManager()
     await mgr.load()
-    assert.deepEqual(mgr.channelFlags('C1'), { thinking: 'always', showCode: true })
-    assert.deepEqual(mgr.channelFlags('C2'), { thinking: 'never', showCode: false })
+    assert.deepEqual(mgr.channelFlags('C1'), { thinking: 'always', showCode: true, verbose: false })
+    assert.deepEqual(mgr.channelFlags('C2'), { thinking: 'never', showCode: false, verbose: false })
   })
 
   test('channelFlags returns defaults for unknown channel', async () => {
     await writeAccess({ users: {}, channels: {} })
     mgr = new AccessManager()
     await mgr.load()
-    assert.deepEqual(mgr.channelFlags('unknown'), { thinking: 'auto', showCode: false })
+    assert.deepEqual(mgr.channelFlags('unknown'), { thinking: 'auto', showCode: false, verbose: false })
   })
 
   test('setChannel preserves optional flags when provided', async () => {
