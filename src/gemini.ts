@@ -473,33 +473,49 @@ export class GeminiClient {
     text: string
   }> {
     if (onProgress) {
-      const result = await this.model.generateContentStream({
-        systemInstruction: { role: 'system', parts: [{ text: systemText }] },
-        contents: activeContents
-      })
+      try {
+        const result = await this.model.generateContentStream({
+          systemInstruction: { role: 'system', parts: [{ text: systemText }] },
+          contents: activeContents
+        })
 
-      let accumulatedText = ''
-      let functionCallReceived: any = null
+        let accumulatedText = ''
+        let functionCallReceived: any = null
 
-      for await (const chunk of result.stream) {
-        const parts = chunk.candidates?.[0]?.content?.parts as any[] | undefined
-        const fnCallPart = parts?.find(p => p.functionCall)
-        if (fnCallPart) functionCallReceived = fnCallPart.functionCall
-        const textChunk = extractModelText(parts)
-        if (textChunk && !functionCallReceived) {
-          accumulatedText += textChunk
-          onProgress(parseResponse(accumulatedText, true))
+        for await (const chunk of result.stream) {
+          const parts = chunk.candidates?.[0]?.content?.parts as any[] | undefined
+          const fnCallPart = parts?.find(p => p.functionCall)
+          if (fnCallPart) functionCallReceived = fnCallPart.functionCall
+          const textChunk = extractModelText(parts)
+          if (textChunk && !functionCallReceived) {
+            accumulatedText += textChunk
+            onProgress(parseResponse(accumulatedText, true))
+          }
+        }
+
+        const response = await result.response
+        const candidate = response.candidates?.[0]
+        const parts = candidate?.content?.parts as any[] | undefined
+        // Prefer streamed accumulated text; fall back to joined parts if the
+        // stream yielded nothing text-ish (e.g., pure function-call turn).
+        const text = accumulatedText || extractModelText(parts)
+        const fnCall = functionCallReceived || parts?.find(p => p.functionCall)?.functionCall || null
+        return { functionCall: fnCall, candidate, response, text }
+      } catch (e: any) {
+        // @google/generative-ai 0.21–0.24 throws "Failed to parse stream" when
+        // gemini-3-pro emits SSE chunks without the trailing \n\n the SDK regex
+        // requires (responseLineRE in dist/index.mjs:653). The model reply may
+        // already be complete server-side — fall back to non-streaming so the
+        // user actually gets it. The non-streaming JSON path doesn't share the
+        // SSE parser. Bug isn't fixed in 0.24.1; proper fix is migrating to
+        // @google/genai. Logged here so we can track frequency.
+        const msg = e?.message ?? String(e)
+        if (msg.includes('Failed to parse stream')) {
+          console.error('[stream parse failed, falling back to non-streaming]', msg)
+        } else {
+          throw e
         }
       }
-
-      const response = await result.response
-      const candidate = response.candidates?.[0]
-      const parts = candidate?.content?.parts as any[] | undefined
-      // Prefer streamed accumulated text; fall back to joined parts if the
-      // stream yielded nothing text-ish (e.g., pure function-call turn).
-      const text = accumulatedText || extractModelText(parts)
-      const fnCall = functionCallReceived || parts?.find(p => p.functionCall)?.functionCall || null
-      return { functionCall: fnCall, candidate, response, text }
     }
 
     const result = await this.model.generateContent({
