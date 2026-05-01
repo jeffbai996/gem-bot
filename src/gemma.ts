@@ -351,10 +351,14 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     // Search queries Gemma typed into Google. Lets the user catch misframed
     // queries without parsing the output. Same gate as code artifacts — same
-    // audience that wants "show your work" wants this.
+    // audience that wants "show your work" wants this. Format mirrors
+    // ticker-tape's chat.py: header line + bullet per query.
     if (flags.showCode && meta.searchQueries.length > 0) {
-      const formatted = meta.searchQueries.map(q => `"${q}"`).join(', ')
-      finalFullReply += `🔍 **Searched:** ${formatted}\n\n`
+      finalFullReply += `🔍 **Web search**\n`
+      for (const q of meta.searchQueries) {
+        finalFullReply += `· ${q}\n`
+      }
+      finalFullReply += '\n'
     }
 
     // Tool calls (fetch_url, search_memory, IBKR tools, etc). googleSearch +
@@ -406,17 +410,19 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       finalFullReply += '\n-# 🌐 grounded via Google Search'
     }
 
-    // Verbose ops footer — token usage, model status. Only when explicitly on.
+    // Verbose ops footer — token usage. Mirrors ticker-tape's footer
+    // (see chat.py _last_usage emission). finishReason is dropped here; it's
+    // only useful when non-STOP, and the MAX_TOKENS / SAFETY cases below
+    // already surface the unhappy paths explicitly.
     if (flags.verbose) {
       const u = meta.usage
       const tokenStr = u
         ? `${(u.promptTokens / 1000).toFixed(1)}K in / ${u.responseTokens} out / ${u.totalTokens} tot`
         : 'no usage data'
-      const finishStr = meta.finishReason ?? '—'
       const safetyStr = meta.flaggedSafety.length > 0
         ? ` / ⚠️ ${meta.flaggedSafety.map(s => `${s.category.replace('HARM_CATEGORY_', '')}=${s.probability}`).join(',')}`
         : ''
-      finalFullReply += `\n-# 📊 ${tokenStr} / finish=${finishStr}${safetyStr}`
+      finalFullReply += `\n-# 📊 ${tokenStr}${safetyStr}`
     }
 
     if (meta.finishReason === 'MAX_TOKENS') {
