@@ -431,6 +431,12 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       const safetyStr = meta.flaggedSafety.length > 0
         ? ` ⚠️ ${meta.flaggedSafety.map(s => `${s.category.replace('HARM_CATEGORY_', '')}=${s.probability}`).join(',')}`
         : ''
+      // Trim trailing whitespace then insert a single blank line before the
+      // badge — keeps spacing consistent whether or not there's a main reply
+      // body. Reply-less turns (just thinking + token badge) used to render
+      // 3 stacked blank lines from the trailing newlines on each upstream
+      // block; this normalizes to one.
+      finalFullReply = finalFullReply.replace(/\s+$/, '')
       finalFullReply += `\n\n-# ${tokenStr}${safetyStr}`
     }
 
