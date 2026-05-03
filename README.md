@@ -240,11 +240,23 @@ Slash commands registered.
 
 ### Production
 
+For real deployments, build a compiled bundle and run plain Node — `tsx` is fine for dev but adds a runtime dependency you don't need in prod:
+
+```bash
+npm install
+npm run build      # tsup → dist/gemma.js + dist/gemma.js.map
+npm run start:prod # node dist/gemma.js
+```
+
+Build is ~30ms, output is ~110 KB. `tsup.config.ts` controls bundling — by default everything in `node_modules` (including the native `better-sqlite3` / `sqlite-vss`) stays external and resolves at runtime.
+
+Either entry point works; pick based on whether you're iterating on the source (`npm run start` for tsx + auto-recompile, `npm run start:prod` for plain Node).
+
 Runs as a systemd user service (`gemma.service`) on Node 22+ via nvm.
 
 ```bash
 # Pull + redeploy
-git pull && npm install
+git pull && npm install && npm run build
 systemctl --user restart gemma
 
 # Hot reload (access.json + persona.md only, no code reload):
