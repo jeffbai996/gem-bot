@@ -8,3 +8,9 @@ inbox/
 persona.md
 access.json
 README_PRIVATE.md
+
+# Internal architecture plans/specs — kept locally for agent context, never
+# committed. Public repo; these inevitably leak internal infra details
+# (private repo names, deploy hosts, ssh users, filesystem paths).
+docs/superpowers/
+docs/handoff-prompts/

@@ -12,6 +12,6 @@ export const ibkrUnreachableStub: Tool = {
     parameters: { type: SchemaType.OBJECT, properties: {}, required: [] }
   },
   async execute() {
-    return 'IBKR MCP server is not reachable. Tell the user their IBKR connection is offline and they should start the server at <your-ibkr-mcp-server>.'
+    return 'IBKR MCP server is not reachable. Tell the user their IBKR connection is offline and they should start their IBKR MCP server (configured via the IBKR_MCP_URL environment variable).'
   }
 }

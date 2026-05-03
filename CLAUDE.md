@@ -20,19 +20,19 @@ A standalone Discord bot using Discord.js and Gemini 2.0. It acts as an intellig
 
 ## Deployment
 
-Runs on HOST (WSL) as a systemd user service (`gemma.service`). Node 22 via nvm (`~/.nvm/versions/node/v22.22.2/bin/node`). The service invokes `node --import tsx/esm src/gemma.ts`.
+Designed to run as a systemd user service (`gemma.service`) on a Linux host with Node 22+. The service invokes `node --import tsx/esm src/gemma.ts`.
 
-Deploy flow:
+Deploy flow (replace `<deploy-host>` and `<deploy-user>` with your own):
 
 ```bash
 git push origin main
-ssh <deploy-user>@<deploy-host> 'wsl -u jbai -e bash -lc ". ~/.nvm/nvm.sh && cd ~/gem-discord-bot && git pull && npm install && systemctl --user restart gemma"'
+ssh <deploy-user>@<deploy-host> 'cd ~/gem-discord-bot && git pull && npm install && systemctl --user restart gemma'
 ```
 
 Hot reload (no restart — reloads `access.json` and `persona.md` only):
 
 ```bash
-ssh <deploy-user>@<deploy-host> 'wsl -u jbai -e bash -lc "systemctl --user kill -s HUP gemma"'
+ssh <deploy-user>@<deploy-host> 'systemctl --user kill -s HUP gemma'
 ```
 
 Logs: `~/.gemini/channels/discord/gemma.log`.
@@ -42,7 +42,7 @@ Logs: `~/.gemini/channels/discord/gemma.log`.
 `better-sqlite3` and `sqlite-vss` are native Node modules. They do not work on Bun (`ERR_DLOPEN_FAILED`). Stay on Node+tsx until someone ports sqlite-vss to a Bun-friendly backend.
 
 ## Future Roadmap (Architectural Debt & New Features)
-- **Proactive Cron Jobs (Autonomy):** Enable Gemma to run scheduled tasks (e.g., pulling data from `ibkr-mcp`) to drop unprompted daily portfolio briefings, risk alerts, or earnings summaries into a dedicated channel.
-- **Agent Handoff & Multi-Agent Debates:** Give Gemma the ability to delegate sub-tasks (triggering `code-review-tool` on a GitHub link) or spawn secondary model instances to debate complex topics (e.g., generating a bull case, then calling a bear-case agent to argue against it).
+- **Proactive Cron Jobs (Autonomy):** Enable Gemma to run scheduled tasks (e.g., pulling data from an external MCP server) to drop unprompted daily briefings, alerts, or summaries into a dedicated channel.
+- **Agent Handoff & Multi-Agent Debates:** Give Gemma the ability to delegate sub-tasks or spawn secondary model instances to debate complex topics (e.g., generating a bull case, then calling a bear-case agent to argue against it).
 - **Token-Aware Context Windowing:** Replace the hardcoded 20-message limit in `history.ts` with a dynamic token counter to maximize context efficiency without hitting API limits.
 - **Voice Channel Intake:** Enable the bot to join Discord Voice Channels and transcribe/process audio streams using Gemini's native multimodal capabilities.

@@ -59,8 +59,8 @@ The system prompt is composed at runtime from:
 ---
 
 ## Future Roadmap
-- **Proactive Cron Jobs (Autonomy):** Enable Gemma to run scheduled tasks (e.g., pulling data from `ibkr-mcp`) to drop unprompted daily portfolio briefings, risk alerts, or earnings summaries into a dedicated channel.
-- **Agent Handoff & Multi-Agent Debates:** Give Gemma the ability to delegate sub-tasks (triggering `code-review-tool` on a GitHub link) or spawn secondary model instances to debate complex topics (e.g., generating a bull case, then calling a bear-case agent to argue against it).
+- **Proactive Cron Jobs (Autonomy):** Enable Gemma to run scheduled tasks (e.g., pulling data from an external MCP server) to drop unprompted daily briefings, alerts, or summaries into a dedicated channel.
+- **Agent Handoff & Multi-Agent Debates:** Give Gemma the ability to delegate sub-tasks or spawn secondary model instances to debate complex topics (e.g., generating a bull case, then calling a bear-case agent to argue against it).
 - **Token-Aware Context Windowing:** Replace the hardcoded 20-message limit with a dynamic token counter to maximize context efficiency without hitting API limits.
 - **Voice Channel Intake:** Enable the bot to join Discord Voice Channels and transcribe/process audio streams natively using Gemini's multimodal capabilities.
 
