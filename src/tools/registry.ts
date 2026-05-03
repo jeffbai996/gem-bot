@@ -1,4 +1,4 @@
-import type { FunctionDeclaration } from '@google/generative-ai'
+import type { FunctionDeclaration } from '@google/genai'
 import type { GeminiClient } from '../gemini.ts'
 
 export interface ToolContext {

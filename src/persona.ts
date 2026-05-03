@@ -1,5 +1,4 @@
 import fs from 'fs/promises'
-import fsSync from 'fs'
 import path from 'path'
 import os from 'os'
 import { PinnedFactsStore } from './pinned-facts.ts'
@@ -11,13 +10,8 @@ function stateDir(): string {
   return process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 }
 
-function squadDir(): string {
-  return process.env.SQUAD_CONTEXT_DIR || path.join(os.homedir(), 'claude-agents', 'shared', 'squad-context')
-}
-
 export class PersonaLoader {
   private persona: string = DEFAULT_PERSONA
-  private memories: string = ''
   private activePersonaFile: string = 'persona.md'
   private pinnedFacts: PinnedFactsStore | null = null
   private summaryStore: SummaryStore | null = null
@@ -33,7 +27,6 @@ export class PersonaLoader {
   async load(filename?: string): Promise<void> {
     if (filename) this.activePersonaFile = filename
     this.persona = await this.readPersona(this.activePersonaFile)
-    this.memories = await this.readMemories()
   }
 
   private async readPersona(filename: string): Promise<string> {
@@ -47,46 +40,11 @@ export class PersonaLoader {
     }
   }
 
-  private async readMemories(): Promise<string> {
-    const dir = path.join(squadDir(), 'memories')
-    try {
-      const entries = await fs.readdir(dir)
-      const mdFiles = entries.filter(f => f.endsWith('.md')).sort()
-      const bodies: string[] = []
-      for (const f of mdFiles) {
-        try {
-          const body = (await fs.readFile(path.join(dir, f), 'utf8')).trim()
-          if (body) bodies.push(`### ${f}\n${body}`)
-        } catch { /* skip unreadable file */ }
-      }
-      return bodies.join('\n\n')
-    } catch (e: any) {
-      if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return ''
-      throw e
-    }
-  }
-
-  private readChannelSummary(channelId: string): string {
-    const file = path.join(squadDir(), 'summaries', `${channelId}.md`)
-    try {
-      return fsSync.readFileSync(file, 'utf8').trim()
-    } catch {
-      return ''
-    }
-  }
-
   buildSystemPrompt(channelId: string): string {
-    const summary = this.readChannelSummary(channelId)
     const conversationSummary = this.summaryStore?.get(channelId)?.summary ?? ''
     const pinned = this.pinnedFacts?.readForChannelSync(channelId) ?? ''
 
     const sections: string[] = [this.persona]
-    if (this.memories) {
-      sections.push(`## Shared squad memories\n\n${this.memories}`)
-    }
-    if (summary) {
-      sections.push(`## Current channel summary\n\n${summary}`)
-    }
     if (conversationSummary) {
       sections.push(`## Conversation summary (older context)\n\n${conversationSummary}`)
     }

@@ -1,4 +1,4 @@
-import { SchemaType, type Schema } from '@google/generative-ai'
+import { Type, type Schema } from '@google/genai'
 
 type JSONSchema = Record<string, any>
 
@@ -25,23 +25,23 @@ export function mcpSchemaToGemini(schema: unknown): Schema | null {
 
   switch (type) {
     case 'string':
-      out.type = SchemaType.STRING
+      out.type = Type.STRING
       break
     case 'number':
     case 'integer':
-      out.type = SchemaType.NUMBER
+      out.type = Type.NUMBER
       break
     case 'boolean':
-      out.type = SchemaType.BOOLEAN
+      out.type = Type.BOOLEAN
       break
     case 'array': {
-      out.type = SchemaType.ARRAY
+      out.type = Type.ARRAY
       const itemSchema = s.items ? mcpSchemaToGemini(s.items) : null
       if (itemSchema) (out as any).items = itemSchema
       break
     }
     case 'object': {
-      out.type = SchemaType.OBJECT
+      out.type = Type.OBJECT
       const props: Record<string, Schema> = {}
       for (const [k, v] of Object.entries(s.properties ?? {})) {
         const converted = mcpSchemaToGemini(v)

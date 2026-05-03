@@ -1,4 +1,4 @@
-import { SchemaType } from '@google/generative-ai'
+import { Type } from '@google/genai'
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import type { Tool } from './registry.ts'
 import { mcpSchemaToGemini } from './mcp-schema.ts'
@@ -11,7 +11,7 @@ export async function loadIbkrTools(client: Client): Promise<Tool[]> {
   const out: Tool[] = []
   for (const t of mcpTools) {
     const converted = mcpSchemaToGemini(t.inputSchema)
-    const params = converted ?? { type: SchemaType.OBJECT, properties: {}, required: [] }
+    const params = converted ?? { type: Type.OBJECT, properties: {}, required: [] }
     out.push({
       name: t.name,
       declaration: {

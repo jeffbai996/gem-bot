@@ -371,7 +371,19 @@ describe('extractUsage', () => {
     const u = extractUsage({
       usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 200, totalTokenCount: 300 }
     })
-    assert.deepEqual(u, { promptTokens: 100, responseTokens: 200, totalTokens: 300 })
+    assert.deepEqual(u, { promptTokens: 100, responseTokens: 200, totalTokens: 300, cachedTokens: 0 })
+  })
+
+  test('extracts cached token count when present', () => {
+    const u = extractUsage({
+      usageMetadata: {
+        promptTokenCount: 3000,
+        candidatesTokenCount: 50,
+        totalTokenCount: 3050,
+        cachedContentTokenCount: 2800,
+      },
+    })
+    assert.deepEqual(u, { promptTokens: 3000, responseTokens: 50, totalTokens: 3050, cachedTokens: 2800 })
   })
 })
 

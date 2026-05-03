@@ -2,7 +2,7 @@ import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
 import { spawn } from 'child_process'
-import { GoogleAIFileManager } from '@google/generative-ai/server'
+import { GoogleGenAI } from '@google/genai'
 
 const MAX_BYTES = 20 * 1024 * 1024
 // Resolve yt-dlp path at call time (not module-load) so tests can override via env
@@ -11,10 +11,21 @@ function ytDlpPath(): string {
 }
 const YT_URL_REGEX = /(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/|v\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/g
 const YT_METADATA_TIMEOUT_MS = 30_000
-const ALLOWED_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/heic', 'image/heif'])
-const ALLOWED_VIDEO_MIMES = new Set(['video/mp4', 'video/webm', 'video/quicktime', 'video/x-mov', 'video/avi', 'video/x-flv', 'video/mpg', 'video/mpeg', 'video/wmv', 'video/3gpp'])
-const ALLOWED_AUDIO_MIMES = new Set(['audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/webm', 'audio/ogg', 'audio/aac', 'audio/flac', 'audio/x-flac', 'audio/amr', 'audio/opus'])
-const ALLOWED_DOC_MIMES = new Set(['application/pdf', 'text/plain', 'text/html', 'text/css', 'text/javascript', 'application/javascript', 'text/x-typescript', 'text/markdown', 'text/csv', 'text/xml', 'application/rtf'])
+export const ALLOWED_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/heic', 'image/heif'])
+export const ALLOWED_VIDEO_MIMES = new Set(['video/mp4', 'video/webm', 'video/quicktime', 'video/x-mov', 'video/avi', 'video/x-flv', 'video/mpg', 'video/mpeg', 'video/wmv', 'video/3gpp'])
+export const ALLOWED_AUDIO_MIMES = new Set(['audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/webm', 'audio/ogg', 'audio/aac', 'audio/flac', 'audio/x-flac', 'audio/amr', 'audio/opus'])
+export const ALLOWED_DOC_MIMES = new Set(['application/pdf', 'text/plain', 'text/html', 'text/css', 'text/javascript', 'application/javascript', 'text/x-typescript', 'text/markdown', 'text/csv', 'text/xml', 'application/rtf'])
+
+// Single set used by request-time sanitization. Anything not here gets dropped
+// before the request hits Gemini — prevents a `video/text/timestamp` style
+// sub-track mime from sneaking through history-cache resurrection and tanking
+// the whole turn with a 400.
+export function isAllowedMime(mime: string): boolean {
+  return ALLOWED_IMAGE_MIMES.has(mime)
+    || ALLOWED_VIDEO_MIMES.has(mime)
+    || ALLOWED_AUDIO_MIMES.has(mime)
+    || ALLOWED_DOC_MIMES.has(mime)
+}
 
 export interface InputAttachment {
   url: string
@@ -56,28 +67,33 @@ function stateDir(): string {
 // This prevents redundant uploads of the same media within the bot's lifecycle.
 export const uriCache = new Map<string, string>()
 
-// Upload a local file via Gemini File API and poll until ACTIVE. Returns null if upload/poll fails.
-// Still used by processAttachments for user-uploaded video/audio.
+// Upload a local file via Gemini File API and poll until ACTIVE. Returns null
+// if upload/poll fails. Used by processAttachments for user-uploaded
+// video/audio. The new SDK exposes the file API on `client.files`; the legacy
+// `GoogleAIFileManager` from @google/generative-ai/server is gone.
 async function uploadAndWaitActive(
   localPath: string,
   mimeType: string,
   displayName: string,
   apiKey: string
 ): Promise<string | null> {
-  const fileManager = new GoogleAIFileManager(apiKey)
-  const uploadResult = await fileManager.uploadFile(localPath, { mimeType, displayName })
+  const client = new GoogleGenAI({ apiKey })
+  let file = await client.files.upload({
+    file: localPath,
+    config: { mimeType, displayName },
+  })
 
   fs.rm(localPath, { force: true }).catch(() => {})
 
-  let file = uploadResult.file
   let retries = 0
   const MAX_RETRIES = 10
   while (file.state === 'PROCESSING' && retries < MAX_RETRIES) {
     await new Promise(r => setTimeout(r, 2000))
-    file = await fileManager.getFile(file.name)
+    if (!file.name) break
+    file = await client.files.get({ name: file.name })
     retries++
   }
-  return file.state === 'ACTIVE' ? file.uri : null
+  return file.state === 'ACTIVE' && file.uri ? file.uri : null
 }
 
 // Strip WebVTT markup down to plain text. Auto-captions contain rolling-display

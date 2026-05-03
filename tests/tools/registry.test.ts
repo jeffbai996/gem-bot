@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { SchemaType } from '@google/generative-ai'
+import { Type } from '@google/genai'
 import { ToolRegistry, type Tool, type ToolContext } from '../../src/tools/registry.ts'
 
 function makeTool(name: string, executeImpl?: (args: any, ctx: ToolContext) => Promise<string>): Tool {
@@ -9,7 +9,7 @@ function makeTool(name: string, executeImpl?: (args: any, ctx: ToolContext) => P
     declaration: {
       name,
       description: `test tool ${name}`,
-      parameters: { type: SchemaType.OBJECT, properties: {}, required: [] }
+      parameters: { type: Type.OBJECT, properties: {}, required: [] }
     },
     execute: executeImpl ?? (async () => `result from ${name}`)
   }

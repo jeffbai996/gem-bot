@@ -1,4 +1,4 @@
-import { SchemaType } from '@google/generative-ai'
+import { Type } from '@google/genai'
 import type { Tool } from './registry.ts'
 import { searchMessages, type SearchResult } from '../db.ts'
 
@@ -13,9 +13,9 @@ export const searchMemoryTool: Tool = {
     name: 'search_memory',
     description: 'Search past Discord messages for context by semantic meaning. Use this when asked about past events, previous discussions, or if you need more context from history.',
     parameters: {
-      type: SchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
-        query: { type: SchemaType.STRING, description: 'The semantic search query' }
+        query: { type: Type.STRING, description: 'The semantic search query' }
       },
       required: ['query']
     }

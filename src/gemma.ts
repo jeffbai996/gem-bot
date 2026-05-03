@@ -4,15 +4,16 @@ import os from 'os'
 import dotenv from 'dotenv'
 import { AccessManager } from './access.ts'
 import { PersonaLoader } from './persona.ts'
-import { buildContextHistory } from './history.ts'
+import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
-import { GeminiClient } from './gemini.ts'
+import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected } from './gemini.ts'
 import { chunk } from './chunk.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
 import { insertMessage } from './db.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
 import { PendingEditsStore } from './reactions/pending-edits.ts'
-import { isValidOutboundReactEmoji } from './reactions/vocabulary.ts'
+import { applyLifecycle } from './reactions/lifecycle.ts'
+import type { LifecycleEvent } from './gemini.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
 import { handleReaction } from './reactions/handler.ts'
 import { SummaryStore } from './summarization/store.ts'
@@ -22,19 +23,22 @@ import { fetchMessagesSince } from './db.ts'
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
 
-const DISCORD_TOKEN = process.env.DISCORD_BOT_TOKEN
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY
 const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-2.0-flash'
 const MAX_HISTORY_TOKENS = parseInt(process.env.MAX_HISTORY_TOKENS ?? '200000', 10)
 
-if (!DISCORD_TOKEN) {
+if (!process.env.DISCORD_BOT_TOKEN) {
   console.error(`FATAL: DISCORD_BOT_TOKEN missing. Set in ${path.join(STATE_DIR, '.env')}`)
   process.exit(1)
 }
-if (!GEMINI_API_KEY) {
+if (!process.env.GEMINI_API_KEY) {
   console.error(`FATAL: GEMINI_API_KEY missing. Set in ${path.join(STATE_DIR, '.env')}`)
   process.exit(1)
 }
+
+// Narrowed to string after the env-presence guards above. Using bare strings
+// here lets downstream consumers skip non-null assertions.
+const DISCORD_TOKEN: string = process.env.DISCORD_BOT_TOKEN
+const GEMINI_API_KEY: string = process.env.GEMINI_API_KEY
 
 const access = new AccessManager()
 const persona = new PersonaLoader()
@@ -67,6 +71,31 @@ const summarizer = new SummarizationScheduler({
 await access.load()
 await persona.load()
 
+// Token count formatter — thousands-separated decimal (e.g. 14,200 not
+// 14.2K). Easier to compare against per-call cost calculations.
+function formatTokenCount(n: number): string {
+  return n.toLocaleString('en-US')
+}
+
+// Compact display of tool-call args. Strings get quoted + truncated; objects
+// get JSON-stringified + truncated. Keeps the inline `tool(arg1, arg2)`
+// rendering readable when args are long URLs or big payloads.
+function formatToolArgs(args: Record<string, unknown>): string {
+  const entries = Object.entries(args)
+  if (entries.length === 0) return ''
+  const formatted = entries.map(([k, v]) => {
+    let val: string
+    if (typeof v === 'string') {
+      val = v.length > 60 ? `"${v.slice(0, 57)}..."` : `"${v}"`
+    } else {
+      try { val = JSON.stringify(v) } catch { val = String(v) }
+      if (val.length > 60) val = val.slice(0, 57) + '...'
+    }
+    return `${k}=${val}`
+  })
+  return formatted.join(', ')
+}
+
 process.on('SIGHUP', async () => {
   console.error('SIGHUP received — reloading access.json and persona.md')
   try {
@@ -98,7 +127,7 @@ client.once('ready', async () => {
   console.error(`Gemma online as ${client.user?.tag} (${client.user?.id})`)
   client.user?.setPresence({
     status: 'online',
-    activities: [{ name: '🧠 hallucinating confidently', type: ActivityType.Playing }]
+    activities: [{ name: '🔮 hallucinating confidently', type: ActivityType.Custom, state: '🔮 hallucinating confidently' }]
   })
 
   try {
@@ -118,7 +147,10 @@ client.on('interactionCreate', async (interaction) => {
 
   if (interaction.commandName === 'gemini') {
     const adminId = process.env.DISCORD_ADMIN_ID
-    await executeGeminiCommand(interaction, access, persona, gemini, adminId)
+    await executeGeminiCommand(interaction, access, persona, gemini, adminId, {
+      summaryStore,
+      summarizer,
+    })
   }
 })
 
@@ -147,9 +179,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // If the user is allowed to speak in the channel, log the message to SQLite VSS.
   // We do this independently of the `gate` (which requires mention) so the bot
   // learns from passive conversation in allowed channels.
-  const userAllowed = access.data.users[message.author.id]?.allowed
-  const channelEnabled = access.data.channels[message.channelId]?.enabled
-  if (userAllowed && channelEnabled && message.content.trim()) {
+  if (access.isAllowedAndEnabled(message.author.id, message.channelId) && message.content.trim()) {
     gemini.embed(message.content)
       .then(embedding => {
         insertMessage(
@@ -166,8 +196,25 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
   if (!gate) return
 
+  // Opt-in reply gate removed 2026-05-02. The two-tier classifier (regex +
+  // flash-lite) silenced messages it judged "not for Gemma" — but the UX was
+  // confusing in practice (users couldn't tell why Gemma wasn't responding)
+  // and the persona-level "default to silent" instruction does the same job
+  // at LLM time without an extra API call. requireMention remains the only
+  // pre-LLM filter.
+
+  // Lifecycle: 👀 the moment we commit to handling this message. Matches
+  // the squad's react_hook lifecycle. 🤔 fires before generate, ✅ on
+  // first reply chunk, ❌ on caught error.
+  applyLifecycle(message, 'received').catch(() => {})
+
   let typingInterval: ReturnType<typeof setInterval> | null = null
   let streamInterval: ReturnType<typeof setInterval> | null = null
+  // Hoisted out of the try block so the catch path can edit the streaming
+  // `💭 Thinking...` placeholder in place rather than leaving it orphaned
+  // alongside a new error reply (seen 2026-05-01: thought_signature crash
+  // left a dangling Thinking... message above the actual error).
+  let activeMessages: Message[] = []
 
   try {
     // Fetch partial DM channels so we can send/read them
@@ -181,6 +228,17 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     const summaryRecord = summaryStore.get(message.channelId)
     const sinceMessageId = summaryRecord?.lastSummarizedMessageId ?? null
+
+    // 📎 Fire ingesting reaction if there's anything non-trivial to process
+    // pre-generate (Discord attachments OR YouTube URLs in the message
+    // content). Cheap "I see your file/link, I'm working on it" indicator
+    // that lasts the few seconds processAttachments / processYouTubeUrls
+    // typically take. Per Jeff's request youtube ingestion is grouped under
+    // attachment processing rather than getting a separate emoji.
+    const hasIngest = message.attachments.size > 0 || /youtu/i.test(message.content)
+    if (hasIngest) {
+      applyLifecycle(message, 'ingesting').catch(() => {})
+    }
 
     const [history, attachmentResult, ytResult] = await Promise.all([
       buildContextHistory(message.channel as any, message.id, gemini, client.user!.id, MAX_HISTORY_TOKENS, sinceMessageId),
@@ -212,7 +270,6 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     let latestParsed = { react: null as string | null, thinking: null as string | null, reply: null as string | null }
     let lastFlushedFullReply = ''
-    let activeMessages: Message[] = []
 
     // Initial loading message. When opts.editTarget is set, reuse that bot
     // message (regenerate / ✏️ flow) instead of sending a new reply.
@@ -223,6 +280,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       const initialMsg = await message.reply({ content: '💭 *Thinking...*', allowedMentions: { repliedUser: false } }).catch(() => null)
       if (initialMsg) activeMessages.push(initialMsg as Message)
     }
+
+    // Lifecycle: 🤔 once the placeholder is up and we're about to call
+    // Gemini. Cleans up the prior 👀.
+    applyLifecycle(message, 'thinking').catch(() => {})
 
     let isFlushing = false
     const flushStream = async () => {
@@ -268,6 +329,25 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       ? `[The user wants you to expand on your previous reply with more depth and detail.]\n\n${message.content}`
       : message.content
 
+    const respondT0 = Date.now()
+    // Track active in-flight tool calls so we know when 🔧 should drop.
+    // gemini.ts emits start/end pairs per dispatch.
+    let activeToolCount = 0
+    const onLifecycleEvent = (e: LifecycleEvent) => {
+      if (e.type === 'native_thinking') {
+        applyLifecycle(message, 'native_thinking').catch(() => {})
+      } else if (e.type === 'searching') {
+        applyLifecycle(message, 'searching').catch(() => {})
+      } else if (e.type === 'tool_call_start') {
+        activeToolCount += 1
+        applyLifecycle(message, 'tooling').catch(() => {})
+      } else if (e.type === 'tool_call_end') {
+        activeToolCount = Math.max(0, activeToolCount - 1)
+        // We don't actively drop 🔧 when activeToolCount hits 0 — the
+        // terminal state (✅ / ❌ / etc) cleans up all transients
+        // anyway, and a tool ending mid-turn just means we keep going.
+      }
+    }
     const { parsed, meta } = await gemini.respond({
       systemPrompt: persona.buildSystemPrompt(message.channelId),
       history,
@@ -275,10 +355,13 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       userMediaParts: allParts,
       userName: message.author.username,
       channelId: message.channelId,
-      thinkingMode: flags.thinking
+      thinkingMode: flags.thinking,
+      cacheEnabled: flags.cache,
+      cacheTtlSec: flags.cacheTtlSec ?? undefined,
     }, (partial) => {
       latestParsed = partial
-    })
+    }, onLifecycleEvent)
+    const respondElapsedMs = Date.now() - respondT0
 
     if (streamInterval) {
       clearInterval(streamInterval)
@@ -300,24 +383,88 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       console.error(`[safety] channel=${message.channelId} flagged=${JSON.stringify(meta.flaggedSafety)}`)
     }
 
-    // gemini-3-pro-preview frequently omits the `react` field despite the
-    // persona instruction. Default to 👀 to guarantee a reaction.
-    let reactToFire: string | null = null
-    if (parsed.react && isValidOutboundReactEmoji(parsed.react)) {
-      reactToFire = parsed.react
-    } else if (parsed.react) {
-      console.error(`[react skipped] not a valid unicode emoji: ${JSON.stringify(parsed.react)}`)
-      reactToFire = '👀'
-    } else {
-      reactToFire = '👀'
+    // The persona-driven `parsed.react` field used to fire a single LLM-
+    // chosen reaction here. Replaced with the squad lifecycle (👀→🤔→✅)
+    // applied at the corresponding handler points. The `parsed.react`
+    // value is now ignored — keep parsing it so older persona prompts
+    // don't crash, but don't act on it.
+
+    // Silent-exit path. When the model returns a fully-empty response —
+    // no reply, no thinking, no native thoughts, no tool output we'd want
+    // to surface — the persona has chosen to stay quiet. Match the way
+    // Claude bots opt out (just don't post anything): delete the streaming
+    // placeholder, strip transient lifecycle reactions, leave nothing
+    // behind on either side. Without this the harness was forcing an
+    // "(Empty response)" message + ✅ on every silent turn.
+    const hasNothingToShow = !parsed.reply
+      && !parsed.thinking
+      && !meta.nativeThoughts
+      && meta.toolCalls.length === 0
+      && meta.codeArtifacts.length === 0
+      && meta.searchQueries.length === 0
+      && meta.finishReason !== 'MAX_TOKENS'
+      && meta.finishReason !== 'SAFETY'
+    if (hasNothingToShow) {
+      console.error(`[silent] channel=${message.channelId} message=${message.id} — model returned nothing, exiting clean`)
+      // Strip 👀/🤔/etc without applying any final emoji.
+      applyLifecycle(message, 'silenced').catch(() => {})
+      // Delete the "💭 *Thinking...*" placeholder — no orphan above the silence.
+      for (const m of activeMessages) {
+        await m.delete().catch(err => console.error('silent-exit placeholder delete failed:', err))
+      }
+      activeMessages = []
+      // Cleanup attachments we processed for this turn.
+      await Promise.all([attachmentResult.cleanup(), ytResult.cleanup()])
+      // Still kick the summarizer — silent turns don't change the summary
+      // schedule.
+      summarizer.scheduleIfNeeded(message.channelId)
+      return
     }
-    message.react(reactToFire).catch(e => console.error('react failed:', e))
 
     let finalFullReply = ''
+
+    // Native thinking summaries from gemini-3 thinking models (parts with
+    // `thought: true`). Distinct from `parsed.thinking` (our JSON-wrapper
+    // CoT prose). Only render when verbose is on — otherwise this floods the
+    // chat with reasoning the user didn't ask for.
+    // Header sits at column 0; body blockquoted so the inner content visually
+    // indents under the header without doubling up the indent on the title.
+    if (flags.verbose && meta.nativeThoughts) {
+      const quoted = meta.nativeThoughts.split('\n').map(line => `> ${line}`).join('\n')
+      finalFullReply += `🧠 **Reasoning:**\n${quoted}\n\n`
+    }
+
     const showThinkingFinal = flags.thinking !== 'never' && !!parsed.thinking
     if (showThinkingFinal && parsed.thinking) {
       const quotedThinking = parsed.thinking.split('\n').map(line => `> ${line}`).join('\n')
       finalFullReply += `💭 **Thinking:**\n${quotedThinking}\n\n`
+    }
+
+    // Search queries Gemma typed into Google. Lets the user catch misframed
+    // queries without parsing the output. Same gate as code artifacts — same
+    // audience that wants "show your work" wants this. Format mirrors
+    // ticker-tape's chat.py: header at column 0, query bullets blockquoted
+    // for visual indent under the header.
+    if (flags.showCode && meta.searchQueries.length > 0) {
+      finalFullReply += `🔍 **Web search**\n`
+      for (const q of meta.searchQueries) {
+        finalFullReply += `> · ${q}\n`
+      }
+      finalFullReply += '\n'
+    }
+
+    // Tool calls (fetch_url, search_memory, IBKR tools, etc). googleSearch +
+    // codeExecution are server-side, surfaced via their own dedicated blocks.
+    if (flags.showCode && meta.toolCalls.length > 0) {
+      for (const call of meta.toolCalls) {
+        const argSummary = formatToolArgs(call.args)
+        const failedMark = call.failed ? ' ❌' : ''
+        finalFullReply += `🛠️ \`${call.name}(${argSummary})\`${failedMark} *[${call.durationMs}ms]*\n`
+        if (call.resultPreview) {
+          finalFullReply += `   ↳ \`${call.resultPreview}\`\n`
+        }
+      }
+      finalFullReply += '\n'
     }
 
     if (flags.showCode && meta.codeArtifacts.length > 0) {
@@ -330,8 +477,18 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       }
     }
 
-    if (parsed.reply) {
-      finalFullReply += parsed.reply
+    // Strip prose-side fenced code blocks that duplicate an artifact we already
+    // rendered above. gemini-3-pro-preview repeats executed code in its reply
+    // text; the artifact block is the canonical render.
+    // Strip any token-footer / sources / metadata pattern the model might
+    // hallucinate inside its own reply text (it learns the pattern from past
+    // turns where the bot stamped footers; with stripBotMetadata in
+    // history.ts the input is now clean, but belt-and-suspenders.)
+    const replyText = parsed.reply
+      ? stripBotMetadata(flags.showCode ? stripDuplicateCodeBlocks(parsed.reply, meta.codeArtifacts) : parsed.reply)
+      : null
+    if (replyText) {
+      finalFullReply += replyText
     }
 
     if (meta.groundingSources.length > 0 && parsed.reply) {
@@ -340,6 +497,41 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         .slice(0, 5)
         .map((s, i) => `[${i + 1}](<${s.uri}>)`)
         .join(' · ')
+    }
+
+    // Verbose ops footer — token usage + response time. Format:
+    //   `↑ 14.2K · ↓ 310 · 4.2s`
+    // ↑ = prompt tokens (sent up), ↓ = response tokens (came down). Wrapped
+    // in backticks so it reads as a discrete data badge, distinct from the
+    // bot's prose. Response time replaces total-tokens — wall-clock is more
+    // actionable than the sum (you can derive thinking-token spend from
+    // total - prompt - response if you need it from the logs).
+    if (flags.verbose) {
+      const u = meta.usage
+      const respondElapsedSec = (respondElapsedMs / 1000).toFixed(1)
+      // Format: ` ↑ N · ↓ N · » Xs ` inside inline-code backticks WITH
+      // leading + trailing space padding so iOS doesn't render the box
+      // jammed flush against the closing backtick / "(edited)" badge.
+      // » (U+00BB) prefixes the elapsed-time field — clean ASCII glyph,
+      // monochrome everywhere, no iOS emoji autopromotion like ⏱ had.
+      // Per-message footer is intentionally cache-agnostic — cache details
+      // (size, hit count, age, TTL remaining) live behind /gemini cache info
+      // so we don't pollute every reply with bookkeeping the user only checks
+      // occasionally. Cache hits are still observed via lower bills, just not
+      // surfaced inline.
+      const tokenStr = u
+        ? `\` ↑ ${formatTokenCount(u.promptTokens)} · ↓ ${formatTokenCount(u.responseTokens)} · » ${respondElapsedSec}s \``
+        : `\` » ${respondElapsedSec}s — no usage data \``
+      const safetyStr = meta.flaggedSafety.length > 0
+        ? ` ⚠️ ${meta.flaggedSafety.map(s => `${s.category.replace('HARM_CATEGORY_', '')}=${s.probability}`).join(',')}`
+        : ''
+      // Trim trailing whitespace then insert a single blank line before the
+      // badge — keeps spacing consistent whether or not there's a main reply
+      // body. Reply-less turns (just thinking + token badge) used to render
+      // 3 stacked blank lines from the trailing newlines on each upstream
+      // block; this normalizes to one.
+      finalFullReply = finalFullReply.replace(/\s+$/, '')
+      finalFullReply += `\n\n-# ${tokenStr}${safetyStr}`
     }
 
     if (meta.finishReason === 'MAX_TOKENS') {
@@ -351,6 +543,17 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     if (!finalFullReply && !parsed.react) {
        finalFullReply = '(Empty response)'
     }
+
+    // Lifecycle terminal: pick the right final state based on finishReason.
+    // 🛑 SAFETY — reply was blocked / heavily filtered
+    // ✂️ MAX_TOKENS — reply hit budget cap, may be cut off mid-thought
+    // ✅ everything else (STOP, FINISH_REASON_UNSPECIFIED) — normal commit
+    // Fires before the actual edit since the edit is multi-step and we
+    // want the indicator to flip the moment the bot is "done thinking".
+    let terminalState: 'replied' | 'truncated' | 'blocked' = 'replied'
+    if (meta.finishReason === 'SAFETY') terminalState = 'blocked'
+    else if (meta.finishReason === 'MAX_TOKENS') terminalState = 'truncated'
+    applyLifecycle(message, terminalState).catch(() => {})
 
     if (finalFullReply) {
       // Edit streaming preview messages in place to become the final output.
@@ -403,11 +606,33 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       || /\brate limit\b/i.test(msgStr)
       || /\bquota\b/i.test(msgStr)
       || /\btoo many requests\b/i.test(msgStr)
-    const msg = isRateLimit
-      ? "hitting Gemini's rate limit — give me a minute"
-      : "something broke reaching Gemini. check logs."
+    // Lifecycle: ⚠️ for rate-limit / quota (denied semantics), ❌ for
+    // anything else. Both clean up all transients.
+    applyLifecycle(message, isRateLimit ? 'denied' : 'errored').catch(() => {})
+    let msg: string
+    if (e instanceof GeminiRequestRejected) {
+      // Surface the actual rejection reason — usually unsupported mime type
+      // or malformed part. User can retry without the offending attachment.
+      msg = `⚠️ Gemini rejected the request: ${e.reason}`
+    } else if (isRateLimit) {
+      msg = "hitting Gemini's rate limit — give me a minute"
+    } else {
+      msg = "something broke reaching Gemini. check logs."
+    }
     try {
-      await message.reply({ content: msg, allowedMentions: { repliedUser: false } })
+      // If a streaming placeholder ("💭 Thinking...") is already up, edit it
+      // in place rather than posting a new error message. Avoids the
+      // orphaned-placeholder UX where the user sees a frozen Thinking line
+      // above the actual error.
+      if (activeMessages.length > 0) {
+        await activeMessages[0].edit(msg).catch(() => {})
+        // Delete any extra streaming chunks beyond the first.
+        for (const extra of activeMessages.slice(1)) {
+          await extra.delete().catch(() => {})
+        }
+      } else {
+        await message.reply({ content: msg, allowedMentions: { repliedUser: false } })
+      }
     } catch { /* nothing to do */ }
   } finally {
     if (typingInterval) clearInterval(typingInterval)

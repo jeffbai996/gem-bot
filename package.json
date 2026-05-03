@@ -1,6 +1,6 @@
 {
   "name": "gemma",
-  "version": "1.0.0",
+  "version": "0.12.0",
   "description": "Gemini-backed Discord bot",
   "main": "src/gemma.ts",
   "type": "module",
@@ -9,7 +9,7 @@
     "test": "node --test --import tsx 'tests/**/*.test.ts'"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.21.0",
+    "@google/genai": "^1.51.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@mozilla/readability": "^0.6.0",
     "@types/better-sqlite3": "^7.6.13",

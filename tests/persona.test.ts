@@ -36,30 +36,6 @@ describe('PersonaLoader', () => {
     assert.ok(prompt.includes('Custom persona text here.'))
   })
 
-  test('includes shared memories', async () => {
-    await fs.mkdir(path.join(squadDir, 'memories'), { recursive: true })
-    await fs.writeFile(path.join(squadDir, 'memories', 'user_prefs.md'), 'User likes dry humor.', 'utf8')
-    await fs.writeFile(path.join(squadDir, 'memories', 'context.md'), 'Context snippet.', 'utf8')
-
-    const loader = new PersonaLoader()
-    await loader.load()
-    const prompt = loader.buildSystemPrompt('c1')
-    assert.ok(prompt.includes('User likes dry humor.'))
-    assert.ok(prompt.includes('Context snippet.'))
-  })
-
-  test('includes channel-specific summary for the given channel', async () => {
-    await fs.mkdir(path.join(squadDir, 'summaries'), { recursive: true })
-    await fs.writeFile(path.join(squadDir, 'summaries', 'CHAN_A.md'), 'Summary for A.', 'utf8')
-    await fs.writeFile(path.join(squadDir, 'summaries', 'CHAN_B.md'), 'Summary for B.', 'utf8')
-
-    const loader = new PersonaLoader()
-    await loader.load()
-    const promptA = loader.buildSystemPrompt('CHAN_A')
-    assert.ok(promptA.includes('Summary for A.'))
-    assert.ok(!promptA.includes('Summary for B.'))
-  })
-
   test('tolerates missing squad-context dir', async () => {
     await fs.rm(squadDir, { recursive: true, force: true })
     const loader = new PersonaLoader()
@@ -68,32 +44,22 @@ describe('PersonaLoader', () => {
     assert.ok(prompt.length > 0)
   })
 
-  test('load() picks up persona.md and memory edits on reload', async () => {
+  test('load() picks up persona.md edits on reload', async () => {
     await fs.writeFile(path.join(stateDir, 'persona.md'), 'v1 persona', 'utf8')
     const loader = new PersonaLoader()
     await loader.load()
     assert.ok(loader.buildSystemPrompt('c1').includes('v1 persona'))
 
     await fs.writeFile(path.join(stateDir, 'persona.md'), 'v2 persona', 'utf8')
-    await fs.mkdir(path.join(squadDir, 'memories'), { recursive: true })
-    await fs.writeFile(path.join(squadDir, 'memories', 'new.md'), 'new memory', 'utf8')
-
     await loader.load()
-    const prompt = loader.buildSystemPrompt('c1')
-    assert.ok(prompt.includes('v2 persona'))
-    assert.ok(prompt.includes('new memory'))
+    assert.ok(loader.buildSystemPrompt('c1').includes('v2 persona'))
   })
 
-  test('channel summary is read fresh on each buildSystemPrompt call', async () => {
-    await fs.mkdir(path.join(squadDir, 'summaries'), { recursive: true })
-    await fs.writeFile(path.join(squadDir, 'summaries', 'C1.md'), 'summary v1', 'utf8')
-
-    const loader = new PersonaLoader()
-    await loader.load()
-    assert.ok(loader.buildSystemPrompt('C1').includes('summary v1'))
-
-    // simulate cron rewrite between turns
-    await fs.writeFile(path.join(squadDir, 'summaries', 'C1.md'), 'summary v2', 'utf8')
-    assert.ok(loader.buildSystemPrompt('C1').includes('summary v2'))
-  })
+  // Tests for the legacy markdown shared-memories path
+  // (~/agents/shared/squad-context/memories/) and the markdown
+  // channel-summary path (~/agents/shared/squad-context/summaries/)
+  // were removed in 2026-05-01 — both dirs were nuked in the shared-memory
+  // rebuild on 2026-04-26 and the corresponding readers in persona.ts went
+  // with them. The live channel summary now flows through SummaryStore
+  // (see summarization/store.ts and the SummarizationScheduler).
 })

@@ -1,32 +1,32 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { SchemaType } from '@google/generative-ai'
+import { Type } from '@google/genai'
 import { mcpSchemaToGemini } from '../../src/tools/mcp-schema.ts'
 
 describe('mcpSchemaToGemini', () => {
   test('string primitive', () => {
     assert.deepEqual(
       mcpSchemaToGemini({ type: 'string' }),
-      { type: SchemaType.STRING }
+      { type: Type.STRING }
     )
   })
 
   test('integer → NUMBER (Gemini has no INTEGER)', () => {
     assert.deepEqual(
       mcpSchemaToGemini({ type: 'integer' }),
-      { type: SchemaType.NUMBER }
+      { type: Type.NUMBER }
     )
   })
 
   test('number and boolean primitives', () => {
-    assert.deepEqual(mcpSchemaToGemini({ type: 'number' }), { type: SchemaType.NUMBER })
-    assert.deepEqual(mcpSchemaToGemini({ type: 'boolean' }), { type: SchemaType.BOOLEAN })
+    assert.deepEqual(mcpSchemaToGemini({ type: 'number' }), { type: Type.NUMBER })
+    assert.deepEqual(mcpSchemaToGemini({ type: 'boolean' }), { type: Type.BOOLEAN })
   })
 
   test('array of strings', () => {
     assert.deepEqual(
       mcpSchemaToGemini({ type: 'array', items: { type: 'string' } }),
-      { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } }
+      { type: Type.ARRAY, items: { type: Type.STRING } }
     )
   })
 
@@ -40,10 +40,10 @@ describe('mcpSchemaToGemini', () => {
       required: ['symbol']
     })
     assert.deepEqual(out, {
-      type: SchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
-        symbol: { type: SchemaType.STRING, description: 'ticker' },
-        qty: { type: SchemaType.NUMBER }
+        symbol: { type: Type.STRING, description: 'ticker' },
+        qty: { type: Type.NUMBER }
       },
       required: ['symbol']
     })
@@ -51,20 +51,20 @@ describe('mcpSchemaToGemini', () => {
 
   test('enum preserved on string', () => {
     const out = mcpSchemaToGemini({ type: 'string', enum: ['a', 'b', 'c'] })
-    assert.deepEqual(out, { type: SchemaType.STRING, enum: ['a', 'b', 'c'] })
+    assert.deepEqual(out, { type: Type.STRING, enum: ['a', 'b', 'c'] })
   })
 
   test('description preserved', () => {
     assert.deepEqual(
       mcpSchemaToGemini({ type: 'string', description: 'x' }),
-      { type: SchemaType.STRING, description: 'x' }
+      { type: Type.STRING, description: 'x' }
     )
   })
 
   test('nullable union stripped to non-null type', () => {
     assert.deepEqual(
       mcpSchemaToGemini({ type: ['string', 'null'] }),
-      { type: SchemaType.STRING }
+      { type: Type.STRING }
     )
   })
 
@@ -89,7 +89,7 @@ describe('mcpSchemaToGemini', () => {
   test('empty object schema → OBJECT with empty properties', () => {
     assert.deepEqual(
       mcpSchemaToGemini({ type: 'object' }),
-      { type: SchemaType.OBJECT, properties: {}, required: [] }
+      { type: Type.OBJECT, properties: {}, required: [] }
     )
   })
 
@@ -102,8 +102,8 @@ describe('mcpSchemaToGemini', () => {
       }
     })
     assert.deepEqual(out, {
-      type: SchemaType.OBJECT,
-      properties: { good: { type: SchemaType.STRING } },
+      type: Type.OBJECT,
+      properties: { good: { type: Type.STRING } },
       required: []
     })
   })

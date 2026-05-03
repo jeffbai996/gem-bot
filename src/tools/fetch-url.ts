@@ -1,4 +1,4 @@
-import { SchemaType } from '@google/generative-ai'
+import { Type } from '@google/genai'
 import dns from 'dns/promises'
 import type { Tool } from './registry.ts'
 import { validateUrl, isPrivateIp, extractContent, truncate } from './fetch-url-internal.ts'
@@ -35,10 +35,10 @@ export const fetchUrlTool: Tool = {
     name: 'fetch_url',
     description: 'Fetch a URL and return its main text content. Use when the user pastes a link or asks you to read a webpage. Supports HTML (article extraction), plain text, markdown, and JSON. Returns up to 8000 chars by default.',
     parameters: {
-      type: SchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
-        url: { type: SchemaType.STRING, description: 'http(s) URL to fetch' },
-        maxChars: { type: SchemaType.NUMBER, description: 'Optional cap on output size in characters. Default 8000, hard cap 50000.' }
+        url: { type: Type.STRING, description: 'http(s) URL to fetch' },
+        maxChars: { type: Type.NUMBER, description: 'Optional cap on output size in characters. Default 8000, hard cap 50000.' }
       },
       required: ['url']
     }

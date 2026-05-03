@@ -34,12 +34,12 @@ describe('formatSearchResults', () => {
 
   test('formats entries as [timestamp] author: content joined by newlines', () => {
     const out = formatSearchResults([
-      { timestamp: '2026-01-01T00:00:00Z', author_name: 'Dan', content: 'hello world' } as any,
-      { timestamp: '2026-01-02T00:00:00Z', author_name: 'Jeff', content: 'yo' } as any
+      { timestamp: '2026-01-01T00:00:00Z', author_name: 'Alice', content: 'hello world' } as any,
+      { timestamp: '2026-01-02T00:00:00Z', author_name: 'Bob', content: 'yo' } as any
     ])
     assert.equal(
       out,
-      '[2026-01-01T00:00:00Z] Dan: hello world\n[2026-01-02T00:00:00Z] Jeff: yo'
+      '[2026-01-01T00:00:00Z] Alice: hello world\n[2026-01-02T00:00:00Z] Bob: yo'
     )
   })
 })

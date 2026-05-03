@@ -8,12 +8,18 @@ export interface ChannelConfig {
   enabled: boolean
   requireMention: boolean
   thinking?: ThinkingMode  // default "auto" — Gemma decides per message
-  showCode?: boolean       // default false — don't render code-exec artifacts
+  showCode?: boolean       // default true — render code-exec artifacts + tool calls
+  verbose?: boolean        // default true — surface usage/finishReason footer
+  cache?: boolean          // default true — cache the stable system-prompt prefix server-side
+  cacheTtlSec?: number     // optional — override the cache TTL (seconds). Falls back to manager default when unset
 }
 
 export interface ChannelFlags {
   thinking: ThinkingMode
   showCode: boolean
+  verbose: boolean
+  cache: boolean
+  cacheTtlSec: number | null
 }
 
 export interface AccessFile {
@@ -29,6 +35,20 @@ export interface CanHandleInput {
 
 const EMPTY: AccessFile = { users: {}, channels: {} }
 const VALID_THINKING_MODES: ThinkingMode[] = ['always', 'auto', 'never']
+
+// Default rendering/behavior flags applied when a channel is first configured
+// without explicit flag overrides, and when channelFlags() is asked about an
+// unknown channel. showCode/verbose/cache default true — more transparent
+// output + cheaper bills. thinking stays "auto" since "always" is too verbose
+// for casual chat. The optInReply gate was removed 2026-05-02 — UX-confusing
+// in practice and the cost savings weren't worth the hidden
+// silence-on-non-mention behavior.
+const DEFAULT_FLAGS = {
+  thinking: 'auto' as ThinkingMode,
+  showCode: true,
+  verbose: true,
+  cache: true,
+}
 
 export class AccessManager {
   private stateDir: string
@@ -85,6 +105,13 @@ export class AccessManager {
     return true
   }
 
+  // Same predicate as canReact, exposed for the background memory-ingestion
+  // path which embeds passive (non-mention) messages from allowed users in
+  // enabled channels — independent of canHandle's requireMention gate.
+  isAllowedAndEnabled(userId: string, channelId: string): boolean {
+    return this.canReact(userId, channelId)
+  }
+
   async allowUser(userId: string): Promise<void> {
     this.data.users[userId] = { allowed: true }
     await this.save()
@@ -99,16 +126,27 @@ export class AccessManager {
     channelId: string,
     enabled: boolean,
     requireMention: boolean,
-    flags?: ChannelFlags
+    flags?: Partial<ChannelFlags>
   ): Promise<void> {
-    if (flags && !VALID_THINKING_MODES.includes(flags.thinking)) {
+    if (flags?.thinking !== undefined && !VALID_THINKING_MODES.includes(flags.thinking)) {
       throw new Error(`invalid thinking mode "${flags.thinking}" — must be one of: always, auto, never`)
     }
+    // Preserve existing flag values when re-running /gemini channel on an
+    // already-configured channel. Only enabled+requireMention are mandatory;
+    // anything not in the flags patch falls back to the existing value, then
+    // the global default. Without this, calling /gemini channel a second time
+    // would silently reset thinking/showCode/verbose/etc back to defaults.
+    const existing = this.data.channels[channelId]
     this.data.channels[channelId] = {
       enabled,
       requireMention,
-      thinking: flags?.thinking ?? 'auto',
-      showCode: flags?.showCode ?? false
+      thinking: flags?.thinking ?? existing?.thinking ?? DEFAULT_FLAGS.thinking,
+      showCode: flags?.showCode ?? existing?.showCode ?? DEFAULT_FLAGS.showCode,
+      verbose: flags?.verbose ?? existing?.verbose ?? DEFAULT_FLAGS.verbose,
+      cache: flags?.cache ?? existing?.cache ?? DEFAULT_FLAGS.cache,
+      ...(flags?.cacheTtlSec != null
+        ? { cacheTtlSec: flags.cacheTtlSec }
+        : existing?.cacheTtlSec != null ? { cacheTtlSec: existing.cacheTtlSec } : {})
     }
     await this.save()
   }
@@ -129,7 +167,14 @@ export class AccessManager {
     this.data.channels[channelId] = {
       ...existing,
       ...(patch.thinking !== undefined ? { thinking: patch.thinking } : {}),
-      ...(patch.showCode !== undefined ? { showCode: patch.showCode } : {})
+      ...(patch.showCode !== undefined ? { showCode: patch.showCode } : {}),
+      ...(patch.verbose !== undefined ? { verbose: patch.verbose } : {}),
+      ...(patch.cache !== undefined ? { cache: patch.cache } : {}),
+      // null sentinel = clear the override (back to manager default).
+      // Skipping the field entirely means "leave existing override alone".
+      ...(patch.cacheTtlSec === null
+        ? { cacheTtlSec: undefined }
+        : patch.cacheTtlSec !== undefined ? { cacheTtlSec: patch.cacheTtlSec } : {})
     }
     await this.save()
     return this.data.channels[channelId]
@@ -140,8 +185,11 @@ export class AccessManager {
   channelFlags(channelId: string): ChannelFlags {
     const channel = this.data.channels[channelId]
     return {
-      thinking: channel?.thinking ?? 'auto',
-      showCode: channel?.showCode ?? false
+      thinking: channel?.thinking ?? DEFAULT_FLAGS.thinking,
+      showCode: channel?.showCode ?? DEFAULT_FLAGS.showCode,
+      verbose: channel?.verbose ?? DEFAULT_FLAGS.verbose,
+      cache: channel?.cache ?? DEFAULT_FLAGS.cache,
+      cacheTtlSec: channel?.cacheTtlSec ?? null
     }
   }
 }
