@@ -124,7 +124,7 @@ const client = new Client({
 })
 
 client.once('ready', async () => {
-  console.error(`Gemma online as ${client.user?.tag} (${client.user?.id})`)
+  console.error(`Gem online as ${client.user?.tag} (${client.user?.id})`)
   client.user?.setPresence({
     status: 'online',
     activities: [{ name: '🔮 hallucinating confidently', type: ActivityType.Custom, state: '🔮 hallucinating confidently' }]

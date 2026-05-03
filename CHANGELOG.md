@@ -8,7 +8,7 @@ Tags are annotated; check them out with `git checkout v0.N` to inspect that poin
 
 ## v0.12 — 2026-05-02 — mid-stream lifecycle reactions
 
-Expands Gemma's reaction lifecycle beyond the basic `👀 → 🤔 → ✅` chain to surface what's actually happening inside a turn:
+Expands Gem's reaction lifecycle beyond the basic `👀 → 🤔 → ✅` chain to surface what's actually happening inside a turn:
 
 - **📎 ingesting** — fires before generate when there's a Discord attachment or YouTube URL in the message (youtube grouped under attachments, no separate emoji)
 - **🧠 native_thinking** — first chunk with a `thought: true` part (gemini-3 thinking models)
@@ -22,7 +22,7 @@ Threaded a new `onEvent` callback through `gemini.ts` `respond()` and the underl
 
 ## v0.11 — 2026-05-02 — squad lifecycle reactions
 
-Adopts the reaction lifecycle pattern used by the Claude-based squad bots so Gemma's "I'm working on it" feedback matches the rest of the family.
+Adopts the reaction lifecycle pattern used by the Claude-based squad bots so Gem's "I'm working on it" feedback matches the rest of the family.
 
 - **👀 received** — fires the moment we commit to handling a message (after the gate passes)
 - **🤔 thinking** — fires when the `💭 Thinking…` placeholder is up and the Gemini call is about to start
@@ -53,14 +53,14 @@ The largest reliability + cost-reduction epoch.
 
 ## v0.8 — 2026-04-26 — reaction-driven actions
 
-User-side reactions on Gemma's messages now drive bot actions:
+User-side reactions on Gem's messages now drive bot actions:
 
 - **🔁 regenerate** — re-run the same prompt
-- **🔍 expand** — ask Gemma to expand on her previous reply with more depth
+- **🔍 expand** — ask Gem to expand on her previous reply with more depth
 - **📌 pin** — add a fact to the channel's persistent pinned-facts file (system-prompt augmentation)
-- **❌ delete** — Gemma deletes her own message
+- **❌ delete** — Gem deletes her own message
 - **🔇 mute** / **🔊 unmute** — per-user channel mute toggle
-- **✏️ markForEdit** — Gemma's next reply edits this message in place
+- **✏️ markForEdit** — Gem's next reply edits this message in place
 
 New: `reactions/vocabulary.ts`, `reactions/handler.ts`, `reactions/actions.ts`, `reactions/pending-edits.ts`. `PinnedFactsStore` writes `~/.gemini/channels/discord/pinned-facts.md`. `AccessManager.canReact` gates the permission. `messageReactionAdd` event handler routes emoji → action.
 

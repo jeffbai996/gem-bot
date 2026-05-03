@@ -7,7 +7,7 @@ import { insertMessage } from './db.ts'
 
 export const geminiCommand = new SlashCommandBuilder()
   .setName('gemini')
-  .setDescription('Admin controls for the Gemma bot')
+  .setDescription('Admin controls for the Gem bot')
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator) // Requires Server Admin by default
   .addSubcommand(subcommand =>
     subcommand
@@ -100,7 +100,7 @@ export const geminiCommand = new SlashCommandBuilder()
   .addSubcommand(subcommand =>
     subcommand
       .setName('clear')
-      .setDescription('Reset Gemma\'s context for this channel — next turn starts fresh')
+      .setDescription('Reset Gem\'s context for this channel — next turn starts fresh')
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
   )
   .addSubcommand(subcommand =>
@@ -335,7 +335,7 @@ interface ExtraDeps {
       // recover from a confused state, not just to drop history.
       gemini.clearCache?.()
       return interaction.reply({
-        content: `🧹 cleared context for <#${channel.id}>. Gemma will start fresh from messages newer than the slash command.`,
+        content: `🧹 cleared context for <#${channel.id}>. Gem will start fresh from messages newer than the slash command.`,
         ephemeral: true,
       })
     }
