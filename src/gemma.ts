@@ -349,7 +349,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       }
     }
     const { parsed, meta } = await gemini.respond({
-      systemPrompt: persona.buildSystemPrompt(message.channelId),
+      systemPrompt: persona.buildSystemPrompt(message.channelId, message.guildId),
       history,
       userMessageText: userText,
       userMediaParts: allParts,

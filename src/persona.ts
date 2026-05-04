@@ -13,6 +13,7 @@ function stateDir(): string {
 export class PersonaLoader {
   private persona: string = DEFAULT_PERSONA
   private activePersonaFile: string = 'persona.md'
+  private guildPersonas: Map<string, string> = new Map()
   private pinnedFacts: PinnedFactsStore | null = null
   private summaryStore: SummaryStore | null = null
 
@@ -27,6 +28,22 @@ export class PersonaLoader {
   async load(filename?: string): Promise<void> {
     if (filename) this.activePersonaFile = filename
     this.persona = await this.readPersona(this.activePersonaFile)
+    await this.discoverGuildPersonas()
+  }
+
+  private async discoverGuildPersonas(): Promise<void> {
+    this.guildPersonas.clear()
+    try {
+      const entries = await fs.readdir(stateDir())
+      for (const name of entries) {
+        const m = name.match(/^persona\.(\d{17,20})\.md$/)
+        if (!m) continue
+        const text = await this.readPersona(name)
+        this.guildPersonas.set(m[1], text)
+      }
+    } catch (e: any) {
+      if (e.code !== 'ENOENT') throw e
+    }
   }
 
   private async readPersona(filename: string): Promise<string> {
@@ -40,11 +57,12 @@ export class PersonaLoader {
     }
   }
 
-  buildSystemPrompt(channelId: string): string {
+  buildSystemPrompt(channelId: string, guildId?: string | null): string {
+    const persona = (guildId && this.guildPersonas.get(guildId)) || this.persona
     const conversationSummary = this.summaryStore?.get(channelId)?.summary ?? ''
     const pinned = this.pinnedFacts?.readForChannelSync(channelId) ?? ''
 
-    const sections: string[] = [this.persona]
+    const sections: string[] = [persona]
     if (conversationSummary) {
       sections.push(`## Conversation summary (older context)\n\n${conversationSummary}`)
     }
