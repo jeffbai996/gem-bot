@@ -6,8 +6,6 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/gemma.ts",
-    "start:prod": "node dist/gemma.js",
-    "build": "tsup",
     "test": "node --test --import tsx 'tests/**/*.test.ts'"
   },
   "dependencies": {
@@ -25,7 +23,6 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "tsup": "^8.3.0",
     "typescript": "^5.0.0"
   }
 }
