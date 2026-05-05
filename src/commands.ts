@@ -1,9 +1,12 @@
 import { SlashCommandBuilder, PermissionFlagsBits, ChatInputCommandInteraction, TextChannel } from 'discord.js'
+import path from 'node:path'
+import os from 'node:os'
 import { AccessManager, type ThinkingMode } from './access.ts'
 import { PersonaLoader } from './persona.ts'
 import { GeminiClient } from './gemini.ts'
 import { GeminiCacheManager } from './cache.ts'
 import { insertMessage } from './db.ts'
+import { rewriteEnvVar, scheduleSelfRestart } from './restart.ts'
 
 export const geminiCommand = new SlashCommandBuilder()
   .setName('gemini')
@@ -34,6 +37,25 @@ export const geminiCommand = new SlashCommandBuilder()
       .setName('persona')
       .setDescription('Hot-swap the bot persona')
       .addStringOption(option => option.setName('filename').setDescription('The persona filename (e.g. persona.md)').setRequired(true))
+  )
+  // Switch the GEMINI_MODEL env var and auto-restart so the new model takes
+  // effect. Choices are pinned to known-good IDs — Gemini's model namespace
+  // mutates often (deprecations, alias renames) so we don't accept arbitrary
+  // strings. Add new entries here when a new model is qualified.
+  .addSubcommand(subcommand =>
+    subcommand
+      .setName('model')
+      .setDescription('Switch the active Gemini model (auto-restarts gemma)')
+      .addStringOption(option => option
+        .setName('id')
+        .setDescription('The model to switch to')
+        .setRequired(true)
+        .addChoices(
+          { name: 'gemini-3-pro-preview — strongest reasoning, ~10x cost', value: 'gemini-3-pro-preview' },
+          { name: 'gemini-3-flash-preview — balanced default', value: 'gemini-3-flash-preview' },
+          { name: 'gemini-3.1-flash-lite-preview — cheapest, low-latency', value: 'gemini-3.1-flash-lite-preview' },
+        )
+      )
   )
   .addSubcommand(subcommand =>
     subcommand
@@ -170,6 +192,32 @@ interface ExtraDeps {
       const filename = interaction.options.getString('filename', true)
       await persona.load(filename)
       return interaction.reply({ content: `✅ Persona swapped to \`${filename}\`.`, ephemeral: true })
+    }
+
+    // /gemini model — rewrite GEMINI_MODEL in the bot's .env, ack, then
+    // detach a delayed `systemctl --user restart gemma` so the new value
+    // is read on next boot. Choices in the builder pin valid IDs.
+    if (subcommand === 'model') {
+      const newModel = interaction.options.getString('id', true)
+      const stateDir = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
+      const envPath = path.join(stateDir, '.env')
+      try {
+        await rewriteEnvVar(envPath, 'GEMINI_MODEL', newModel)
+      } catch (e: any) {
+        return interaction.reply({
+          content: `❌ Could not write \`${envPath}\`: ${e?.message ?? e}`,
+          ephemeral: true,
+        })
+      }
+      // Reply BEFORE scheduling the restart so Discord acks while the process
+      // is still alive. The detached `bash -c 'sleep ... && systemctl restart'`
+      // outlives this process; systemd brings us back up reading the new env.
+      await interaction.reply({
+        content: `🔁 Model set to \`${newModel}\`. Restarting in ~1.5s — back in a few seconds with the new model loaded.`,
+        ephemeral: true,
+      })
+      scheduleSelfRestart('gemma', 1500)
+      return
     }
 
     // Unified per-flag setter — replaces /gemini thinking|showcode|verbose.
