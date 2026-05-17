@@ -760,9 +760,33 @@ export class GeminiClient {
         // non-streaming path; the same payload will fail the same way.
         if (e?.status === 400 || /\b400\b/.test(msg) || e?.name === 'ApiError') {
           // Pull the human-readable bit out of the SDK message.
-          const reasonMatch = msg.match(/\[400[^\]]*\]\s*(.+?)(?:\n|$)/) || msg.match(/"message":\s*"([^"]+)"/)
-          const reason = reasonMatch ? reasonMatch[1].trim() : msg
+          // Prefer the SDK's JSON error.message; fall back to the bracketed
+          // form; finally fall back to the full msg. Keep the first 1KB of
+          // the raw message visible too — the truncated `{\n  \` case where
+          // both regexes fail is the one we need to debug, not silently
+          // hide. Seen 2026-05-17 with gem channel persistent 400s.
+          let reason: string
+          try {
+            const jsonStart = msg.indexOf('{')
+            const jsonEnd = msg.lastIndexOf('}')
+            if (jsonStart >= 0 && jsonEnd > jsonStart) {
+              const parsed = JSON.parse(msg.slice(jsonStart, jsonEnd + 1))
+              reason = parsed?.error?.message
+                ?? parsed?.message
+                ?? msg.slice(0, 1024)
+            } else {
+              const reasonMatch = msg.match(/\[400[^\]]*\]\s*(.+?)(?:\n|$)/) || msg.match(/"message":\s*"([^"]+)"/)
+              reason = reasonMatch ? reasonMatch[1].trim() : msg.slice(0, 1024)
+            }
+          } catch {
+            reason = msg.slice(0, 1024)
+          }
           console.error('[gemini 400]', reason)
+          // Always log the raw payload truncated to 2KB so we can see the
+          // upstream JSON when our extraction misses.
+          if (msg.length > 0 && msg !== reason) {
+            console.error('[gemini 400 raw]', msg.slice(0, 2048))
+          }
           throw new GeminiRequestRejected(reason, 400)
         }
         throw e
