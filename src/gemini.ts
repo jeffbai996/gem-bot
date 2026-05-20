@@ -180,19 +180,25 @@ export function parseResponse(text: string, isPartial: boolean = false): ParsedR
     // Match the key, then capture everything until the next key or the end of the JSON object.
     // We look for a trailing quote followed by either a comma, a closing brace, or end of string.
     const regex = new RegExp(`"${key}"\\s*:\\s*"([^]*?)(?<!\\\\)"(?:\\s*,|\\s*})`, 'i')
+    // When JSON.parse fails we fall back to the raw regex match, which can
+    // contain literal "\n" (backslash + n) the model emitted as text instead
+    // of a real newline. Unescape those so Discord renders real line breaks.
+    const unescapeLiteralEscapes = (s: string): string =>
+      s.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t')
+
     const match = cleaned.match(regex)
     if (match) {
-      try { 
+      try {
         // We use JSON.parse here to unescape \n, \", etc.
         // But if the model put literal newlines, JSON.parse fails.
         // So we sanitize literal newlines into escaped \n for the parse step.
         const sanitized = match[1].replace(/\n/g, '\\n').replace(/\r/g, '\\r')
-        return JSON.parse(`"${sanitized}"`) 
-      } catch { 
-        return match[1] 
+        return JSON.parse(`"${sanitized}"`)
+      } catch {
+        return unescapeLiteralEscapes(match[1])
       }
     }
-    
+
     // If it's partial and the value is still open
     if (isPartial) {
       const openRegex = new RegExp(`"${key}"\\s*:\\s*"([^]*)`, 'i')
@@ -201,11 +207,11 @@ export function parseResponse(text: string, isPartial: boolean = false): ParsedR
         let val = openMatch[1]
         if (val.endsWith('}')) val = val.slice(0, -1).trim()
         if (val.endsWith('"')) val = val.slice(0, -1)
-        try { 
+        try {
           const sanitized = val.replace(/\n/g, '\\n').replace(/\r/g, '\\r')
-          return JSON.parse(`"${sanitized}"`) 
-        } catch { 
-          return val 
+          return JSON.parse(`"${sanitized}"`)
+        } catch {
+          return unescapeLiteralEscapes(val)
         }
       }
     }
