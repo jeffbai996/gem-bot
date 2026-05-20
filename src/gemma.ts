@@ -9,6 +9,8 @@ import { processAttachments, processYouTubeUrls, type InputAttachment } from './
 import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected } from './gemini.ts'
 import { chunk } from './chunk.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
+import { voiceCommand, executeVoiceCommand } from './voice-commands.ts'
+import { VoiceManager } from './voice.ts'
 import { insertMessage } from './db.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
 import { PendingEditsStore } from './reactions/pending-edits.ts'
@@ -118,10 +120,14 @@ const client = new Client({
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.DirectMessageTyping,
     GatewayIntentBits.DirectMessageReactions,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates,
   ],
   partials: [Partials.Channel, Partials.Message, Partials.User, Partials.Reaction]
 })
+
+const voiceManager = new VoiceManager(client)
+voiceManager.attach()
 
 client.once('ready', async () => {
   console.error(`Gem online as ${client.user?.tag} (${client.user?.id})`)
@@ -134,7 +140,7 @@ client.once('ready', async () => {
     const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN)
     await rest.put(
       Routes.applicationCommands(client.user!.id),
-      { body: [geminiCommand.toJSON()] }
+      { body: [geminiCommand.toJSON(), voiceCommand.toJSON()] }
     )
     console.error('Slash commands registered.')
   } catch (error) {
@@ -151,6 +157,13 @@ client.on('interactionCreate', async (interaction) => {
       summaryStore,
       summarizer,
     })
+  } else if (interaction.commandName === 'voice') {
+    // Voice ownership is gated by DISCORD_ADMIN_ID (same identity that controls
+    // /gemini admin commands). gem-voice itself does owner-only audio routing
+    // by DISCORD_OWNER_USER_ID in its own .env — these should agree but are
+    // configured independently.
+    const adminId = process.env.DISCORD_ADMIN_ID
+    await executeVoiceCommand(interaction, voiceManager, persona, adminId)
   }
 })
 
