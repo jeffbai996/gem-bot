@@ -227,6 +227,19 @@ describe('parseResponse', () => {
       assert.equal(r.reply, 'line one\nline two')
     })
 
+    // Regression for May 20 2026 bug: when JSON.parse fails on the regex-
+    // extracted match[1] (e.g. unbalanced quote later, mid-stream truncation,
+    // garbage trailing values), the catch-fallback used to return the raw
+    // match — which contains literal "\n" as two characters, not a real
+    // newline. Discord rendered "\n" as text. Fix: unescape literal
+    // \n / \r / \t in the fallback path.
+    test('unescapes literal \\n in fallback when JSON.parse fails', () => {
+      // Trailing `:::` forces JSON.parse to reject, exercising the fallback.
+      const mangled = `{"react":null,"reply":"line one\\nline two\\n\\nparagraph two","bad": :::}`
+      const r = parseResponse(mangled)
+      assert.equal(r.reply, 'line one\nline two\n\nparagraph two')
+    })
+
     // The exact bug report's input pattern: newline between { and "key"
     // plus newlines inside string values. Everything should parse.
     test('real-world Gemma Apr 20 2026 output', () => {
