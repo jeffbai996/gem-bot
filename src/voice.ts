@@ -92,11 +92,20 @@ export class VoiceManager extends EventEmitter {
    * to capture the credentials we need to forward to gem-voice.
    */
   attach(): void {
+    // Path A: client.on('raw') — should fire for every gateway dispatch
     this.client.on('raw', (packet: { t?: string; d?: unknown }) => {
-      // Debug: log any voice-related raw event we see. Removes once stable.
+      // Debug heartbeat: count all raw events to confirm listener works at all
+      this._rawEventCount = (this._rawEventCount || 0) + 1
+      // Only log non-noisy ones — typing/presence/heartbeat would flood
+      if (packet.t && !['TYPING_START', 'PRESENCE_UPDATE', 'GUILD_CREATE'].includes(packet.t)) {
+        // Sample log first 50 then quiet down
+        if (this._rawEventCount < 50) {
+          console.error(`[voice/raw#${this._rawEventCount}] t=${packet.t}`)
+        }
+      }
       if (packet.t === 'VOICE_STATE_UPDATE' || packet.t === 'VOICE_SERVER_UPDATE') {
         const d = packet.d as Record<string, unknown> | undefined
-        console.error(`[voice] raw event: ${packet.t}`, JSON.stringify({
+        console.error(`[voice] RAW VOICE EVENT: ${packet.t}`, JSON.stringify({
           guild_id: d?.guild_id,
           channel_id: d?.channel_id,
           user_id: d?.user_id,
@@ -111,7 +120,49 @@ export class VoiceManager extends EventEmitter {
         this.handleVoiceServerUpdate(packet.d as VoiceServerUpdateData)
       }
     })
+
+    // Path B: cooked voiceStateUpdate. This fires WITHOUT us tapping raw — and
+    // gives us VOICE_STATE_UPDATE-equivalent data. We still need VOICE_SERVER_UPDATE
+    // somewhere else.
+    this.client.on('voiceStateUpdate', (oldState, newState) => {
+      const botId = this.client.user?.id
+      if (!botId) return
+      if (newState.id !== botId) return
+      console.error(`[voice/cooked] voiceStateUpdate fired for bot: guild=${newState.guild?.id} channel=${newState.channelId} sessionId=${newState.sessionId}`)
+      if (this.pendingJoin && newState.sessionId) {
+        this.handleVoiceStateUpdate({
+          guild_id: newState.guild.id,
+          channel_id: newState.channelId,
+          user_id: botId,
+          session_id: newState.sessionId,
+        })
+      }
+    })
+
+    // Path C: tap into the WebSocketManager directly. discord.js emits each
+    // dispatch by topic name on the WSManager (see WebSocketManager.js:234:
+    // `this.emit(data.t, data.d, shardId)`). Listening here gets us
+    // VOICE_SERVER_UPDATE even though it's not exposed as a public client
+    // event.
+    const ws = this.client.ws as unknown as { on(event: string, listener: (...args: unknown[]) => void): void }
+    if (ws && typeof ws.on === 'function') {
+      ws.on('VOICE_STATE_UPDATE', (d: unknown) => {
+        console.error('[voice/ws] VOICE_STATE_UPDATE fired')
+        this.handleVoiceStateUpdate(d as VoiceStateUpdateData)
+      })
+      ws.on('VOICE_SERVER_UPDATE', (d: unknown) => {
+        console.error('[voice/ws] VOICE_SERVER_UPDATE fired')
+        this.handleVoiceServerUpdate(d as VoiceServerUpdateData)
+      })
+      console.error('[voice] ws-level listeners installed')
+    } else {
+      console.error('[voice] WARNING: client.ws.on not available — cannot install ws-level listeners')
+    }
+
+    console.error('[voice] attach() complete — listeners installed')
   }
+
+  private _rawEventCount: number = 0
 
   private handleVoiceStateUpdate(data: VoiceStateUpdateData): void {
     if (!this.pendingJoin) return
