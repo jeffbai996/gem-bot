@@ -93,6 +93,18 @@ export class VoiceManager extends EventEmitter {
    */
   attach(): void {
     this.client.on('raw', (packet: { t?: string; d?: unknown }) => {
+      // Debug: log any voice-related raw event we see. Removes once stable.
+      if (packet.t === 'VOICE_STATE_UPDATE' || packet.t === 'VOICE_SERVER_UPDATE') {
+        const d = packet.d as Record<string, unknown> | undefined
+        console.error(`[voice] raw event: ${packet.t}`, JSON.stringify({
+          guild_id: d?.guild_id,
+          channel_id: d?.channel_id,
+          user_id: d?.user_id,
+          has_session: !!d?.session_id,
+          has_endpoint: !!d?.endpoint,
+          has_token: !!d?.token,
+        }))
+      }
       if (packet.t === 'VOICE_STATE_UPDATE') {
         this.handleVoiceStateUpdate(packet.d as VoiceStateUpdateData)
       } else if (packet.t === 'VOICE_SERVER_UPDATE') {
@@ -201,6 +213,7 @@ export class VoiceManager extends EventEmitter {
         resolve({ ok: false, error: 'no active gateway shard' })
         return
       }
+      console.error(`[voice] sending op4 — guild=${options.guildId} channel=${options.channelId}`)
       shard.send({
         op: 4,
         d: {
@@ -210,6 +223,7 @@ export class VoiceManager extends EventEmitter {
           self_deaf: false,
         },
       })
+      console.error(`[voice] op4 sent, waiting up to ${timeoutMs}ms for VOICE_STATE_UPDATE + VOICE_SERVER_UPDATE`)
     })
   }
 
