@@ -27,7 +27,12 @@ const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gem
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
 
 const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-3-flash-preview'
-const MAX_HISTORY_TOKENS = parseInt(process.env.MAX_HISTORY_TOKENS ?? '200000', 10)
+// Cap conversation history sent per turn. 80k tokens is generous for chat
+// (~60k words of prior context) while keeping per-turn input cost bounded
+// on flash-class models. Old default was 200k, which meant every turn
+// re-sent up to 200k tokens of history on a chatty channel — a major
+// hidden cost per the audit. Override via MAX_HISTORY_TOKENS=<n>.
+const MAX_HISTORY_TOKENS = parseInt(process.env.MAX_HISTORY_TOKENS ?? '80000', 10)
 
 if (!process.env.DISCORD_BOT_TOKEN) {
   console.error(`FATAL: DISCORD_BOT_TOKEN missing. Set in ${path.join(STATE_DIR, '.env')}`)
