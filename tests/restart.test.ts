@@ -20,7 +20,7 @@ describe('rewriteEnvVar', () => {
   })
 
   test('replaces an existing key in place', async () => {
-    await setup('GEMINI_MODEL=gemini-3-flash-preview\nDISCORD_BOT_TOKEN=abc\n')
+    await setup('GEMINI_MODEL=gemini-3.5-flash\nDISCORD_BOT_TOKEN=abc\n')
     await rewriteEnvVar(envPath, 'GEMINI_MODEL', 'gemini-3-pro-preview')
     const body = await fs.readFile(envPath, 'utf8')
     assert.match(body, /^GEMINI_MODEL=gemini-3-pro-preview$/m)
