@@ -12,6 +12,7 @@ import { geminiCommand, executeGeminiCommand } from './commands.ts'
 import { voiceCommand, executeVoiceCommand } from './voice-commands.ts'
 import { VoiceManager } from './voice.ts'
 import { insertMessage } from './db.ts'
+import { shouldEmbed } from './embed-throttle.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
 import { PendingEditsStore } from './reactions/pending-edits.ts'
 import { applyLifecycle } from './reactions/lifecycle.ts'
@@ -193,7 +194,13 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // If the user is allowed to speak in the channel, log the message to SQLite VSS.
   // We do this independently of the `gate` (which requires mention) so the bot
   // learns from passive conversation in allowed channels.
-  if (access.isAllowedAndEnabled(message.author.id, message.channelId) && message.content.trim()) {
+  //
+  // Throttle: at most one embed per (channel, user) per GEMINI_EMBED_COOLDOWN_MS
+  // (default 3s). Without this a chatty user / busy channel would fire embed
+  // API calls continuously, racking up cost on every keystroke-batch.
+  if (access.isAllowedAndEnabled(message.author.id, message.channelId)
+      && message.content.trim()
+      && shouldEmbed(message.channelId, message.author.id)) {
     gemini.embed(message.content)
       .then(embedding => {
         insertMessage(

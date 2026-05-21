@@ -414,9 +414,15 @@ interface ExtraDeps {
     if (subcommand === 'backfill') {
       const channel = interaction.options.getChannel('channel', true) as TextChannel
       const limit = interaction.options.getInteger('limit') ?? 100
-      
+
+      // Throttle between embed calls so a 500-message backfill doesn't fire
+      // 500 sequential API hits in <1s. 100ms is well below Gemini's
+      // documented rate limits but enough to keep this from looking like an
+      // attack pattern. Override via GEMINI_BACKFILL_DELAY_MS.
+      const interDelayMs = parseInt(process.env.GEMINI_BACKFILL_DELAY_MS ?? '100', 10)
+
       await interaction.reply({ content: `⏳ Beginning backfill for <#${channel.id}> (max ${limit} messages). This might take a while...`, ephemeral: true })
-      
+
       try {
         const messages = await channel.messages.fetch({ limit })
         let count = 0
@@ -426,6 +432,9 @@ interface ExtraDeps {
             const emb = await gemini.embed(msg.content)
             insertMessage(msg.id, msg.channelId, msg.author.username, msg.content, msg.createdAt.toISOString(), emb)
             count++
+            if (interDelayMs > 0) {
+              await new Promise(resolve => setTimeout(resolve, interDelayMs))
+            }
           } catch (e) {
              console.error(`Failed to embed msg ${msg.id}:`, e)
           }
