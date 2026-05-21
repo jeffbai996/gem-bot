@@ -545,7 +545,7 @@ export class GeminiClient {
   private apiKey: string
   private cacheManager: GeminiCacheManager
 
-  constructor(apiKey: string, modelName: string = 'gemini-2.0-flash', registry: ToolRegistry) {
+  constructor(apiKey: string, modelName: string = 'gemini-3.5-flash', registry: ToolRegistry) {
     this.apiKey = apiKey
     this.registry = registry
     this.modelName = modelName

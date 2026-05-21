@@ -25,7 +25,7 @@ import { fetchMessagesSince } from './db.ts'
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
 
-const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-2.0-flash'
+const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-3.5-flash'
 const MAX_HISTORY_TOKENS = parseInt(process.env.MAX_HISTORY_TOKENS ?? '200000', 10)
 
 if (!process.env.DISCORD_BOT_TOKEN) {

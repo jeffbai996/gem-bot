@@ -32,13 +32,12 @@ import type { GoogleGenAI } from '@google/genai'
 import { createHash } from 'crypto'
 
 const CACHE_MIN_TOKENS: Record<string, number> = {
-  'gemini-2.0-flash': 1024,
-  'gemini-2.0-flash-lite': 1024,
-  'gemini-2.5-flash': 1024,
-  'gemini-3-flash-preview': 1024,
-  'gemini-2.5-pro': 4096,
+  // Per-model implicit-cache token thresholds. Keep this aligned with the
+  // models offered in commands.ts's /gemini model picker. Old IDs removed
+  // when they fall out of the picker to avoid drift.
+  'gemini-3.5-flash': 1024,
+  'gemini-3.1-flash-lite-preview': 1024,
   'gemini-3-pro-preview': 4096,
-  'gemini-3.1-pro-preview': 4096,
 }
 
 // Bumped from the Google default of 1h. Multi-hour group chats are the
