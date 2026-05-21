@@ -207,7 +207,7 @@ cat > ~/.gemini/channels/discord/.env <<EOF
 DISCORD_BOT_TOKEN=your_token_here
 GEMINI_API_KEY=your_key_here
 DISCORD_ADMIN_ID=your_personal_discord_user_id
-GEMINI_MODEL=gemini-3.5-flash
+GEMINI_MODEL=gemini-3-flash-preview
 EOF
 chmod 600 ~/.gemini/channels/discord/.env
 

@@ -52,7 +52,8 @@ export const geminiCommand = new SlashCommandBuilder()
         .setRequired(true)
         .addChoices(
           { name: 'gemini-3-pro-preview — strongest reasoning, ~10x cost', value: 'gemini-3-pro-preview' },
-          { name: 'gemini-3.5-flash — balanced default', value: 'gemini-3.5-flash' },
+          { name: 'gemini-3.5-flash — newer, repriced ~5x ($1.50/$9.00 per 1M)', value: 'gemini-3.5-flash' },
+          { name: 'gemini-3-flash-preview — balanced default', value: 'gemini-3-flash-preview' },
           { name: 'gemini-3.1-flash-lite-preview — cheapest, low-latency', value: 'gemini-3.1-flash-lite-preview' },
         )
       )

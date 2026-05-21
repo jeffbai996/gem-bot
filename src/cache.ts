@@ -33,9 +33,9 @@ import { createHash } from 'crypto'
 
 const CACHE_MIN_TOKENS: Record<string, number> = {
   // Per-model implicit-cache token thresholds. Keep this aligned with the
-  // models offered in commands.ts's /gemini model picker. Old IDs removed
-  // when they fall out of the picker to avoid drift.
+  // models offered in commands.ts's /gemini model picker.
   'gemini-3.5-flash': 1024,
+  'gemini-3-flash-preview': 1024,
   'gemini-3.1-flash-lite-preview': 1024,
   'gemini-3-pro-preview': 4096,
 }
