@@ -65,10 +65,10 @@ The verbose blocks (🌐 / 🛠️ / 🧠 / 💭 / token+time footer) are toggle
 
 ### Semantic memory (RAG)
 
-- **Background ingestion** — messages from allowed users in allowed channels are embedded with `gemini-embedding-001` (768-dim) and stored in SQLite + [`sqlite-vss`](https://github.com/asg017/sqlite-vss).
+- **Background ingestion** — messages from allowed users in allowed channels are embedded with `gemini-embedding-001` (768-dim) and stored in SQLite + [`sqlite-vss`](https://github.com/asg017/sqlite-vss). Throttled at most one embed per (channel, user) per 3 s (`GEMINI_EMBED_COOLDOWN_MS`) so chatty users don't fire continuous embed calls.
 - **Retrieval tool** — the model can call `search_memory` mid-generation to pull semantically-relevant past messages for the current channel.
 - **Conversation summarization** — background `SummarizationScheduler` rolls up older history into per-channel summaries that get injected into the system prompt — keeps long-running channels from blowing the context window without losing prior context.
-- **Backfill** — `/gemini backfill #channel [limit]` embeds recent history on demand after deploying to an existing channel.
+- **Backfill** — `/gemini backfill #channel [limit]` embeds recent history on demand after deploying to an existing channel. Inter-call delay defaults to 100 ms (`GEMINI_BACKFILL_DELAY_MS`) so a 500-msg backfill doesn't fire 500 sequential API hits in &lt;1 s.
 
 ### Reactions — both directions
 
@@ -152,7 +152,7 @@ Runtime state lives in `~/.gemini/channels/discord/` (override via `DISCORD_STAT
 
 | File / dir | Purpose |
 |---|---|
-| `.env` | `DISCORD_BOT_TOKEN`, `GEMINI_API_KEY`, `DISCORD_ADMIN_ID`, optional `GEMINI_MODEL`, `MAX_HISTORY_TOKENS`, `MAX_UNSUMMARIZED_MESSAGES`, `SUMMARIZATION_BATCH_LIMIT` |
+| `.env` | `DISCORD_BOT_TOKEN`, `GEMINI_API_KEY`, `DISCORD_ADMIN_ID`, optional `GEMINI_MODEL`, `MAX_HISTORY_TOKENS` (default 80000), `MAX_UNSUMMARIZED_MESSAGES`, `SUMMARIZATION_BATCH_LIMIT`, `GEMINI_EMBED_COOLDOWN_MS` (default 3000), `GEMINI_BACKFILL_DELAY_MS` (default 100) |
 | `access.json` | User + channel allowlists with per-channel render flags |
 | `memory.db` | SQLite + sqlite-vss database of embedded messages |
 | `persona.md` | Default system prompt |
