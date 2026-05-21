@@ -1,63 +1,41 @@
 /**
- * VoiceManager — bridges discord.js voice state events to the gem-voice IPC daemon.
+ * VoiceManager — wires @discordjs/voice to gem-voice over IPC.
  *
- * Architecture:
- *   - gemma.ts owns the Discord token and the main gateway connection.
- *   - When user runs /voice join, we send a VOICE_STATE_UPDATE on our shard
- *     (channel_id: <vc>) to request joining their voice channel.
- *   - Discord responds with VOICE_STATE_UPDATE (gives our session_id) and
- *     VOICE_SERVER_UPDATE (gives endpoint + voice token).
- *   - Once we have both, build the IPC payload and send to gem-voice.
- *   - gem-voice opens the voice WS itself with those credentials.
- *
- * /voice leave → send VOICE_STATE_UPDATE (channel_id: null) to detach + send
- * leave to gem-voice.
+ * Architecture (v2):
+ *   - @discordjs/voice handles the entire Discord voice protocol: gateway
+ *     credentials, voice WebSocket, UDP, encryption, DAVE/E2EE, Opus framing.
+ *   - We tap the inbound Opus stream (summoner only) and forward it to
+ *     gem-voice over a unix-socket NDJSON IPC.
+ *   - gem-voice emits AUDIO_OUT events with model-generated Opus that we
+ *     pipe back into the voice channel via discord.js's AudioPlayer using a
+ *     prebuffered Opus source.
  */
 import net from 'node:net'
-import os from 'node:os'
 import path from 'node:path'
 import { EventEmitter } from 'node:events'
-import type { Client } from 'discord.js'
+import { Readable } from 'node:stream'
+import type { Client, VoiceBasedChannel } from 'discord.js'
+import {
+  joinVoiceChannel,
+  VoiceConnection,
+  VoiceConnectionStatus,
+  EndBehaviorType,
+  createAudioPlayer,
+  createAudioResource,
+  AudioPlayer,
+  StreamType,
+  NoSubscriberBehavior,
+  entersState,
+} from '@discordjs/voice'
 
 function getSocketPath(): string {
   return process.env.GEM_VOICE_SOCKET_PATH
     || path.join(process.env.XDG_RUNTIME_DIR || '/tmp', 'gem-voice.sock')
 }
 
-function getCredentialTimeoutMs(): number {
-  return parseInt(process.env.GEM_VOICE_CREDENTIAL_TIMEOUT_MS || '10000', 10)
-}
-
-interface VoiceStateUpdateData {
-  guild_id: string
-  channel_id: string | null
-  user_id: string
-  session_id: string
-}
-
-interface VoiceServerUpdateData {
-  guild_id: string
-  endpoint: string | null
-  token: string
-}
-
-interface PendingJoin {
-  guildId: string
-  channelId: string
-  ownerUserId: string
-  persona: JoinOptions['persona']
-  modelConfig: JoinOptions['modelConfig']
-  resolve: (result: { ok: true } | { ok: false; error: string }) => void
-  reject: (err: Error) => void
-  timer: NodeJS.Timeout
-  sessionId?: string
-  endpoint?: string
-  token?: string
-}
-
 export interface JoinOptions {
-  guildId: string
-  channelId: string
+  channel: VoiceBasedChannel
+  summonerUserId: string
   ownerUserId: string
   persona: { name: string; system_prompt: string; memory_query?: string }
   modelConfig?: { model?: string; voice?: string; language?: string }
@@ -73,13 +51,13 @@ interface IpcResponse {
 
 export class VoiceManager extends EventEmitter {
   private client: Client
-  private pendingJoin: PendingJoin | null = null
+  private connection: VoiceConnection | null = null
+  private audioPlayer: AudioPlayer | null = null
+  private outboundOpus: Readable | null = null
   private ipcConnection: net.Socket | null = null
   private ipcRequestCounter = 0
   private ipcPendingRequests = new Map<string, (resp: IpcResponse) => void>()
   private ipcRecvBuffer = ''
-  private activeGuildId: string | null = null
-  private activeBotUserId: string | null = null
 
   constructor(client: Client) {
     super()
@@ -87,241 +65,130 @@ export class VoiceManager extends EventEmitter {
   }
 
   /**
-   * Wire up raw gateway event taps. discord.js delivers raw dispatch events
-   * via `client.on('raw')`. We listen for VOICE_STATE_UPDATE + VOICE_SERVER_UPDATE
-   * to capture the credentials we need to forward to gem-voice.
+   * No-op in v2 — @discordjs/voice subscribes to gateway events itself.
+   * Kept as a stable method for backward-compat with callers that invoke it.
    */
   attach(): void {
-    // Path A: client.on('raw') — should fire for every gateway dispatch
-    this.client.on('raw', (packet: { t?: string; d?: unknown }) => {
-      // Debug heartbeat: count all raw events to confirm listener works at all
-      this._rawEventCount = (this._rawEventCount || 0) + 1
-      // Only log non-noisy ones — typing/presence/heartbeat would flood
-      if (packet.t && !['TYPING_START', 'PRESENCE_UPDATE', 'GUILD_CREATE'].includes(packet.t)) {
-        // Sample log first 50 then quiet down
-        if (this._rawEventCount < 50) {
-          console.error(`[voice/raw#${this._rawEventCount}] t=${packet.t}`)
-        }
-      }
-      if (packet.t === 'VOICE_STATE_UPDATE' || packet.t === 'VOICE_SERVER_UPDATE') {
-        const d = packet.d as Record<string, unknown> | undefined
-        console.error(`[voice] RAW VOICE EVENT: ${packet.t}`, JSON.stringify({
-          guild_id: d?.guild_id,
-          channel_id: d?.channel_id,
-          user_id: d?.user_id,
-          has_session: !!d?.session_id,
-          has_endpoint: !!d?.endpoint,
-          has_token: !!d?.token,
-        }))
-      }
-      if (packet.t === 'VOICE_STATE_UPDATE') {
-        this.handleVoiceStateUpdate(packet.d as VoiceStateUpdateData)
-      } else if (packet.t === 'VOICE_SERVER_UPDATE') {
-        this.handleVoiceServerUpdate(packet.d as VoiceServerUpdateData)
-      }
-    })
-
-    // Path B: cooked voiceStateUpdate. This fires WITHOUT us tapping raw — and
-    // gives us VOICE_STATE_UPDATE-equivalent data. We still need VOICE_SERVER_UPDATE
-    // somewhere else.
-    this.client.on('voiceStateUpdate', (oldState, newState) => {
-      const botId = this.client.user?.id
-      if (!botId) return
-      if (newState.id !== botId) return
-      console.error(`[voice/cooked] voiceStateUpdate fired for bot: guild=${newState.guild?.id} channel=${newState.channelId} sessionId=${newState.sessionId}`)
-      if (this.pendingJoin && newState.sessionId) {
-        this.handleVoiceStateUpdate({
-          guild_id: newState.guild.id,
-          channel_id: newState.channelId,
-          user_id: botId,
-          session_id: newState.sessionId,
-        })
-      }
-    })
-
-    // Path C: tap into the WebSocketManager directly. discord.js emits each
-    // dispatch by topic name on the WSManager (see WebSocketManager.js:234:
-    // `this.emit(data.t, data.d, shardId)`). Listening here gets us
-    // VOICE_SERVER_UPDATE even though it's not exposed as a public client
-    // event.
-    const ws = this.client.ws as unknown as { on(event: string, listener: (...args: unknown[]) => void): void }
-    if (ws && typeof ws.on === 'function') {
-      ws.on('VOICE_STATE_UPDATE', (d: unknown) => {
-        console.error('[voice/ws] VOICE_STATE_UPDATE fired')
-        this.handleVoiceStateUpdate(d as VoiceStateUpdateData)
-      })
-      ws.on('VOICE_SERVER_UPDATE', (d: unknown) => {
-        console.error('[voice/ws] VOICE_SERVER_UPDATE fired')
-        this.handleVoiceServerUpdate(d as VoiceServerUpdateData)
-      })
-      console.error('[voice] ws-level listeners installed')
-    } else {
-      console.error('[voice] WARNING: client.ws.on not available — cannot install ws-level listeners')
-    }
-
-    console.error('[voice] attach() complete — listeners installed')
+    // intentionally empty
   }
 
-  private _rawEventCount: number = 0
-
-  private handleVoiceStateUpdate(data: VoiceStateUpdateData): void {
-    if (!this.pendingJoin) return
-    if (!this.client.user) return
-    // Only care about our own bot's voice state, not other users in the vc.
-    if (data.user_id !== this.client.user.id) return
-    if (data.guild_id !== this.pendingJoin.guildId) return
-
-    this.pendingJoin.sessionId = data.session_id
-    this.tryCompletePendingJoin()
-  }
-
-  private handleVoiceServerUpdate(data: VoiceServerUpdateData): void {
-    if (!this.pendingJoin) return
-    if (data.guild_id !== this.pendingJoin.guildId) return
-
-    this.pendingJoin.endpoint = data.endpoint || undefined
-    this.pendingJoin.token = data.token
-    this.tryCompletePendingJoin()
-  }
-
-  private async tryCompletePendingJoin(): Promise<void> {
-    const p = this.pendingJoin
-    if (!p) return
-    if (!p.sessionId || !p.endpoint || !p.token) return
-    if (!this.client.user) return
-
-    // Clear pendingJoin first so a late event doesn't double-fire.
-    this.pendingJoin = null
-    clearTimeout(p.timer)
-
-    try {
-      const resp = await this.sendIpcRequest({
-        action: 'join',
-        vc_credentials: {
-          guild_id: p.guildId,
-          channel_id: p.channelId,
-          user_id: this.client.user.id,
-          session_id: p.sessionId,
-          endpoint: p.endpoint,
-          token: p.token,
-        },
-        owner_user_id: p.ownerUserId,
-        persona: p.persona,
-        model_config: p.modelConfig || {},
-      })
-      if (!resp.ok) {
-        p.resolve({ ok: false, error: resp.error || 'unknown ipc error' })
-        return
-      }
-      this.activeGuildId = p.guildId
-      this.activeBotUserId = this.client.user.id
-      p.resolve({ ok: true })
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e)
-      p.resolve({ ok: false, error: `ipc error: ${msg}` })
-    }
-  }
-
-  /**
-   * Send a JOIN_VOICE_CHANNEL gateway op to bring the bot into the vc, then
-   * wait for VOICE_STATE_UPDATE + VOICE_SERVER_UPDATE to arrive with the
-   * credentials we'll forward to gem-voice.
-   */
-  async start(options: JoinOptions): Promise<{ ok: true } | { ok: false; error: string }> {
-    if (this.pendingJoin || this.activeGuildId) {
+  async start(opts: JoinOptions): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (this.connection) {
       return { ok: false, error: 'already in a voice session' }
     }
 
-    // Stash persona + model so tryCompletePendingJoin can include them in IPC
-    // by retrieving from pendingJoin.
-    return new Promise((resolve, reject) => {
-      const timeoutMs = getCredentialTimeoutMs()
-      const timer = setTimeout(() => {
-        if (this.pendingJoin) {
-          this.pendingJoin = null
-          resolve({ ok: false, error: `timeout waiting for voice credentials (${timeoutMs}ms)` })
-        }
-      }, timeoutMs)
-
-      this.pendingJoin = {
-        guildId: options.guildId,
-        channelId: options.channelId,
-        ownerUserId: options.ownerUserId,
-        persona: options.persona,
-        modelConfig: options.modelConfig,
-        resolve,
-        reject,
-        timer,
-      }
-
-      // Send Opcode 4 (Update Voice State) on our shard.
-      // Payload: { op: 4, d: { guild_id, channel_id, self_mute, self_deaf } }
-      // discord.js exposes this via WebSocketShard.send().
-      const shard = this.client.ws.shards.first()
-      if (!shard) {
-        clearTimeout(timer)
-        this.pendingJoin = null
-        resolve({ ok: false, error: 'no active gateway shard' })
-        return
-      }
-      console.error(`[voice] sending op4 — guild=${options.guildId} channel=${options.channelId}`)
-      shard.send({
-        op: 4,
-        d: {
-          guild_id: options.guildId,
-          channel_id: options.channelId,
-          self_mute: false,
-          self_deaf: false,
-        },
-      })
-      console.error(`[voice] op4 sent, waiting up to ${timeoutMs}ms for VOICE_STATE_UPDATE + VOICE_SERVER_UPDATE`)
-    })
-  }
-
-  /**
-   * Detach from the voice channel and tell gem-voice to end the session.
-   */
-  async stop(): Promise<{ ok: true; wasActive: boolean } | { ok: false; error: string }> {
-    if (!this.activeGuildId) {
-      // Try to send the IPC leave anyway in case state is desynced — it's idempotent.
-      try {
-        const resp = await this.sendIpcLeave()
-        return { ok: true, wasActive: resp.was_active || false }
-      } catch {
-        return { ok: true, wasActive: false }
-      }
-    }
-
-    const guildId = this.activeGuildId
-    this.activeGuildId = null
-    this.activeBotUserId = null
-
-    // Send IPC leave first (gem-voice closes its voice WS).
-    let wasActive = false
+    // 1. Connect to gem-voice IPC and start a session
+    let ipcSock: net.Socket
     try {
-      const resp = await this.sendIpcLeave()
-      wasActive = resp.was_active || false
+      ipcSock = await this.ensureIpcConnected()
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
-      return { ok: false, error: `ipc leave failed: ${msg}` }
+      return { ok: false, error: `ipc connect failed: ${msg}` }
     }
 
-    // Then send VOICE_STATE_UPDATE with channel_id: null to detach our shard
-    // from the vc on Discord's side.
-    const shard = this.client.ws.shards.first()
-    if (shard) {
-      shard.send({
-        op: 4,
-        d: {
-          guild_id: guildId,
-          channel_id: null,
-          self_mute: false,
-          self_deaf: false,
-        },
+    const joinResp = await this.sendIpcRequest({
+      action: 'join',
+      owner_user_id: opts.ownerUserId,
+      persona: opts.persona,
+      model_config: opts.modelConfig || {},
+    })
+    if (!joinResp.ok) {
+      return { ok: false, error: `gem-voice join failed: ${joinResp.error}` }
+    }
+
+    // 2. Join the Discord voice channel via @discordjs/voice
+    let connection: VoiceConnection
+    try {
+      connection = joinVoiceChannel({
+        channelId: opts.channel.id,
+        guildId: opts.channel.guild.id,
+        // discord.js v14 has VoiceBasedChannel.guild.voiceAdapterCreator
+        adapterCreator: opts.channel.guild.voiceAdapterCreator,
+        selfDeaf: false,
+        selfMute: false,
       })
+      await entersState(connection, VoiceConnectionStatus.Ready, 10_000)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      // Roll back gem-voice session
+      await this.sendIpcRequest({ action: 'leave' }).catch(() => {})
+      return { ok: false, error: `voice connect failed: ${msg}` }
     }
 
-    return { ok: true, wasActive }
+    this.connection = connection
+
+    // 3. Subscribe to summoner's audio stream — pipe to gem-voice via IPC
+    const receiver = connection.receiver
+    const summonerStream = receiver.subscribe(opts.summonerUserId, {
+      end: { behavior: EndBehaviorType.Manual },
+    })
+
+    summonerStream.on('data', (opusFrame: Buffer) => {
+      const b64 = opusFrame.toString('base64')
+      // Fire-and-forget: don't await the ack; we don't care about per-frame replies.
+      try {
+        ipcSock.write(JSON.stringify({ action: 'audio_in', b64 }) + '\n')
+      } catch (e) {
+        // socket may have closed mid-write; let the close handler clean up
+      }
+    })
+    summonerStream.on('error', (err: Error) => {
+      console.error('[voice] summoner stream error:', err.message)
+    })
+
+    // 4. Set up an AudioPlayer to play model audio back into the channel
+    this.audioPlayer = createAudioPlayer({
+      behaviors: { noSubscriber: NoSubscriberBehavior.Play },
+    })
+    connection.subscribe(this.audioPlayer)
+
+    // 5. Outbound: AUDIO_OUT events from gem-voice → Readable stream → AudioPlayer
+    // discord.js wants Opus frames in a stream; we feed them one push() at a time.
+    this.outboundOpus = new Readable({ read() { /* push() drives the flow */ } })
+    const resource = createAudioResource(this.outboundOpus, {
+      inputType: StreamType.Opus,
+    })
+    this.audioPlayer.play(resource)
+
+    return { ok: true }
+  }
+
+  async stop(): Promise<{ ok: true; wasActive: boolean } | { ok: false; error: string }> {
+    const hadConnection = !!this.connection
+
+    // 1. Tell gem-voice to end the session
+    let wasActive = false
+    if (this.ipcConnection && !this.ipcConnection.destroyed) {
+      try {
+        const resp = await this.sendIpcRequest({ action: 'leave' })
+        wasActive = resp.was_active || false
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e)
+        console.error('[voice] ipc leave failed:', msg)
+      }
+    }
+
+    // 2. Stop audio player + tear down outbound stream
+    if (this.audioPlayer) {
+      this.audioPlayer.stop()
+      this.audioPlayer = null
+    }
+    if (this.outboundOpus) {
+      this.outboundOpus.push(null)
+      this.outboundOpus = null
+    }
+
+    // 3. Disconnect from voice channel
+    if (this.connection) {
+      try {
+        this.connection.destroy()
+      } catch (e: unknown) {
+        // Already destroyed is fine
+      }
+      this.connection = null
+    }
+
+    return { ok: true, wasActive: hadConnection || wasActive }
   }
 
   // -------- IPC client --------
@@ -338,11 +205,15 @@ export class VoiceManager extends EventEmitter {
         sock.on('data', (chunk: Buffer) => this.handleIpcData(chunk))
         sock.on('close', () => {
           this.ipcConnection = null
-          // Fail all in-flight requests
           for (const cb of this.ipcPendingRequests.values()) {
             cb({ id: '', ok: false, error: 'ipc connection closed' })
           }
           this.ipcPendingRequests.clear()
+          // If the daemon died while we had an active voice connection,
+          // tear our side down too.
+          if (this.audioPlayer || this.connection) {
+            this.stop().catch(() => {})
+          }
         })
         sock.on('error', (e: Error) => {
           console.error('[voice] ipc socket error:', e.message)
@@ -363,9 +234,16 @@ export class VoiceManager extends EventEmitter {
       this.ipcRecvBuffer = this.ipcRecvBuffer.slice(newlineIdx + 1)
       if (!line.trim()) continue
       try {
-        const msg = JSON.parse(line) as IpcResponse & { event?: string }
+        const msg = JSON.parse(line) as IpcResponse & { event?: string; b64?: string }
+        if (msg.event === 'audio_out' && msg.b64) {
+          // Push model Opus into the outbound stream
+          if (this.outboundOpus) {
+            const opusBytes = Buffer.from(msg.b64, 'base64')
+            this.outboundOpus.push(opusBytes)
+          }
+          continue
+        }
         if (msg.event) {
-          // Unsolicited event from gem-voice (user_speech_end, model_speech_end, etc.)
           this.emit('event', msg)
           continue
         }
@@ -399,10 +277,6 @@ export class VoiceManager extends EventEmitter {
     })
   }
 
-  private async sendIpcLeave(): Promise<IpcResponse> {
-    return this.sendIpcRequest({ action: 'leave' })
-  }
-
   /**
    * Close the IPC socket connection. Used for test cleanup and graceful
    * shutdown. Safe to call multiple times.
@@ -414,5 +288,3 @@ export class VoiceManager extends EventEmitter {
     this.ipcConnection = null
   }
 }
-
-export { getSocketPath as VOICE_SOCKET_PATH_RESOLVER }

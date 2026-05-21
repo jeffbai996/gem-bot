@@ -78,8 +78,8 @@ async function handleJoin(
   const systemPrompt = persona.buildSystemPrompt(interaction.channelId, interaction.guildId)
 
   const result = await voiceManager.start({
-    guildId: interaction.guildId,
-    channelId: vc.id,
+    channel: vc,
+    summonerUserId: interaction.user.id,
     ownerUserId: interaction.user.id,
     persona: {
       name: 'Gem',
