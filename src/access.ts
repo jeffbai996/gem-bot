@@ -20,6 +20,10 @@ export interface ChannelFlags {
   verbose: boolean
   cache: boolean
   cacheTtlSec: number | null
+  // requireMention isn't a "rendering" flag like the others — it sits at the
+  // top of ChannelConfig — but exposing it through ChannelFlags lets the
+  // /gemini set unified setter touch it without a separate command path.
+  requireMention?: boolean
 }
 
 export interface AccessFile {
@@ -170,6 +174,7 @@ export class AccessManager {
       ...(patch.showCode !== undefined ? { showCode: patch.showCode } : {}),
       ...(patch.verbose !== undefined ? { verbose: patch.verbose } : {}),
       ...(patch.cache !== undefined ? { cache: patch.cache } : {}),
+      ...(patch.requireMention !== undefined ? { requireMention: patch.requireMention } : {}),
       // null sentinel = clear the override (back to manager default).
       // Skipping the field entirely means "leave existing override alone".
       ...(patch.cacheTtlSec === null
