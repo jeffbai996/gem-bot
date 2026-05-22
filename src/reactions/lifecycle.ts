@@ -20,8 +20,10 @@
  *   ⚠️ denied     — rate-limited / quota / 429
  *   ❌ errored    — caught exception of any other kind
  *
- * Virtual: silenced — no emoji, used when the model returns nothing and we
- * deliberately stay quiet; clears all transients without leaving a tombstone.
+ * Virtual: silenced — 🖥️ tombstone for "saw the message, chose not to
+ * respond." Used when the model returns nothing and we deliberately stay
+ * quiet. Clears all transients so the user sees a single 🖥️ instead of
+ * a dangling 🤔.
  */
 import type { Message } from 'discord.js'
 
@@ -38,7 +40,7 @@ export const EMOJI = {
   blocked:         '🛑',
   errored:         '❌',
   denied:          '⚠️',
-  silenced:        '',
+  silenced:        '🖥️',
 } as const
 
 export type LifecycleState = keyof typeof EMOJI
@@ -91,8 +93,9 @@ export async function applyLifecycle(message: Message, state: LifecycleState): P
     }
   }
 
-  // `silenced` and any future virtual states use empty emoji — strip
-  // transients (above) but emit nothing.
+  // Future virtual states may use empty emoji — strip transients (above)
+  // but emit nothing. `silenced` itself now uses 🖥️ but the guard stays
+  // so a new state declared with `''` still works.
   if (!emoji) return
 
   await message.react(emoji).catch(e => {
