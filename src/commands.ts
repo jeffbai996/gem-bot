@@ -73,7 +73,7 @@ export const geminiCommand = new SlashCommandBuilder()
   .addSubcommand(subcommand =>
     subcommand
       .setName('set')
-      .setDescription('Set a per-channel flag (thinking, show_code, verbose). Defaults to current channel.')
+      .setDescription('Set a per-channel flag (thinking, show_code, verbose, require_mention). Defaults to current channel.')
       .addStringOption(option => option
         .setName('flag')
         .setDescription('Which flag to set')
@@ -82,11 +82,12 @@ export const geminiCommand = new SlashCommandBuilder()
           { name: 'thinking — when to render the 💭 thinking block', value: 'thinking' },
           { name: 'show_code — render code/tool artifacts + 🔍 web-search', value: 'show_code' },
           { name: 'verbose — usage/timing footer + 🧠 reasoning block', value: 'verbose' },
+          { name: 'require_mention — only respond when @-mentioned', value: 'require_mention' },
         )
       )
       .addStringOption(option => option
         .setName('value')
-        .setDescription('thinking: always|auto|never. show_code/verbose: true|false.')
+        .setDescription('thinking: always|auto|never. show_code/verbose/require_mention: true|false.')
         .setRequired(true)
       )
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
@@ -242,7 +243,7 @@ interface ExtraDeps {
             })
           }
           updated = await access.setChannelFlags(channel.id, { thinking: rawValue as ThinkingMode })
-        } else if (flag === 'show_code' || flag === 'verbose') {
+        } else if (flag === 'show_code' || flag === 'verbose' || flag === 'require_mention') {
           // Accept canonical bool tokens. Reject anything ambiguous so the
           // user knows they typed something wrong vs. silently being parsed
           // as false.
@@ -257,16 +258,19 @@ interface ExtraDeps {
               ephemeral: true
             })
           }
-          const fieldKey = flag === 'show_code' ? 'showCode' : 'verbose'
+          const fieldKey =
+            flag === 'show_code' ? 'showCode'
+            : flag === 'verbose' ? 'verbose'
+            : 'requireMention'
           updated = await access.setChannelFlags(channel.id, { [fieldKey]: parsed })
         } else {
           return interaction.reply({
-            content: `❌ unknown flag \`${flag}\`. Choices: thinking, show_code, verbose. (cache toggles via \`/gemini cache on|off\`.)`,
+            content: `❌ unknown flag \`${flag}\`. Choices: thinking, show_code, verbose, require_mention. (cache toggles via \`/gemini cache on|off\`.)`,
             ephemeral: true
           })
         }
 
-        const summary = `thinking=${updated.thinking}, showCode=${updated.showCode}, verbose=${updated.verbose}, cache=${updated.cache}`
+        const summary = `thinking=${updated.thinking}, showCode=${updated.showCode}, verbose=${updated.verbose}, cache=${updated.cache}, requireMention=${updated.requireMention}`
         return interaction.reply({
           content: `✅ <#${channel.id}> \`${flag}\` set. ${summary}`,
           ephemeral: true

@@ -134,7 +134,7 @@ Manage everything from inside Discord — no terminal-side JSON edits required. 
 |---------|---------|
 | `/gemini allow @user` / `/gemini revoke @user` | User allowlist |
 | `/gemini channel #channel enabled require_mention` | Enable/disable in a channel; require @ mention or not |
-| `/gemini set <flag> <value> [#channel]` | Per-channel render flags. `flag`: `thinking` (`always\|auto\|never`), `show_code` (`true\|false`), `verbose` (`true\|false`) |
+| `/gemini set <flag> <value> [#channel]` | Per-channel flags. `flag`: `thinking` (`always\|auto\|never`), `show_code` (`true\|false`), `verbose` (`true\|false`), `require_mention` (`true\|false` — flip the @-mention gate without re-running `/gemini channel`) |
 | `/gemini cache on\|off [#channel]` | Toggle server-side context caching |
 | `/gemini cache info` | Live cache details — size, hits, age, TTL, hash |
 | `/gemini cache ttl <seconds> [#channel]` | Per-channel TTL override (60–86400; `0` resets to default) |
