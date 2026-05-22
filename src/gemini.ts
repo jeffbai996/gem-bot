@@ -843,9 +843,13 @@ export class GeminiClient {
     const toolCalls: ToolCall[] = []
     const searchQueriesAcc = new Set<string>()
 
-    // Tool-call loop. Capped at 3 iterations to avoid runaway cost if the
-    // model keeps calling tools in a cycle.
-    for (let iteration = 0; iteration < 3; iteration++) {
+    // Tool-call loop. Capped at MAX_TOOL_ITERATIONS to avoid runaway cost
+    // if the model keeps calling tools in a cycle. When the cap hits, we
+    // emit a graceful "search exhausted" reply instead of throwing — the
+    // throw was raising a Discord-visible exception trace; the user wants
+    // a polite "couldn't find that" message.
+    const MAX_TOOL_ITERATIONS = 5
+    for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
       const turn = await this.runOneTurn(systemText, activeContents, cachedContentName, onProgress, onEvent)
       // Aggregate grounding-search queries across iterations — googleSearch can
       // fire on any turn, not just the final one.
@@ -929,7 +933,28 @@ export class GeminiClient {
     }
 
     if (!meta) {
-      throw new Error('Failed to complete response after maximum function call iterations.')
+      // Hit the tool-iteration cap without producing a final answer.
+      // Build a synthetic "ran out of attempts" reply + minimal meta so the
+      // caller can post a user-visible message and clear lifecycle reactions
+      // normally — rather than throwing a stack trace into the channel.
+      console.error(`[tool-loop] exhausted ${MAX_TOOL_ITERATIONS} iterations without final answer; toolCalls=${toolCalls.map(t => t.name).join(',')}`)
+      const calledNames = [...new Set(toolCalls.map(t => t.name))].join(', ') || 'tools'
+      finalParsed = {
+        react: null,
+        thinking: null,
+        reply: `i ran ${calledNames} ${toolCalls.length} times and couldn't pull a useful answer — could you rephrase, or point me at where to look?`,
+      }
+      meta = {
+        groundingSources: [],
+        codeArtifacts: [],
+        usage: null,
+        finishReason: 'TOOL_LOOP_EXHAUSTED',
+        flaggedSafety: [],
+        searchQueries: [...searchQueriesAcc],
+        nativeThoughts: null,
+        toolCalls,
+        searchEntryPointHtml: null,
+      }
     }
 
     return { parsed: finalParsed, meta }
