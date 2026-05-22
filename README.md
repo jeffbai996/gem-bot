@@ -52,7 +52,7 @@ The verbose blocks (🌐 / 🛠️ / 🧠 / 💭 / token+time footer) are toggle
 
 - **Native Gemini tools** — `googleSearch` and `codeExecution` fire automatically when the model decides to. The bot drops `codeExecution` from the tool list when the request payload contains audio or video — Gemini's codeExecution mime allowlist is stricter than the model's video-understanding allowlist, and `.mov` / `.mp4` files with embedded timed-text tracks 400 the entire request otherwise.
 - **Function-call registry** — model can call `fetch_url` (Mozilla Readability extraction with SSRF guard), `search_memory` (semantic recall over the channel's history, see RAG below), and any registered IBKR / utility tools. Each call is wrapped with timing + result-preview capture for the verbose surface.
-- **Tool-call loop** capped at 3 iterations to bound runaway cost.
+- **Tool-call loop** capped at 5 iterations to bound runaway cost. On exhaustion the model gets one final no-tools pass to wrap up gracefully instead of cutting mid-turn.
 - **Streaming with edit-flushing** — long responses stream into Discord via `message.edit()` as tokens arrive. Streaming preview messages get edited in place to become the final output (zero-duplicate guarantee on chunk-count changes).
 
 ### Multimodal ingestion
@@ -87,8 +87,9 @@ The verbose blocks (🌐 / 🛠️ / 🧠 / 💭 / token+time footer) are toggle
 | Blocked (`finishReason === SAFETY`) | 🛑 |
 | Denied (caught 429 / quota / rate-limit) | ⚠️ |
 | Errored (everything else) | ❌ |
+| Silenced (turn ended with no reply emitted — gate flipped, output filtered, or no-op pass) | 🖥️ |
 
-Each event de-dupes per turn so a stream yielding N grounding chunks doesn't spam N reactions.
+Each event de-dupes per turn so a stream yielding N grounding chunks doesn't spam N reactions. The terminal 🖥️ tombstone slides forward per channel — only the most recent silenced turn carries the badge, older ones get cleared so 🖥️ never piles up.
 
 **You react to Gem's reply to drive bot actions** (gated through `PinnedFactsStore`):
 
@@ -122,7 +123,24 @@ The system prompt is composed at runtime from:
 3. Per-channel conversation summary from `SummaryStore` (refreshed by the background scheduler).
 4. A response-format JSON contract — instructs the model to emit `{react, thinking, reply}` since `responseSchema` is incompatible with Gemini's built-in tools.
 
+**Per-guild persona overrides.** Drop a `persona.<guildId>.md` file in the state dir and Gem loads that persona when running in that guild, falling back to the default `persona.md` everywhere else. Hot-swappable at runtime via `/gemini persona <filename>` for the current guild — no restart, no global flag flip.
+
 Gem's persona file establishes the core rule: **never pretend you did something you couldn't do.** She has `googleSearch`, `codeExecution`, multimodal perception, Discord history, and YouTube transcript ingestion — but no shell, no file write, no IBKR account state, no ability to grant her own access. Hallucinating action is the single biggest failure mode and the persona makes that explicit.
+
+---
+
+### Voice channel intake (experimental)
+
+`/voice join` / `/voice leave` slash commands bring Gem into a Discord voice channel. The voice loop is a two-process design:
+
+- **gem-discord-bot (this repo)** — uses `@discordjs/voice` to join the summoner's vc, subscribes to their audio stream, streams raw 48kHz Opus frames over a unix socket to a sibling daemon. Receives `audio_out` events with model Opus and plays them back via `AudioPlayer`.
+- **[gem-voice](https://github.com/jeffbai996/gem-voice)** (separate Python repo) — long-lived systemd daemon. Decodes Opus, forwards to Gemini Live, re-encodes the model's response back to Opus.
+
+IPC is NDJSON over `$XDG_RUNTIME_DIR/gem-voice.sock` (override with `GEM_VOICE_SOCKET_PATH`). Permissions Gem needs in the target channel: **Connect**, **Speak**, **Use Voice Activity**, **View Channel**.
+
+Owner gate: `CC_OWNER_DISCORD_USER_ID` (or `DISCORD_ADMIN_ID` as fallback).
+
+**Status (2026-05-22):** voice connection and IPC handshake work; Gemini Live closes the WebSocket after 17-77s without responding. Diagnostic logging is live in the gem-voice sibling repo. See `CLAUDE.md` for the open-issue triage path.
 
 ---
 
@@ -135,6 +153,7 @@ Manage everything from inside Discord — no terminal-side JSON edits required. 
 | `/gemini allow @user` / `/gemini revoke @user` | User allowlist |
 | `/gemini channel #channel enabled require_mention` | Enable/disable in a channel; require @ mention or not |
 | `/gemini set <flag> <value> [#channel]` | Per-channel flags. `flag`: `thinking` (`always\|auto\|never`), `show_code` (`true\|false`), `verbose` (`true\|false`), `require_mention` (`true\|false` — flip the @-mention gate without re-running `/gemini channel`) |
+| `/gemini model <name>` | Switch the global Gemini model and auto-restart the bot. Choices include `gemini-3-flash-preview` (default), `gemini-3-pro-preview`, `gemini-3.5-flash`, `gemini-3.1-flash-lite-preview` |
 | `/gemini cache on\|off [#channel]` | Toggle server-side context caching |
 | `/gemini cache info` | Live cache details — size, hits, age, TTL, hash |
 | `/gemini cache ttl <seconds> [#channel]` | Per-channel TTL override (60–86400; `0` resets to default) |
@@ -281,9 +300,10 @@ TypeScript · Node.js 22+ (`tsx`) · `discord.js` v14 · `@google/genai` (Gemini
 
 ## Roadmap
 
+- **Voice channel intake** — `/voice join` ships behind the experimental flag; finish wiring Gemini Live so the model actually talks back (currently sessions establish but the model never responds before WS close). See [Voice channel intake](#voice-channel-intake-experimental).
 - **Proactive cron jobs** — scheduled Gem broadcasts (daily portfolio briefings, risk alerts, earnings summaries) into a dedicated channel.
 - **Multi-agent debates** — delegate sub-tasks to a code-review agent on a GitHub link, or spawn secondary instances to argue both sides of a thesis.
-- **Voice channel intake** — join Discord voice and transcribe/process audio streams natively via Gemini's multimodal stack.
+- **Token-aware context windowing** — replace the hard 80k token cap with a dynamic counter so long contexts trim by relevance instead of FIFO.
 
 ---
 
