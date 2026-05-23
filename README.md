@@ -133,7 +133,7 @@ Gem's persona file establishes the core rule: **never pretend you did something 
 
 `/voice join` / `/voice leave` slash commands bring Gem into a Discord voice channel. The voice loop is a two-process design:
 
-- **gem-discord-bot (this repo)** — uses `@discordjs/voice` to join the summoner's vc, subscribes to their audio stream, streams raw 48kHz Opus frames over a unix socket to a sibling daemon. Receives `audio_out` events with model Opus and plays them back via `AudioPlayer`.
+- **gem-bot (this repo)** — uses `@discordjs/voice` to join the summoner's vc, subscribes to their audio stream, streams raw 48kHz Opus frames over a unix socket to a sibling daemon. Receives `audio_out` events with model Opus and plays them back via `AudioPlayer`.
 - **[gem-voice](https://github.com/jeffbai996/gem-voice)** (separate Python repo) — long-lived systemd daemon. Decodes Opus, forwards to Gemini Live, re-encodes the model's response back to Opus.
 
 IPC is NDJSON over `$XDG_RUNTIME_DIR/gem-voice.sock` (override with `GEM_VOICE_SOCKET_PATH`). Permissions Gem needs in the target channel: **Connect**, **Speak**, **Use Voice Activity**, **View Channel**.
