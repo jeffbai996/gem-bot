@@ -398,7 +398,9 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     // Usage metadata — one line per turn for cost tracking
     if (meta.usage) {
-      console.error(`[usage] channel=${message.channelId} prompt=${meta.usage.promptTokens} response=${meta.usage.responseTokens} total=${meta.usage.totalTokens}`)
+      const cached = meta.usage.cachedTokens ?? 0
+      const cachePct = meta.usage.promptTokens > 0 ? Math.round((cached / meta.usage.promptTokens) * 100) : 0
+      console.error(`[usage] channel=${message.channelId} prompt=${meta.usage.promptTokens} cached=${cached} (${cachePct}%) response=${meta.usage.responseTokens} total=${meta.usage.totalTokens}`)
     }
     // Non-STOP finish reasons deserve visibility
     if (meta.finishReason && meta.finishReason !== 'STOP' && meta.finishReason !== 'FINISH_REASON_UNSPECIFIED') {
