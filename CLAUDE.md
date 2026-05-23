@@ -1,6 +1,6 @@
-# gem-discord-bot Context & Guidelines
+# gem-bot Context & Guidelines
 
-This document provides context for agents working on `gem-discord-bot`.
+This document provides context for agents working on `gem-bot`.
 
 ## Project Overview
 A standalone Discord bot using Discord.js and the Gemini API (current default `gemini-3-flash-preview`, with `gemini-3-pro-preview`, `gemini-3.5-flash`, and `gemini-3.1-flash-lite-preview` selectable via `/gemini model`). It acts as an intelligent assistant with access to Gemini tools (Google Search, Code Execution) and supports full multimodal input (Images, Video, Audio, Documents).
@@ -26,7 +26,7 @@ Deploy flow (replace `<deploy-host>` and `<deploy-user>` with your own):
 
 ```bash
 git push origin main
-ssh <deploy-user>@<deploy-host> 'cd ~/gem-discord-bot && git pull && npm install && systemctl --user restart gemma'
+ssh <deploy-user>@<deploy-host> 'cd ~/gem-bot && git pull && npm install && systemctl --user restart gemma'
 ```
 
 Hot reload (no restart — reloads `access.json` and `persona.md` only):
@@ -60,7 +60,7 @@ the next session needs to read the new logs to confirm root cause.
 Two-process design. Voice WS lives on the Node side; the LLM bridge is
 Python.
 
-- **gem-discord-bot (Node, this repo)** — uses `@discordjs/voice` to join
+- **gem-bot (Node, this repo)** — uses `@discordjs/voice` to join
   the user's vc, subscribes to the summoner's audio stream, streams raw
   48kHz Opus frames over a unix socket to gem-voice. Receives `audio_out`
   events with model Opus and plays them back via `AudioPlayer`.
@@ -129,7 +129,7 @@ kwarg per the SDK example.
      model is responding with text instead of audio (response_modalities
      config wrong).
    - `audio_chunks > 0` + nothing playing in Discord → encode/playback
-     path broken on gem-discord-bot side; check Gemma logs for `audio_out`
+     path broken on gem-bot side; check Gemma logs for `audio_out`
      events arriving on the IPC socket.
 
 ### Cost guardrails
