@@ -1,8 +1,8 @@
-# gem-discord-bot
+# gem-bot
 
 **A Discord bot backed by Google's Gemini 3, with multimodal input, live tools, semantic memory, and a "show your work" UI that surfaces every search query, tool call, code execution, and reasoning step inline.**
 
-The in-Discord persona is **Gem**. The repo name was simplified from `gemini-discord-mcp` to `gem-discord-bot` once the MCP approach was abandoned (see [Why not MCP?](#why-not-mcp) below).
+The in-Discord persona is **Gem**. The repo name was simplified from `gemini-discord-mcp` to `gem-bot` once the MCP approach was abandoned (see [Why not MCP?](#why-not-mcp) below).
 
 ---
 
