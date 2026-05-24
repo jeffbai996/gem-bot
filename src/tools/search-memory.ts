@@ -11,7 +11,7 @@ export const searchMemoryTool: Tool = {
   name: 'search_memory',
   declaration: {
     name: 'search_memory',
-    description: 'Search past Discord messages for context by semantic meaning. Use this when asked about past events, previous discussions, or if you need more context from history.',
+    description: 'Search this channel\'s stored Discord history for FACTS from past conversations — e.g. "what did we decide about X", "what was that restaurant we talked about". Only call this when the answer genuinely depends on recalling an earlier discussion you do not already have in the current context. DO NOT use it for: questions about your own configuration / behavior / token usage / how to operate you (you cannot find those in chat history); general knowledge (you already know it); or anything answerable from the current message. If one search returns nothing useful, do NOT keep re-searching with reworded queries — just answer from what you know or say you do not have it.',
     parameters: {
       type: Type.OBJECT,
       properties: {
