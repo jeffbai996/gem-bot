@@ -104,6 +104,42 @@ function formatToolArgs(args: Record<string, unknown>): string {
   return formatted.join(', ')
 }
 
+// cc-discord-kit tool-trace parity (ported from tool_watcher.py). Tool calls
+// render inside a ```diff``` fence as `+ ● ToolName(digest) [Nms]` — the `+`
+// makes Discord's diff highlighter color the line GREEN; a failed call uses
+// `- ● ... FAILED` (RED). The `●` dot marks "this is a tool invocation."
+const _ARG_DIGEST_PREFERENCE = [
+  'file_path', 'notebook_path', 'pattern', 'command', 'url',
+  'symbols', 'symbol', 'ticker', 'query',
+]
+
+// Single-line, ID-shaped arg digest, <= maxLen chars. Mirrors _arg_digest.
+function argDigest(args: Record<string, unknown>, maxLen = 80): string {
+  if (!args || typeof args !== 'object') return ''
+  for (const key of _ARG_DIGEST_PREFERENCE) {
+    const v = (args as Record<string, unknown>)[key]
+    if (typeof v === 'string') {
+      let s = v.trim().replace(/\n/g, ' ')
+      if (s.length > maxLen) s = s.slice(0, maxLen - 1) + '…'
+      return s
+    }
+  }
+  let s: string
+  try { s = JSON.stringify(args) } catch { s = String(args) }
+  s = s.replace(/\n/g, ' ')
+  if (s.length > maxLen) s = s.slice(0, maxLen - 1) + '…'
+  return s
+}
+
+// mcp__server__ns__tool -> tool (last segment). Mirrors _ticker_line's shortener.
+function shortToolName(name: string): string {
+  if (name.startsWith('mcp__')) {
+    const parts = name.split('__')
+    if (parts.length >= 3) return parts[parts.length - 1]
+  }
+  return name
+}
+
 process.on('SIGHUP', async () => {
   console.error('SIGHUP received — reloading access.json and persona.md')
   try {
@@ -483,16 +519,23 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     // Tool calls (fetch_url, search_memory, IBKR tools, etc). googleSearch +
     // codeExecution are server-side, surfaced via their own dedicated blocks.
+    // Rendered cc-discord-kit-style: a ```diff``` fence with one
+    // `+ ● ToolName(digest) [Nms]` line per call (green via `+`), `- ● ...
+    // FAILED [Nms]` (red) on error. The result preview goes on a plain
+    // 2-space-indented `  ⎿` line so the diff highlighter leaves it grey.
     if (flags.showCode && meta.toolCalls.length > 0) {
+      const lines: string[] = []
       for (const call of meta.toolCalls) {
-        const argSummary = formatToolArgs(call.args)
-        const failedMark = call.failed ? ' ❌' : ''
-        finalFullReply += `🛠️ \`${call.name}(${argSummary})\`${failedMark} *[${call.durationMs}ms]*\n`
+        const prefix = call.failed ? '- ● ' : '+ ● '
+        const tail = call.failed ? ' FAILED' : ''
+        lines.push(`${prefix}${shortToolName(call.name)}(${argDigest(call.args)})${tail} [${call.durationMs}ms]`)
         if (call.resultPreview) {
-          finalFullReply += `   ↳ \`${call.resultPreview}\`\n`
+          let rp = call.resultPreview.replace(/\n/g, ' ')
+          if (rp.length > 86) rp = rp.slice(0, 86) + '…'
+          lines.push(`  ⎿ ${rp}`)
         }
       }
-      finalFullReply += '\n'
+      finalFullReply += '```diff\n' + lines.join('\n') + '\n```\n'
     }
 
     if (flags.showCode && meta.codeArtifacts.length > 0) {
