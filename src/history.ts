@@ -99,20 +99,34 @@ export function stripBotMetadata(text: string): string {
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()
 }
 
+// How many of the most-recent messages get their image/video BYTES re-sent
+// to Gemini. Older in-window attachments degrade to a one-line text
+// breadcrumb (`[previous image: name]`) instead of re-uploading the raw
+// fileData every turn. Media costs 258–3,000+ tokens *each* and is invisible
+// in text length, so re-sending stale images was the entire source of the
+// per-turn token bloat (fragbrick gemini sitting at 24k; 2026-05-24). Keeping
+// only the freshest message's media means a just-dropped image still works,
+// but it stops haunting every subsequent turn.
+const ATTACHMENT_FRESH_TAIL = 1
+
 export function formatHistory(messages: HistoryMessage[], selfId: string): GeminiContent[] {
-  return messages.map(m => {
+  return messages.map((m, idx) => {
     const isSelf = m.authorId === selfId
+    // Only the freshest tail of the window re-sends raw media bytes.
+    const mediaFresh = idx >= messages.length - ATTACHMENT_FRESH_TAIL
     const parts: GeminiContent['parts'] = []
     
     const unCachedAttachments: HistoryAttachment[] = []
 
-    // Inject cached files natively; defer others to text descriptions.
+    // Inject cached files natively ONLY for the freshest message(s); for older
+    // in-window attachments, fall through to the text-breadcrumb path so we
+    // don't re-upload the raw bytes every turn.
     // Re-validate mime against the allowlist — Discord can report weird
     // sub-track mimes (e.g. `video/text/timestamp`) that Gemini's codeExecution
     // tool 400s the entire request on. Drop those to a text description so
     // they never reach the request payload.
     for (const att of m.attachments) {
-      if (uriCache.has(att.url) && att.mimeType && isAllowedMime(att.mimeType)) {
+      if (mediaFresh && uriCache.has(att.url) && att.mimeType && isAllowedMime(att.mimeType)) {
         parts.push({ fileData: { mimeType: att.mimeType, fileUri: uriCache.get(att.url)! } })
       } else {
         unCachedAttachments.push(att)
