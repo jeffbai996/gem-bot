@@ -299,6 +299,54 @@ export function extractGroundingSources(candidate: any): GroundingSource[] {
   return out
 }
 
+// Vertex grounding redirect URLs (vertexaisearch.cloud.google.com/grounding-api-redirect/…)
+// are opaque ~200-char blobs that EXPIRE within minutes (a fetched one already
+// 404s). Putting them in a Discord `[n](<url>)` masked link does two bad things:
+// it bloats the sources footer past 2000 chars (so the chunker splits it
+// mid-link and the raw blob spills as visible text), and the link is dead by
+// the time anyone clicks it. So we never embed a redirect URL — we render the
+// human-readable title as plain text instead. Real source URLs (non-redirect
+// http(s)) still get a proper masked link.
+const VERTEX_REDIRECT_RE = /vertexaisearch\.cloud\.google\.com\/grounding-api-redirect\//i
+const SOURCE_LABEL_MAX = 48
+
+function isRealSourceUrl(uri: string): boolean {
+  return /^https?:\/\//i.test(uri) && !VERTEX_REDIRECT_RE.test(uri)
+}
+
+// Best human label for a source: a real title if present (not just the URI
+// echoed back by extractGroundingSources' fallback), else the domain of a real
+// URL, else null (caller renders a bare number).
+function sourceLabel(s: GroundingSource): string | null {
+  const title = s.title?.trim()
+  if (title && title !== s.uri) {
+    return title.length > SOURCE_LABEL_MAX ? title.slice(0, SOURCE_LABEL_MAX - 1) + '…' : title
+  }
+  if (isRealSourceUrl(s.uri)) {
+    try { return new URL(s.uri).hostname.replace(/^www\./, '') } catch { /* fall through */ }
+  }
+  return null
+}
+
+// Render the grounding-sources footer body (the part after "-# ↳ sources: ").
+// Never emits a Vertex redirect URL as visible text. Each source becomes:
+//   - `[Label](<realUrl>)`  when we have a title/domain AND a real (clickable) URL
+//   - `[Label]`             when we have a label but only a dead redirect URL
+//   - `[n]`                 when we have neither (bare ordinal, no link)
+// Caps at `max` sources. Returns '' when there are none (caller skips the footer).
+export function formatGroundingSources(sources: GroundingSource[], max: number = 5): string {
+  if (!Array.isArray(sources) || sources.length === 0) return ''
+  return sources
+    .slice(0, max)
+    .map((s, i) => {
+      const label = sourceLabel(s)
+      if (label && isRealSourceUrl(s.uri)) return `[${label}](<${s.uri}>)`
+      if (label) return `[${label}]`
+      return `[${i + 1}]`
+    })
+    .join(' · ')
+}
+
 // Pair executableCode parts with the codeExecutionResult that follows them.
 // Order in candidate.content.parts is: text? → executableCode → codeExecutionResult → text?
 // An executableCode without a following result is still reported (output: null).
