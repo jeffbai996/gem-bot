@@ -47,6 +47,11 @@ const CACHE_MIN_TOKENS: Record<string, number> = {
 // expires pays full price; everything in-window saves ~75%.
 const CACHE_DEFAULT_TTL_SEC = 7200
 
+// Treat a cache as expired this long BEFORE its real TTL, so we re-create
+// rather than risk a 403 if it lapses server-side mid-request. 60s is ample
+// against clock skew + request latency on a 2h TTL.
+const CACHE_EXPIRY_MARGIN_MS = 60_000
+
 interface CacheKey {
   model: string
   systemHash: string
@@ -115,11 +120,19 @@ export class GeminiCacheManager {
     const keyStr = GeminiCacheManager.keyString(key)
     const cached = this.cacheByKey.get(keyStr)
     if (cached) {
-      // Hit — bump usage stats. Don't refresh createdAt; the cache's TTL is
-      // wall-clock from the API's perspective.
-      cached.lastUsedAt = Date.now()
-      cached.hitCount += 1
-      return cached.name
+      // Only reuse if the server-side cache is still alive. The cache TTL is
+      // wall-clock from the API's perspective, so once createdAt + ttl passes
+      // the name is dead and reusing it returns 403 PERMISSION_DENIED
+      // ("CachedContent not found"). Drop the stale ref and fall through to
+      // re-create. EXPIRY_MARGIN_MS guards the race where the cache lapses
+      // server-side between this check and the API call.
+      const ageMs = Date.now() - cached.createdAt
+      if (ageMs < cached.ttlSec * 1000 - CACHE_EXPIRY_MARGIN_MS) {
+        cached.lastUsedAt = Date.now()
+        cached.hitCount += 1
+        return cached.name
+      }
+      this.cacheByKey.delete(keyStr)
     }
 
     try {
@@ -173,6 +186,18 @@ export class GeminiCacheManager {
   // order so /gemini cache info shows what's actually warm at the top.
   list(): CachedRef[] {
     return [...this.cacheByKey.values()].sort((a, b) => b.lastUsedAt - a.lastUsedAt)
+  }
+
+  // Drop a single cached ref by its API name. Called when a request fails
+  // with 403 "CachedContent not found" so the next call re-creates instead
+  // of reusing the dead handle again.
+  dropByName(cacheName: string): void {
+    for (const [k, ref] of this.cacheByKey.entries()) {
+      if (ref.name === cacheName) {
+        this.cacheByKey.delete(k)
+        return
+      }
+    }
   }
 
   // Drop all cached refs. Used when persona reloads or when /gemini clear

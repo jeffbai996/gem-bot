@@ -51,6 +51,46 @@ describe('GeminiCacheManager', () => {
     assert.equal(client._created.length, 1)
   })
 
+  test('re-creates after TTL expiry instead of reusing a dead name', async () => {
+    // Regression: a reused cache name past its server-side TTL returns
+    // 403 PERMISSION_DENIED ("CachedContent not found"), bricking the bot
+    // until restart. The manager must drop the stale ref and re-create.
+    const mgr = new GeminiCacheManager()
+    const client = makeFakeClient()
+    const realNow = Date.now
+    try {
+      let t = 1_000_000
+      Date.now = () => t
+      // ttl 100s; first create at t0
+      const a = await mgr.getOrCreate(client, 'gemini-3-pro-preview', LONG_PREFIX, [], {}, 100)
+      // advance past ttl (+ the 60s safety margin)
+      t += (100 + 61) * 1000
+      const b = await mgr.getOrCreate(client, 'gemini-3-pro-preview', LONG_PREFIX, [], {}, 100)
+      assert.equal(client._created.length, 2, 'should re-create after expiry')
+      assert.notEqual(a, b)
+      assert.equal(mgr.list().length, 1, 'stale ref replaced, not accumulated')
+    } finally {
+      Date.now = realNow
+    }
+  })
+
+  test('still reuses within TTL (margin not over-aggressive)', async () => {
+    const mgr = new GeminiCacheManager()
+    const client = makeFakeClient()
+    const realNow = Date.now
+    try {
+      let t = 2_000_000
+      Date.now = () => t
+      const a = await mgr.getOrCreate(client, 'gemini-3-pro-preview', LONG_PREFIX, [], {}, 7200)
+      t += 60 * 60 * 1000  // +1h, well within 2h TTL
+      const b = await mgr.getOrCreate(client, 'gemini-3-pro-preview', LONG_PREFIX, [], {}, 7200)
+      assert.equal(a, b)
+      assert.equal(client._created.length, 1, 'should reuse within TTL')
+    } finally {
+      Date.now = realNow
+    }
+  })
+
   test('different systemText hashes produce separate caches', async () => {
     const mgr = new GeminiCacheManager()
     const client = makeFakeClient()
