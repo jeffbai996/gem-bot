@@ -898,7 +898,23 @@ export class GeminiClient {
     // a polite "couldn't find that" message.
     const MAX_TOOL_ITERATIONS = 5
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
-      const turn = await this.runOneTurn(systemText, activeContents, cachedContentName, onProgress, onEvent)
+      let turn
+      try {
+        turn = await this.runOneTurn(systemText, activeContents, cachedContentName, onProgress, onEvent)
+      } catch (e: any) {
+        // Self-heal a stale cached-content handle. If the server-side cache
+        // expired/evicted out from under us it returns 403 "CachedContent not
+        // found"; drop the dead ref, fall back to an uncached call, and retry
+        // this turn once so the user still gets a reply instead of an error.
+        const msg = String(e?.message ?? e)
+        if (cachedContentName && /CachedContent not found|PERMISSION_DENIED/i.test(msg)) {
+          this.cacheManager.dropByName(cachedContentName)
+          cachedContentName = null
+          turn = await this.runOneTurn(systemText, activeContents, null, onProgress, onEvent)
+        } else {
+          throw e
+        }
+      }
       // Aggregate grounding-search queries across iterations — googleSearch can
       // fire on any turn, not just the final one.
       for (const q of extractSearchQueries(turn.candidate)) searchQueriesAcc.add(q)
