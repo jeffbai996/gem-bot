@@ -4,6 +4,7 @@ import {
   parseResponse,
   extractModelText,
   extractGroundingSources,
+  formatGroundingSources,
   extractCodeArtifacts,
   extractUsage,
   extractFlaggedSafety,
@@ -318,6 +319,60 @@ describe('extractGroundingSources', () => {
       }
     }
     assert.equal(extractGroundingSources(candidate).length, 1)
+  })
+})
+
+describe('formatGroundingSources', () => {
+  const VERTEX = 'https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQ' + 'x'.repeat(180)
+
+  test('returns empty string for no sources', () => {
+    assert.equal(formatGroundingSources([]), '')
+    assert.equal(formatGroundingSources(undefined as any), '')
+  })
+
+  test('NEVER emits a vertex redirect URL as visible text', () => {
+    // The original bug: a redirect blob leaked as raw text when chunked.
+    const out = formatGroundingSources([{ uri: VERTEX, title: 'Reuters' }])
+    assert.ok(!out.includes('vertexaisearch'), `redirect leaked: ${out}`)
+    assert.ok(!out.includes('grounding-api-redirect'), `redirect leaked: ${out}`)
+  })
+
+  test('renders title as plain label (no link) when only a dead redirect URL exists', () => {
+    // title present, uri is a redirect → label in brackets, no (url) part
+    assert.equal(formatGroundingSources([{ uri: VERTEX, title: 'Reuters' }]), '[Reuters]')
+  })
+
+  test('renders a real source URL as a proper masked link', () => {
+    assert.equal(
+      formatGroundingSources([{ uri: 'https://reuters.com/article', title: 'Reuters' }]),
+      '[Reuters](<https://reuters.com/article>)'
+    )
+  })
+
+  test('falls back to bare ordinal when title is just the uri echoed back', () => {
+    // extractGroundingSources sets title = uri when the API omits a title.
+    assert.equal(formatGroundingSources([{ uri: VERTEX, title: VERTEX }]), '[1]')
+  })
+
+  test('derives domain when a real URL has no usable title', () => {
+    assert.equal(
+      formatGroundingSources([{ uri: 'https://www.bloomberg.com/x', title: 'https://www.bloomberg.com/x' }]),
+      '[bloomberg.com](<https://www.bloomberg.com/x>)'
+    )
+  })
+
+  test('caps at max sources and joins with " · "', () => {
+    const many = Array.from({ length: 8 }, (_, i) => ({ uri: VERTEX + i, title: `S${i}` }))
+    const out = formatGroundingSources(many, 5)
+    assert.equal(out.split(' · ').length, 5)
+    assert.equal(out, '[S0] · [S1] · [S2] · [S3] · [S4]')
+  })
+
+  test('truncates over-long titles', () => {
+    const longTitle = 'A'.repeat(100)
+    const out = formatGroundingSources([{ uri: VERTEX, title: longTitle }])
+    assert.ok(out.length < 60, `not truncated: ${out.length}`)
+    assert.ok(out.endsWith('…]'))
   })
 
   test('falls back title to uri when title missing', () => {

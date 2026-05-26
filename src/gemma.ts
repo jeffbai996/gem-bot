@@ -6,7 +6,7 @@ import { AccessManager } from './access.ts'
 import { PersonaLoader } from './persona.ts'
 import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
-import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected } from './gemini.ts'
+import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources } from './gemini.ts'
 import { chunk } from './chunk.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
 import { voiceCommand, executeVoiceCommand } from './voice-commands.ts'
@@ -563,11 +563,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     }
 
     if (meta.groundingSources.length > 0 && parsed.reply) {
-      finalFullReply += '\n\n-# ↳ sources: '
-      finalFullReply += meta.groundingSources
-        .slice(0, 5)
-        .map((s, i) => `[${i + 1}](<${s.uri}>)`)
-        .join(' · ')
+      const sourcesBody = formatGroundingSources(meta.groundingSources, 5)
+      if (sourcesBody) finalFullReply += '\n\n-# ↳ sources: ' + sourcesBody
     }
 
     // Verbose ops footer — token usage + response time. Format:
