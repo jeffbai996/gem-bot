@@ -13,7 +13,9 @@ export async function buildDefaultRegistry(): Promise<ToolRegistry> {
   r.register(searchMemoryTool)
   r.register(fetchUrlTool)
 
-  const ibkrUrl = process.env.IBKR_MCP_URL || 'http://127.0.0.1:8000/mcp'
+  // ibkr-mcp (server_http.py) listens on :8001, not :8000. The old 8000
+  // default silently fell back to the unreachable-stub on every boot.
+  const ibkrUrl = process.env.IBKR_MCP_URL || 'http://127.0.0.1:8001/mcp'
   try {
     const client = await connectMcpClient(ibkrUrl)
     const tools = await loadIbkrTools(client)
