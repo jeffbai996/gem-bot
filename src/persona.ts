@@ -62,7 +62,12 @@ export class PersonaLoader {
     const conversationSummary = this.summaryStore?.get(channelId)?.summary ?? ''
     const pinned = this.pinnedFacts?.readForChannelSync(channelId) ?? ''
 
-    const sections: string[] = [persona]
+    // Wall-clock stamp, rebuilt every turn so the model knows the current time
+    // (matches the squad's cc-inject-time hook format on the Claude bots).
+    const now = new Date()
+    const wallClock = `Current time: ${now.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`
+
+    const sections: string[] = [persona, wallClock]
     if (conversationSummary) {
       sections.push(`## Conversation summary (older context)\n\n${conversationSummary}`)
     }
