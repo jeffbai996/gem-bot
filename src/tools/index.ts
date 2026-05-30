@@ -1,6 +1,7 @@
 import { ToolRegistry } from './registry.ts'
 import { searchMemoryTool } from './search-memory.ts'
 import { searchSquadMemoryTool } from './search-squad-memory.ts'
+import { readSquadFileTool } from './read-squad-file.ts'
 import { fetchUrlTool } from './fetch-url.ts'
 import { connectMcpClient } from './mcp-client.ts'
 import { loadIbkrTools } from './ibkr-tools.ts'
@@ -13,6 +14,7 @@ export async function buildDefaultRegistry(): Promise<ToolRegistry> {
   const r = new ToolRegistry()
   r.register(searchMemoryTool)
   r.register(searchSquadMemoryTool)
+  r.register(readSquadFileTool)
   r.register(fetchUrlTool)
 
   // ibkr-mcp (server_http.py) listens on :8001, not :8000. The old 8000
