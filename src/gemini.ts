@@ -477,6 +477,29 @@ export function previewToolResult(result: unknown): string {
   return s.length > 120 ? s.slice(0, 117) + '...' : s
 }
 
+// Choose the model `functionCall` part to echo back into the tool-loop. The
+// part MUST carry `thoughtSignature` for gemini-3 thinking models (incl.
+// 3.5-flash) — without it the next call 400s or, on 3.5-flash, silently
+// degrades into re-calling the same tool until exhaustion.
+//
+// Priority:
+//   1. `capturedPart` — grabbed verbatim at stream time, where the signature
+//      is guaranteed present (it can arrive in an earlier chunk than the final
+//      aggregated candidate).
+//   2. the part re-found in the final candidate's parts (non-streaming SDKs).
+//   3. a bare reconstruct `{ functionCall }` — last resort; loses the
+//      signature, but better than throwing when no part is available at all.
+export function selectFunctionCallPart(
+  capturedPart: any | null | undefined,
+  candidateParts: any[] | undefined,
+  bareFunctionCall: any
+): any {
+  if (capturedPart && capturedPart.functionCall) return capturedPart
+  const found = (candidateParts ?? []).find(p => p?.functionCall)
+  if (found) return found
+  return { functionCall: bareFunctionCall }
+}
+
 // Pull the queries Gemma actually typed into Google. Lets the user see when
 // the model is misframing what it's looking up, and confirms grounding fired.
 export function extractSearchQueries(candidate: any): string[] {
@@ -745,6 +768,13 @@ export class GeminiClient {
     onEvent?: (e: LifecycleEvent) => void
   ): Promise<{
     functionCall: any | null
+    // The FULL model part that carried the functionCall, captured verbatim
+    // (including `thoughtSignature`). The tool-loop must echo this exact part
+    // back — gemini-3 thinking models (incl. 3.5-flash) require the signature
+    // to verify CoT lineage, and in streaming the signature-bearing part can
+    // arrive in an earlier chunk than the final candidate, so we can't rely on
+    // re-finding it in `candidate.content.parts`. See the tool-loop push site.
+    functionCallPart: any | null
     candidate: any
     response: any
     text: string
@@ -763,6 +793,10 @@ export class GeminiClient {
       try {
         let accumulatedText = ''
         let functionCallReceived: any = null
+        // Capture the FULL part (not just .functionCall) the moment we first
+        // see it, so `thoughtSignature` survives even when it streams in an
+        // earlier chunk than the final aggregated candidate.
+        let functionCallPartReceived: any = null
         let lastChunk: any = null
         // De-dupe one-shot events across chunks within this turn.
         const emitted = new Set<LifecycleEvent['type']>()
@@ -789,7 +823,13 @@ export class GeminiClient {
             emitOnce({ type: 'searching' })
           }
           const fnCallPart = parts?.find(p => p.functionCall)
-          if (fnCallPart) functionCallReceived = fnCallPart.functionCall
+          if (fnCallPart) {
+            functionCallReceived = fnCallPart.functionCall
+            // Keep the whole part — this is the only place the signature is
+            // guaranteed present. Don't overwrite once captured (the first
+            // emission carries the signature; later chunks may not).
+            if (!functionCallPartReceived) functionCallPartReceived = fnCallPart
+          }
           const textChunk = extractModelText(parts)
           if (textChunk && !functionCallReceived) {
             accumulatedText += textChunk
@@ -806,7 +846,10 @@ export class GeminiClient {
         // stream yielded nothing text-ish (e.g., pure function-call turn).
         const text = accumulatedText || extractModelText(parts)
         const fnCall = functionCallReceived || parts?.find(p => p.functionCall)?.functionCall || null
-        return { functionCall: fnCall, candidate, response: lastChunk, text }
+        // Prefer the part captured mid-stream (carries thoughtSignature);
+        // fall back to the final candidate's part for non-streaming-shaped SDKs.
+        const fnCallPart = functionCallPartReceived || parts?.find(p => p.functionCall) || null
+        return { functionCall: fnCall, functionCallPart: fnCallPart, candidate, response: lastChunk, text }
       } catch (e: any) {
         const msg = e?.message ?? String(e)
         // @google/genai surfaces 400s as ApiError with status — same shape
@@ -850,9 +893,10 @@ export class GeminiClient {
     const result = await this.client.models.generateContent(params)
     const candidate = result.candidates?.[0]
     const parts = candidate?.content?.parts as any[] | undefined
-    const fnCall = parts?.find(p => p.functionCall)?.functionCall || null
+    const fnCallPart = parts?.find(p => p.functionCall) || null
+    const fnCall = fnCallPart?.functionCall || null
     const text = extractModelText(parts)
-    return { functionCall: fnCall, candidate, response: result, text }
+    return { functionCall: fnCall, functionCallPart: fnCallPart, candidate, response: result, text }
   }
 
   async respond(
@@ -948,17 +992,29 @@ export class GeminiClient {
       // iteration.
       //
       // CRITICAL: push the ORIGINAL part from the model's response, not a
-      // reconstructed `{functionCall: ...}`. Gemini-3 thinking models emit a
-      // `thoughtSignature` field alongside the functionCall — when we feed
-      // the function response back in the next iteration, the API requires
-      // that signature to verify the model's CoT lineage. Reconstructing the
-      // part loses the signature and the next call 400s with
-      //   "Function call is missing a thought_signature in functionCall parts"
-      // (seen 2026-05-01 with gemini-3-flash-preview when fetch_url was the
-      // first tool call). The legacy SDK's TS types don't expose
-      // thoughtSignature but the field flows through the raw response.
+      // reconstructed `{functionCall: ...}`. Gemini-3 thinking models (incl.
+      // gemini-3.5-flash) emit a `thoughtSignature` field alongside the
+      // functionCall — when we feed the function response back in the next
+      // iteration, the API requires that signature to verify the model's CoT
+      // lineage. Reconstructing the part loses the signature and the next call
+      // 400s with "Function call is missing a thought_signature", or (worse,
+      // observed on 3.5-flash) silently degrades into re-calling the same tool
+      // until TOOL_LOOP_EXHAUSTED instead of answering.
+      //
+      // Prefer `turn.functionCallPart` — captured verbatim at stream time,
+      // where the signature is guaranteed present. In streaming, the
+      // signature-bearing part can arrive in an EARLIER chunk than the final
+      // aggregated candidate, so re-finding it in `turn.candidate.content.parts`
+      // (the last chunk) can miss it. Fall back to that scan, then to a bare
+      // reconstruct, only if the captured part is somehow absent.
+      // The legacy SDK's TS types don't expose thoughtSignature but the field
+      // flows through the raw response object untouched.
       const turnParts = (turn.candidate?.content?.parts as any[] | undefined) ?? []
-      const fnCallPart = turnParts.find(p => p?.functionCall) ?? { functionCall: turn.functionCall }
+      const fnCallPart = selectFunctionCallPart(
+        turn.functionCallPart,
+        turnParts,
+        turn.functionCall
+      )
       activeContents.push({ role: 'model', parts: [fnCallPart] })
       const fnName = turn.functionCall.name
       const fnArgs = (turn.functionCall.args ?? {}) as Record<string, unknown>
