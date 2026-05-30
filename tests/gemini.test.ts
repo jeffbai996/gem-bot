@@ -8,7 +8,8 @@ import {
   extractCodeArtifacts,
   extractUsage,
   extractFlaggedSafety,
-  formatSystemPrompt
+  formatSystemPrompt,
+  selectFunctionCallPart
 } from '../src/gemini.ts'
 
 describe('extractModelText', () => {
@@ -482,5 +483,46 @@ describe('extractFlaggedSafety', () => {
     assert.equal(out.length, 2)
     assert.equal(out[0].probability, 'MEDIUM')
     assert.equal(out[1].probability, 'HIGH')
+  })
+})
+
+describe('selectFunctionCallPart (thoughtSignature preservation)', () => {
+  test('prefers the stream-captured part, keeping thoughtSignature', () => {
+    // The bug: in streaming, the signature-bearing part arrives in an early
+    // chunk; the FINAL candidate part may lack it. We must echo the captured
+    // one so the next tool-loop call doesn't 400 / degrade on 3.5-flash.
+    const captured = {
+      functionCall: { name: 'search_squad_memory', args: { query: 'riri' } },
+      thoughtSignature: 'sig-abc123',
+    }
+    const finalCandidateParts = [
+      { functionCall: { name: 'search_squad_memory', args: { query: 'riri' } } }, // no sig
+    ]
+    const out = selectFunctionCallPart(captured, finalCandidateParts, captured.functionCall)
+    assert.equal(out.thoughtSignature, 'sig-abc123')
+    assert.equal(out.functionCall.name, 'search_squad_memory')
+  })
+
+  test('falls back to the candidate part when nothing was captured', () => {
+    const candidatePart = {
+      functionCall: { name: 'search', args: {} },
+      thoughtSignature: 'sig-from-candidate',
+    }
+    const out = selectFunctionCallPart(null, [candidatePart], candidatePart.functionCall)
+    assert.equal(out.thoughtSignature, 'sig-from-candidate')
+  })
+
+  test('last-resort reconstruct when no part is available anywhere', () => {
+    const bare = { name: 'search', args: { q: 'x' } }
+    const out = selectFunctionCallPart(null, [], bare)
+    assert.deepEqual(out, { functionCall: bare })
+    // Documents the lossy path: the reconstruct carries no signature.
+    assert.equal('thoughtSignature' in out, false)
+  })
+
+  test('ignores a captured part that has no functionCall', () => {
+    const candidatePart = { functionCall: { name: 'real' }, thoughtSignature: 's' }
+    const out = selectFunctionCallPart({ text: 'not a call' }, [candidatePart], { name: 'real' })
+    assert.equal(out, candidatePart)
   })
 })
