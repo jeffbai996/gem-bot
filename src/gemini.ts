@@ -728,7 +728,20 @@ export class GeminiClient {
     systemText: string,
     dropCodeExec: boolean,
     cachedContentName: string | null,
+    forceNoTools: boolean = false,
   ): any {
+    // "Answer now" turn: strip ALL tools so the model is forced to reply from
+    // the context it already has. Used as the final fallback when the tool
+    // loop would otherwise exhaust — 3.5-flash gets a perfect search result
+    // and compulsively keeps re-searching instead of committing; removing the
+    // tools removes the temptation. Can't ride a cached prefix (the cache pins
+    // the tool list), so this path is always uncached.
+    if (forceNoTools) {
+      return {
+        systemInstruction: { role: 'system', parts: [{ text: systemText }] },
+        maxOutputTokens: 4096,
+      }
+    }
     if (cachedContentName) {
       return {
         cachedContent: cachedContentName,
@@ -765,7 +778,8 @@ export class GeminiClient {
     activeContents: Content[],
     cachedContentName: string | null,
     onProgress?: (partial: ParsedResponse) => void,
-    onEvent?: (e: LifecycleEvent) => void
+    onEvent?: (e: LifecycleEvent) => void,
+    forceNoTools: boolean = false
   ): Promise<{
     functionCall: any | null
     // The FULL model part that carried the functionCall, captured verbatim
@@ -782,7 +796,7 @@ export class GeminiClient {
     // Scan all contents — not just the latest — because tool-loop iterations
     // preserve the original media in activeContents.
     const dropCodeExec = contentsHaveAudioVideo(activeContents)
-    const config = this.buildCallConfig(systemText, dropCodeExec, cachedContentName)
+    const config = this.buildCallConfig(systemText, dropCodeExec, cachedContentName, forceNoTools)
     const params = {
       model: this.modelName,
       contents: activeContents,
@@ -1053,27 +1067,70 @@ export class GeminiClient {
     }
 
     if (!meta) {
-      // Hit the tool-iteration cap without producing a final answer.
-      // Build a synthetic "ran out of attempts" reply + minimal meta so the
-      // caller can post a user-visible message and clear lifecycle reactions
-      // normally — rather than throwing a stack trace into the channel.
-      console.error(`[tool-loop] exhausted ${MAX_TOOL_ITERATIONS} iterations without final answer; toolCalls=${toolCalls.map(t => t.name).join(',')}`)
-      const calledNames = [...new Set(toolCalls.map(t => t.name))].join(', ') || 'tools'
-      finalParsed = {
-        react: null,
-        thinking: null,
-        reply: `i ran ${calledNames} ${toolCalls.length} times and couldn't pull a useful answer — could you rephrase, or point me at where to look?`,
-      }
-      meta = {
-        groundingSources: [],
-        codeArtifacts: [],
-        usage: null,
-        finishReason: 'TOOL_LOOP_EXHAUSTED',
-        flaggedSafety: [],
-        searchQueries: [...searchQueriesAcc],
-        nativeThoughts: null,
-        toolCalls,
-        searchEntryPointHtml: null,
+      // Hit the tool-iteration cap without the model ever committing to an
+      // answer. This is NOT "no data found" — 3.5-flash routinely gets a
+      // perfect tool result on iteration 0 (the full profile for a "who is X"
+      // question) and then compulsively re-searches with reworded queries
+      // until exhaustion instead of replying. The fix: make ONE final call
+      // with all tools stripped, so the model is forced to answer from the
+      // context it already gathered (every tool result is still in
+      // activeContents). This converts the silent give-up into a real answer.
+      console.error(`[tool-loop] exhausted ${MAX_TOOL_ITERATIONS} iterations; forcing a no-tools answer. toolCalls=${toolCalls.map(t => t.name).join(',')}`)
+      try {
+        // Append an explicit instruction so the model has something concrete to
+        // respond to. Without it, 3.5-flash — left staring at a functionResponse
+        // with no tools available — just emits an empty STOP. The nudge tells it
+        // to commit to an answer from the search results already in context.
+        const forceContents: Content[] = [
+          ...activeContents,
+          {
+            role: 'user',
+            parts: [{
+              text:
+                "You have already gathered enough from the searches above. Do NOT call any more tools. " +
+                "Answer the original question now, directly, using the information already retrieved. " +
+                "If the searches genuinely contained nothing relevant, say so plainly. " +
+                "Respond in the mandatory JSON format.",
+            }],
+          },
+        ]
+        const forced = await this.runOneTurn(
+          systemText, forceContents, null, onProgress, onEvent, /* forceNoTools */ true
+        )
+        finalParsed = parseResponse(forced.text)
+        const parts = forced.candidate?.content?.parts as any[] | undefined
+        meta = {
+          groundingSources: extractGroundingSources(forced.candidate),
+          codeArtifacts: extractCodeArtifacts(parts),
+          usage: extractUsage(forced.response),
+          finishReason: 'TOOL_LOOP_FORCED_ANSWER',
+          flaggedSafety: extractFlaggedSafety(forced.candidate),
+          searchQueries: [...searchQueriesAcc],
+          nativeThoughts: extractNativeThoughts(parts) || null,
+          toolCalls,
+          searchEntryPointHtml: extractSearchEntryPointHtml(forced.candidate),
+        }
+      } catch (e: any) {
+        // Forced answer itself failed — fall back to the old graceful message
+        // rather than throwing a stack trace into the channel.
+        console.error(`[tool-loop] forced no-tools answer failed: ${e?.message ?? e}`)
+        const calledNames = [...new Set(toolCalls.map(t => t.name))].join(', ') || 'tools'
+        finalParsed = {
+          react: null,
+          thinking: null,
+          reply: `i ran ${calledNames} ${toolCalls.length} times and couldn't pull a useful answer — could you rephrase, or point me at where to look?`,
+        }
+        meta = {
+          groundingSources: [],
+          codeArtifacts: [],
+          usage: null,
+          finishReason: 'TOOL_LOOP_EXHAUSTED',
+          flaggedSafety: [],
+          searchQueries: [...searchQueriesAcc],
+          nativeThoughts: null,
+          toolCalls,
+          searchEntryPointHtml: null,
+        }
       }
     }
 
