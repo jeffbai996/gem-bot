@@ -187,24 +187,18 @@ export class VoiceManager extends EventEmitter {
     // ensurePlaying() — discord.js destroys the stream when a resource
     // ends, so a single long-lived Readable can never be replayed.
 
-    // 6. TEMP DIAGNOSTIC (also serves as pipeline warm-up): play a 1.5s
-    // 440Hz tone at join through the known-good prism/opusscript encode
-    // path (StreamType.Raw -> internal opus encoder). Splits the fault
-    // line: tone audible + model voice not => our python opus packets
-    // are bad; tone inaudible => the discord.js transmit layer is.
-    const toneRate = 48000
-    const toneSamples = Math.floor(toneRate * 1.5)
-    const tonePcm = Buffer.alloc(toneSamples * 4) // s16le stereo
-    for (let i = 0; i < toneSamples; i++) {
-      const v = Math.round(Math.sin((2 * Math.PI * 440 * i) / toneRate) * 8000)
-      tonePcm.writeInt16LE(v, i * 4)
-      tonePcm.writeInt16LE(v, i * 4 + 2)
-    }
-    const toneResource = createAudioResource(Readable.from([tonePcm]), {
+    // 6. Warm up the playback pipeline with 0.5s of SILENCE through the
+    // prism/opusscript Raw path. The first resource played after joining
+    // races Discord's SSRC/speaking setup and a short first reply gets
+    // swallowed whole (observed live) — priming with silence absorbs that
+    // race inaudibly. (This was a 440Hz diagnostic tone during bring-up.)
+    const warmRate = 48000
+    const warmPcm = Buffer.alloc(Math.floor(warmRate * 0.5) * 4) // s16le stereo zeros
+    const warmResource = createAudioResource(Readable.from([warmPcm]), {
       inputType: StreamType.Raw,
     })
-    this.audioPlayer.play(toneResource)
-    console.log('[voice/tx] DIAGNOSTIC tone playing (1.5s 440Hz via raw/prism path)')
+    this.audioPlayer.play(warmResource)
+    console.log('[voice/tx] pipeline warmed (0.5s silence via raw/prism path)')
 
     return { ok: true }
   }
