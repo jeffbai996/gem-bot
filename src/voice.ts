@@ -23,6 +23,7 @@ import {
   createAudioPlayer,
   createAudioResource,
   AudioPlayer,
+  AudioPlayerStatus,
   StreamType,
   NoSubscriberBehavior,
   entersState,
@@ -54,6 +55,7 @@ export class VoiceManager extends EventEmitter {
   private connection: VoiceConnection | null = null
   private audioPlayer: AudioPlayer | null = null
   private outboundOpus: Readable | null = null
+  private txAudioFrames = 0
   private ipcConnection: net.Socket | null = null
   private ipcRequestCounter = 0
   private ipcPendingRequests = new Map<string, (resp: IpcResponse) => void>()
@@ -152,21 +154,48 @@ export class VoiceManager extends EventEmitter {
       console.error('[voice] summoner stream error:', err.message)
     })
 
-    // 4. Set up an AudioPlayer to play model audio back into the channel
+    // 4. Set up an AudioPlayer to play model audio back into the channel.
+    // maxMissedFrames is the live-source knob: the player polls the stream
+    // every 20ms and goes Idle after that many empty reads — the default (5
+    // = 100ms) guarantees Idle in the silence between model turns, which is
+    // why the speech ring never lit. 250 ≈ 5s of tolerance.
     this.audioPlayer = createAudioPlayer({
-      behaviors: { noSubscriber: NoSubscriberBehavior.Play },
+      behaviors: { noSubscriber: NoSubscriberBehavior.Play, maxMissedFrames: 250 },
     })
     connection.subscribe(this.audioPlayer)
-
-    // 5. Outbound: AUDIO_OUT events from gem-voice → Readable stream → AudioPlayer
-    // discord.js wants Opus frames in a stream; we feed them one push() at a time.
-    this.outboundOpus = new Readable({ read() { /* push() drives the flow */ } })
-    const resource = createAudioResource(this.outboundOpus, {
-      inputType: StreamType.Opus,
+    this.audioPlayer.on('error', (err) => {
+      console.error('[voice/tx] player error:', err.message)
     })
-    this.audioPlayer.play(resource)
+    this.audioPlayer.on('stateChange', (oldS, newS) => {
+      console.log(`[voice/tx] player ${oldS.status} -> ${newS.status}`)
+    })
+
+    // 5. Outbound: AUDIO_OUT events from gem-voice → Readable stream → AudioPlayer.
+    // objectMode is load-bearing: StreamType.Opus expects each chunk to be ONE
+    // opus packet, and a plain byte-mode Readable coalesces pushes in its
+    // internal buffer — merged packets decode as garbage/silence.
+    this.outboundOpus = new Readable({ objectMode: true, read() { /* push() drives the flow */ } })
+    // Playback starts lazily on the first audio frame (see ensurePlaying) so
+    // the player isn't fed an empty stream at join time.
 
     return { ok: true }
+  }
+
+  /** Start or re-arm playback. The player drops to Idle when the stream runs
+   *  dry past maxMissedFrames (long gaps between model turns) — a fresh
+   *  resource on the same objectMode stream resumes from the buffered
+   *  packets, so re-arming on every inbound frame makes playback
+   *  self-healing. */
+  private ensurePlaying(): void {
+    if (!this.audioPlayer || !this.outboundOpus) return
+    const status = this.audioPlayer.state.status
+    if (status === AudioPlayerStatus.Idle) {
+      const resource = createAudioResource(this.outboundOpus, {
+        inputType: StreamType.Opus,
+      })
+      this.audioPlayer.play(resource)
+      console.log('[voice/tx] playback (re)armed')
+    }
   }
 
   async stop(): Promise<{ ok: true; wasActive: boolean } | { ok: false; error: string }> {
@@ -256,6 +285,11 @@ export class VoiceManager extends EventEmitter {
           if (this.outboundOpus) {
             const opusBytes = Buffer.from(msg.b64, 'base64')
             this.outboundOpus.push(opusBytes)
+            this.txAudioFrames++
+            if (this.txAudioFrames === 1 || this.txAudioFrames % 100 === 0) {
+              console.log(`[voice/tx] model opus frames received: ${this.txAudioFrames} (last ${opusBytes.length}B)`)
+            }
+            this.ensurePlaying()
           }
           continue
         }
