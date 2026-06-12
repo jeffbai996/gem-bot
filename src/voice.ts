@@ -56,6 +56,8 @@ export class VoiceManager extends EventEmitter {
   private audioPlayer: AudioPlayer | null = null
   private outboundOpus: Readable | null = null
   private txAudioFrames = 0
+  private turnBuffer: Buffer[] = []
+  private turnBufferTimer: ReturnType<typeof setTimeout> | null = null
   private ipcConnection: net.Socket | null = null
   private ipcRequestCounter = 0
   private ipcPendingRequests = new Map<string, (resp: IpcResponse) => void>()
@@ -174,21 +176,68 @@ export class VoiceManager extends EventEmitter {
     // ensurePlaying() — discord.js destroys the stream when a resource
     // ends, so a single long-lived Readable can never be replayed.
 
-    // 6. Prime the playback pipeline with ~100ms of opus silence. The very
-    // first resource played after joining races Discord's SSRC/speaking
-    // setup, and a short first reply can be swallowed whole (observed:
-    // ring lit, no audible output on turn 1; turn 2 fine). 0xF8 0xFF 0xFE
-    // is the canonical Discord opus silence frame.
-    this.ensurePlaying()
-    const silence = Buffer.from([0xf8, 0xff, 0xfe])
-    for (let i = 0; i < 5; i++) {
-      if (this.outboundOpus && !this.outboundOpus.destroyed) {
-        this.outboundOpus.push(silence)
-      }
+    // 6. TEMP DIAGNOSTIC (also serves as pipeline warm-up): play a 1.5s
+    // 440Hz tone at join through the known-good prism/opusscript encode
+    // path (StreamType.Raw -> internal opus encoder). Splits the fault
+    // line: tone audible + model voice not => our python opus packets
+    // are bad; tone inaudible => the discord.js transmit layer is.
+    const toneRate = 48000
+    const toneSamples = Math.floor(toneRate * 1.5)
+    const tonePcm = Buffer.alloc(toneSamples * 4) // s16le stereo
+    for (let i = 0; i < toneSamples; i++) {
+      const v = Math.round(Math.sin((2 * Math.PI * 440 * i) / toneRate) * 8000)
+      tonePcm.writeInt16LE(v, i * 4)
+      tonePcm.writeInt16LE(v, i * 4 + 2)
     }
-    console.log('[voice/tx] pipeline primed with silence frames')
+    const toneResource = createAudioResource(Readable.from([tonePcm]), {
+      inputType: StreamType.Raw,
+    })
+    this.audioPlayer.play(toneResource)
+    console.log('[voice/tx] DIAGNOSTIC tone playing (1.5s 440Hz via raw/prism path)')
 
     return { ok: true }
+  }
+
+  /** Jitter buffer: Gemini streams audio in bursts, and on free tier the
+   *  generation pace can dip below realtime mid-reply — playing frames the
+   *  instant they arrive turns every inter-chunk gap into an audible
+   *  stutter (observed: long replies "all chopped up"). At each turn
+   *  start (player idle) we hold frames until ~500ms is banked or 400ms
+   *  passes, then open the tap; the bank absorbs the gaps. */
+  private handleModelFrame(opusBytes: Buffer): void {
+    const playerIdle =
+      this.audioPlayer?.state.status === AudioPlayerStatus.Idle
+    if (playerIdle || this.turnBufferTimer) {
+      this.turnBuffer.push(opusBytes)
+      if (!this.turnBufferTimer) {
+        this.turnBufferTimer = setTimeout(() => this.flushTurnBuffer(), 400)
+      }
+      if (this.turnBuffer.length >= 25) this.flushTurnBuffer() // ~500ms banked
+      return
+    }
+    this.pushFrame(opusBytes)
+  }
+
+  private flushTurnBuffer(): void {
+    if (this.turnBufferTimer) {
+      clearTimeout(this.turnBufferTimer)
+      this.turnBufferTimer = null
+    }
+    if (!this.turnBuffer.length) return
+    this.ensurePlaying()
+    const banked = this.turnBuffer
+    this.turnBuffer = []
+    console.log(`[voice/tx] jitter buffer flushed (${banked.length} frames banked)`)
+    for (const frame of banked) this.pushFrame(frame)
+  }
+
+  private pushFrame(opusBytes: Buffer): void {
+    this.ensurePlaying()
+    if (this.outboundOpus && !this.outboundOpus.destroyed) {
+      this.outboundOpus.push(opusBytes)
+    } else {
+      console.warn('[voice/tx] dropping frame — no live outbound stream')
+    }
   }
 
   /** Start or re-arm playback. The player drops to Idle when the stream
@@ -303,12 +352,7 @@ export class VoiceManager extends EventEmitter {
           if (this.txAudioFrames === 1 || this.txAudioFrames % 100 === 0) {
             console.log(`[voice/tx] model opus frames received: ${this.txAudioFrames} (last ${opusBytes.length}B)`)
           }
-          this.ensurePlaying() // fresh stream/resource if the player idled
-          if (this.outboundOpus && !this.outboundOpus.destroyed) {
-            this.outboundOpus.push(opusBytes)
-          } else {
-            console.warn('[voice/tx] dropping frame — no live outbound stream')
-          }
+          this.handleModelFrame(opusBytes)
           continue
         }
         if (msg.event) {
