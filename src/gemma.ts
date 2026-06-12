@@ -206,7 +206,7 @@ client.on('interactionCreate', async (interaction) => {
     // gem-voice itself does owner-only audio routing by DISCORD_OWNER_USER_ID
     // in its own .env — these should agree but are configured independently.
     const ownerId = process.env.CC_OWNER_DISCORD_USER_ID || process.env.DISCORD_ADMIN_ID
-    await executeVoiceCommand(interaction, voiceManager, persona, ownerId)
+    await executeVoiceCommand(interaction, voiceManager, persona, ownerId, toolRegistry, gemini)
   }
 })
 

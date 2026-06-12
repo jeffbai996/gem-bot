@@ -23,6 +23,8 @@ export async function executeVoiceCommand(
   voiceManager: VoiceManager,
   persona: PersonaLoader,
   ownerUserId: string | undefined,
+  tools?: import('./tools/index.ts').ToolRegistry,
+  gemini?: import('./gemini.ts').GeminiClient,
 ): Promise<void> {
   // Access control: only the configured owner can summon. Mirrors the
   // gem-voice v0.1 design (owner-only). Falls through to "no one" if env unset.
@@ -37,7 +39,7 @@ export async function executeVoiceCommand(
   const sub = interaction.options.getSubcommand()
 
   if (sub === 'join') {
-    await handleJoin(interaction, voiceManager, persona)
+    await handleJoin(interaction, voiceManager, persona, tools, gemini)
     return
   }
   if (sub === 'leave') {
@@ -50,6 +52,8 @@ async function handleJoin(
   interaction: ChatInputCommandInteraction,
   voiceManager: VoiceManager,
   persona: PersonaLoader,
+  tools?: import('./tools/index.ts').ToolRegistry,
+  gemini?: import('./gemini.ts').GeminiClient,
 ): Promise<void> {
   if (!interaction.guildId || !interaction.guild) {
     await interaction.reply({ content: '❌ /voice can only be used in a guild.', ephemeral: true })
@@ -75,7 +79,26 @@ async function handleJoin(
 
   // Compose persona system prompt from the same loader gemma uses for text.
   // Use the channel + guild context so guild-specific personas apply.
-  const systemPrompt = persona.buildSystemPrompt(interaction.channelId, interaction.guildId)
+  let systemPrompt = persona.buildSystemPrompt(interaction.channelId, interaction.guildId)
+
+  // Voice Gemma should walk in knowing what was just said, not only the
+  // long-term summary — append the live tail of the channel the command
+  // came from. Best-effort: a fetch failure must never block the join.
+  try {
+    const channel = interaction.channel
+    if (channel && 'messages' in channel) {
+      const recent = await channel.messages.fetch({ limit: 20 })
+      const tail = [...recent.values()]
+        .reverse()
+        .map(m => `${m.author.username}: ${m.cleanContent}`.slice(0, 300))
+        .join('\n')
+      if (tail) {
+        systemPrompt += `\n\n---\n\n## Recent conversation in this channel (newest last)\n\n${tail}`
+      }
+    }
+  } catch (e: any) {
+    console.warn('[voice] recent-history fetch failed:', e?.message)
+  }
 
   const result = await voiceManager.start({
     channel: vc,
@@ -84,7 +107,16 @@ async function handleJoin(
     persona: {
       name: 'Gem',
       system_prompt: systemPrompt,
+      // One squad-store recall at session start (daemon no-ops if the
+      // store URL isn't configured).
+      memory_query: 'voice call context: portfolio, squad, ongoing projects',
     },
+    // Same tool belt text Gemma carries — declarations ride the join
+    // payload, executions come back through the IPC bridge.
+    tools,
+    toolContext: gemini
+      ? { channelId: interaction.channelId, userId: interaction.user.id, gemini }
+      : undefined,
   })
 
   if (!result.ok) {

@@ -15,6 +15,7 @@ import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { Readable } from 'node:stream'
 import type { Client, VoiceBasedChannel } from 'discord.js'
+import type { ToolRegistry, ToolContext } from './tools/index.ts'
 import {
   joinVoiceChannel,
   VoiceConnection,
@@ -40,6 +41,11 @@ export interface JoinOptions {
   ownerUserId: string
   persona: { name: string; system_prompt: string; memory_query?: string }
   modelConfig?: { model?: string; voice?: string; language?: string }
+  /** Tool belt for the live session — same registry text Gemma uses.
+   *  Declarations ride the join payload; calls come back over IPC as
+   *  `tool_call` events and are executed here in Node. */
+  tools?: ToolRegistry
+  toolContext?: ToolContext
 }
 
 interface IpcResponse {
@@ -58,6 +64,8 @@ export class VoiceManager extends EventEmitter {
   private txAudioFrames = 0
   private turnBuffer: Buffer[] = []
   private turnBufferTimer: ReturnType<typeof setTimeout> | null = null
+  private toolRegistry: ToolRegistry | null = null
+  private toolContext: ToolContext | null = null
   private ipcConnection: net.Socket | null = null
   private ipcRequestCounter = 0
   private ipcPendingRequests = new Map<string, (resp: IpcResponse) => void>()
@@ -90,11 +98,14 @@ export class VoiceManager extends EventEmitter {
       return { ok: false, error: `ipc connect failed: ${msg}` }
     }
 
+    this.toolRegistry = opts.tools ?? null
+    this.toolContext = opts.toolContext ?? null
     const joinResp = await this.sendIpcRequest({
       action: 'join',
       owner_user_id: opts.ownerUserId,
       persona: opts.persona,
       model_config: opts.modelConfig || {},
+      tools: this.toolRegistry ? this.toolRegistry.getDeclarations() : undefined,
     })
     if (!joinResp.ok) {
       return { ok: false, error: `gem-voice join failed: ${joinResp.error}` }
@@ -196,6 +207,52 @@ export class VoiceManager extends EventEmitter {
     console.log('[voice/tx] DIAGNOSTIC tone playing (1.5s 440Hz via raw/prism path)')
 
     return { ok: true }
+  }
+
+  /** Execute a model-requested function with the SAME registry text Gemma
+   *  uses, and feed the result back over IPC. Gemini holds the turn open
+   *  while waiting, then speaks the answer. */
+  private async handleToolCall(call: { call_id: string; name: string; args: Record<string, unknown> }): Promise<void> {
+    console.log(`[voice/tool] ${call.name}(${JSON.stringify(call.args).slice(0, 120)})`)
+    let result: string
+    if (!this.toolRegistry || !this.toolContext) {
+      result = 'No tools available in this voice session.'
+    } else {
+      try {
+        result = await this.toolRegistry.dispatch(call.name, call.args ?? {}, this.toolContext)
+      } catch (e: unknown) {
+        result = `Tool error: ${e instanceof Error ? e.message : String(e)}`
+      }
+    }
+    console.log(`[voice/tool] ${call.name} -> ${result.slice(0, 120)}`)
+    try {
+      await this.sendIpcRequest({
+        action: 'tool_response',
+        call_id: call.call_id,
+        name: call.name,
+        response: { result },
+      })
+    } catch (e: unknown) {
+      console.error('[voice/tool] tool_response send failed:', e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  /** Barge-in: the daemon saw Gemini's `interrupted` signal and flushed its
+   *  side — kill everything buffered here so she stops mid-word. The next
+   *  model turn re-arms a fresh stream via ensurePlaying(). */
+  private flushPlayback(): void {
+    if (this.turnBufferTimer) {
+      clearTimeout(this.turnBufferTimer)
+      this.turnBufferTimer = null
+    }
+    const banked = this.turnBuffer.length
+    this.turnBuffer = []
+    if (this.outboundOpus && !this.outboundOpus.destroyed) {
+      this.outboundOpus.destroy()
+    }
+    this.outboundOpus = null
+    this.audioPlayer?.stop(true)
+    console.log(`[voice/tx] playback FLUSHED (barge-in; ${banked} banked frames dropped)`)
   }
 
   /** Jitter buffer: Gemini streams audio in bursts, and on free tier the
@@ -346,6 +403,14 @@ export class VoiceManager extends EventEmitter {
       if (!line.trim()) continue
       try {
         const msg = JSON.parse(line) as IpcResponse & { event?: string; b64?: string }
+        if (msg.event === 'tool_call') {
+          this.handleToolCall(msg as unknown as { call_id: string; name: string; args: Record<string, unknown> })
+          continue
+        }
+        if (msg.event === 'audio_flush') {
+          this.flushPlayback()
+          continue
+        }
         if (msg.event === 'audio_out' && msg.b64) {
           const opusBytes = Buffer.from(msg.b64, 'base64')
           this.txAudioFrames++
