@@ -123,14 +123,30 @@ export class VoiceManager extends EventEmitter {
       end: { behavior: EndBehaviorType.Manual },
     })
 
+    // Instrumentation: count frames received from Discord vs forwarded over IPC.
+    // The daemon side only saw 1 frame per session — this tells us whether Discord
+    // is delivering the summoner's RTP at all, or we forward it but the IPC drops it.
+    let rxFrames = 0
+    let txFrames = 0
     summonerStream.on('data', (opusFrame: Buffer) => {
+      rxFrames++
       const b64 = opusFrame.toString('base64')
       // Fire-and-forget: don't await the ack; we don't care about per-frame replies.
       try {
         ipcSock.write(JSON.stringify({ action: 'audio_in', b64 }) + '\n')
+        txFrames++
       } catch (e) {
         // socket may have closed mid-write; let the close handler clean up
       }
+      if (rxFrames === 1 || rxFrames % 50 === 0) {
+        console.log(`[voice/rx] summoner frames: rx=${rxFrames} tx=${txFrames} (last ${opusFrame.length}B)`)
+      }
+    })
+    summonerStream.on('end', () => {
+      console.log(`[voice/rx] summoner stream ENDED — total rx=${rxFrames} tx=${txFrames}`)
+    })
+    summonerStream.on('close', () => {
+      console.log(`[voice/rx] summoner stream CLOSED — total rx=${rxFrames} tx=${txFrames}`)
     })
     summonerStream.on('error', (err: Error) => {
       console.error('[voice] summoner stream error:', err.message)
