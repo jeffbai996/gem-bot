@@ -170,31 +170,34 @@ export class VoiceManager extends EventEmitter {
       console.log(`[voice/tx] player ${oldS.status} -> ${newS.status}`)
     })
 
-    // 5. Outbound: AUDIO_OUT events from gem-voice → Readable stream → AudioPlayer.
-    // objectMode is load-bearing: StreamType.Opus expects each chunk to be ONE
-    // opus packet, and a plain byte-mode Readable coalesces pushes in its
-    // internal buffer — merged packets decode as garbage/silence.
-    this.outboundOpus = new Readable({ objectMode: true, read() { /* push() drives the flow */ } })
-    // Playback starts lazily on the first audio frame (see ensurePlaying) so
-    // the player isn't fed an empty stream at join time.
+    // 5. Outbound stream + resource are created lazily per model turn by
+    // ensurePlaying() — discord.js destroys the stream when a resource
+    // ends, so a single long-lived Readable can never be replayed.
 
     return { ok: true }
   }
 
-  /** Start or re-arm playback. The player drops to Idle when the stream runs
-   *  dry past maxMissedFrames (long gaps between model turns) — a fresh
-   *  resource on the same objectMode stream resumes from the buffered
-   *  packets, so re-arming on every inbound frame makes playback
-   *  self-healing. */
+  /** Start or re-arm playback. The player drops to Idle when the stream
+   *  runs dry past maxMissedFrames (gaps between model turns), and when a
+   *  resource ends discord.js DESTROYS its stream — replaying a destroyed
+   *  Readable throws (silently, from inside the IPC handler — observed as
+   *  one green flicker then permanent silence). So every re-arm builds a
+   *  fresh objectMode stream + resource; frames push into whichever
+   *  stream is current. objectMode is load-bearing: StreamType.Opus
+   *  expects each chunk to be exactly one opus packet, and byte-mode
+   *  Readables coalesce pushes into merged, undecodable packets. */
   private ensurePlaying(): void {
-    if (!this.audioPlayer || !this.outboundOpus) return
-    const status = this.audioPlayer.state.status
-    if (status === AudioPlayerStatus.Idle) {
+    if (!this.audioPlayer) return
+    if (this.audioPlayer.state.status !== AudioPlayerStatus.Idle) return
+    try {
+      this.outboundOpus = new Readable({ objectMode: true, read() { /* push() drives the flow */ } })
       const resource = createAudioResource(this.outboundOpus, {
         inputType: StreamType.Opus,
       })
       this.audioPlayer.play(resource)
-      console.log('[voice/tx] playback (re)armed')
+      console.log('[voice/tx] playback (re)armed — fresh stream + resource')
+    } catch (err) {
+      console.error('[voice/tx] re-arm FAILED:', (err as Error).message)
     }
   }
 
@@ -281,15 +284,16 @@ export class VoiceManager extends EventEmitter {
       try {
         const msg = JSON.parse(line) as IpcResponse & { event?: string; b64?: string }
         if (msg.event === 'audio_out' && msg.b64) {
-          // Push model Opus into the outbound stream
-          if (this.outboundOpus) {
-            const opusBytes = Buffer.from(msg.b64, 'base64')
+          const opusBytes = Buffer.from(msg.b64, 'base64')
+          this.txAudioFrames++
+          if (this.txAudioFrames === 1 || this.txAudioFrames % 100 === 0) {
+            console.log(`[voice/tx] model opus frames received: ${this.txAudioFrames} (last ${opusBytes.length}B)`)
+          }
+          this.ensurePlaying() // fresh stream/resource if the player idled
+          if (this.outboundOpus && !this.outboundOpus.destroyed) {
             this.outboundOpus.push(opusBytes)
-            this.txAudioFrames++
-            if (this.txAudioFrames === 1 || this.txAudioFrames % 100 === 0) {
-              console.log(`[voice/tx] model opus frames received: ${this.txAudioFrames} (last ${opusBytes.length}B)`)
-            }
-            this.ensurePlaying()
+          } else {
+            console.warn('[voice/tx] dropping frame — no live outbound stream')
           }
           continue
         }
