@@ -174,6 +174,20 @@ export class VoiceManager extends EventEmitter {
     // ensurePlaying() — discord.js destroys the stream when a resource
     // ends, so a single long-lived Readable can never be replayed.
 
+    // 6. Prime the playback pipeline with ~100ms of opus silence. The very
+    // first resource played after joining races Discord's SSRC/speaking
+    // setup, and a short first reply can be swallowed whole (observed:
+    // ring lit, no audible output on turn 1; turn 2 fine). 0xF8 0xFF 0xFE
+    // is the canonical Discord opus silence frame.
+    this.ensurePlaying()
+    const silence = Buffer.from([0xf8, 0xff, 0xfe])
+    for (let i = 0; i < 5; i++) {
+      if (this.outboundOpus && !this.outboundOpus.destroyed) {
+        this.outboundOpus.push(silence)
+      }
+    }
+    console.log('[voice/tx] pipeline primed with silence frames')
+
     return { ok: true }
   }
 
