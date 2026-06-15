@@ -85,10 +85,14 @@ describe('buildDefaultRegistry', () => {
     const r = await buildDefaultRegistry()
     const names = r.getDeclarations().map(d => d.name)
     assert.ok(names.length >= 3, `expected at least 3 tools, got ${names.length}`)
-    assert.equal(names[0], 'search_memory')
-    assert.equal(names[1], 'fetch_url')
-    // Index 2+ is either the `ibkr_briefing` fallback stub (MCP down) or
-    // 32 IBKR MCP tool names (MCP up). Don't hard-code.
-    assert.ok(names.includes('fetch_url'))
+    // Assert membership, not position — the registry order shifts as squad-store
+    // tools (search_squad_memory, read_squad_file) get added, and a positional
+    // check (names[1] === 'fetch_url') goes stale every time. What matters is
+    // that the core tools are all registered.
+    assert.ok(names.includes('search_memory'), 'search_memory registered')
+    assert.ok(names.includes('fetch_url'), 'fetch_url registered')
+    // IBKR is either the `ibkr_briefing` fallback stub (MCP down) or the full
+    // MCP tool set (MCP up) — assert the briefing surface exists either way.
+    assert.ok(names.includes('ibkr_briefing'), 'ibkr_briefing registered')
   })
 })
