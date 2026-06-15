@@ -9,8 +9,16 @@ import type { Tool } from './registry.ts'
 const SQUAD_STORE_URL = process.env.SQUAD_STORE_URL || 'http://127.0.0.1:5005'
 const SQUAD_BOT = process.env.SQUAD_STORE_BOT || 'gemma'
 const REQUEST_TIMEOUT_MS = 8_000
-const MAX_RESULTS = 8
-const MAX_TEXT_CHARS = 600
+const MAX_RESULTS = 6
+// Per-entry cap was 600 — far too small. The curated profiles are rich (#53
+// "Jeff's social network" is ~8900 chars; #112 "Paul + Riri" ~2000), so a
+// 600-char cut chopped each to a surface fragment BEFORE the relevant detail
+// (the Paul Kwon entry in #53 starts past char 1400; the Riri↔Paul relationship
+// in #112 sat past the cut) — which is exactly why Gemma "knew" people only
+// surface-level. Raise the per-entry cap and cap the TOTAL instead so one huge
+// entry can't blow the context. (2026-06-14, diagnosed from voice logs.)
+const MAX_TEXT_CHARS = 4_000
+const MAX_TOTAL_CHARS = 12_000
 
 interface SquadEntry {
   id?: number
@@ -58,18 +66,27 @@ async function searchSquadStore(query: string): Promise<string> {
     return `No squad-store entries matched "${query}".`
   }
 
-  const shown = entries.slice(0, MAX_RESULTS)
-  const lines = shown.map((e) => {
+  // Render entries until the TOTAL char budget is hit, so the top (most
+  // relevant) hits come through in full rather than every hit chopped to a
+  // fragment. Each entry still capped at MAX_TEXT_CHARS individually.
+  const lines: string[] = []
+  let used = 0
+  let rendered = 0
+  for (const e of entries.slice(0, MAX_RESULTS)) {
     const tags =
       Array.isArray(e.tags) && e.tags.length ? ` [${e.tags.join(', ')}]` : ''
     const pin = e.pinned ? ' (pinned)' : ''
     let body = (e.text ?? '').trim()
     if (body.length > MAX_TEXT_CHARS) body = body.slice(0, MAX_TEXT_CHARS) + '…'
-    return `#${e.id ?? '?'} (${e.type ?? 'entry'})${pin} ${e.name ?? ''}${tags}\n${body}`
-  })
+    const line = `#${e.id ?? '?'} (${e.type ?? 'entry'})${pin} ${e.name ?? ''}${tags}\n${body}`
+    if (rendered > 0 && used + line.length > MAX_TOTAL_CHARS) break
+    lines.push(line)
+    used += line.length
+    rendered++
+  }
 
   const total = typeof data?.total === 'number' ? data.total : entries.length
-  const header = `squad-store: ${shown.length} of ${total} match(es) for "${query}"`
+  const header = `squad-store: ${rendered} of ${total} match(es) for "${query}"`
   return header + '\n\n' + lines.join('\n\n')
 }
 
