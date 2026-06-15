@@ -51,7 +51,15 @@ const THINKING_NEVER_ADDENDUM = `
 This channel has thinking mode forced to NEVER. Set the \`thinking\` field to null on every reply. Do not populate it under any circumstances.`
 
 export function formatSystemPrompt(base: string, mode: ThinkingMode): string {
-  let out = base + '\n\n' + RESPONSE_FORMAT_BASE
+  // Inject the current date/time so the model isn't blind to "now" (it was
+  // hallucinating dates / current events). Vancouver tz (Jeff's), rebuilt each
+  // turn since this runs per-request.
+  const now = new Date().toLocaleString('en-CA', {
+    timeZone: 'America/Vancouver', weekday: 'long', year: 'numeric',
+    month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit',
+    timeZoneName: 'short',
+  })
+  let out = base + `\n\nThe current date and time is ${now}. Treat this as "now" — do not guess the date.` + '\n\n' + RESPONSE_FORMAT_BASE
   if (mode === 'always') out += THINKING_ALWAYS_ADDENDUM
   else if (mode === 'never') out += THINKING_NEVER_ADDENDUM
   return out
