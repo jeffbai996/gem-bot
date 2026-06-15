@@ -1,10 +1,13 @@
 import { Type } from '@google/genai'
 import type { Tool } from './registry.ts'
 
-// Squad-store HTTP API on the local bind. The /squad/... prefixed path 404s
-// locally; the bare /api/search route is the one that answers on 127.0.0.1.
-// mode=literal avoids the (currently unreliable) vecgrep semantic backend.
+// Squad-store HTTP API on the local bind. Use /api/recall (semantic vecgrep) —
+// it resolves natural-language queries like "who is Paul" to the right curated
+// memory. The old /api/search?mode=literal substring path missed those: a
+// literal "who is Paul" matched nothing → the model hallucinated a wrong Paul.
+// vecgrep is reliable now (verified 2026-06-14).
 const SQUAD_STORE_URL = process.env.SQUAD_STORE_URL || 'http://127.0.0.1:5005'
+const SQUAD_BOT = process.env.SQUAD_STORE_BOT || 'gemma'
 const REQUEST_TIMEOUT_MS = 8_000
 const MAX_RESULTS = 8
 const MAX_TEXT_CHARS = 600
@@ -26,9 +29,10 @@ interface SquadEntry {
 async function searchSquadStore(query: string): Promise<string> {
   const url =
     SQUAD_STORE_URL.replace(/\/+$/, '') +
-    '/api/search?q=' +
+    '/api/recall?q=' +
     encodeURIComponent(query) +
-    '&mode=literal'
+    '&top_k=' + MAX_RESULTS +
+    '&bot=' + encodeURIComponent(SQUAD_BOT)
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
