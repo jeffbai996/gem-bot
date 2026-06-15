@@ -17,8 +17,14 @@ const MAX_RESULTS = 6
 // in #112 sat past the cut) — which is exactly why Gemma "knew" people only
 // surface-level. Raise the per-entry cap and cap the TOTAL instead so one huge
 // entry can't blow the context. (2026-06-14, diagnosed from voice logs.)
-const MAX_TEXT_CHARS = 4_000
-const MAX_TOTAL_CHARS = 12_000
+// Caps sized to the actual corpus, not guessed. Measured 2026-06-14: the
+// LARGEST entry (#53 "Jeff's social network") is ~8900 chars (~2.2k tok), and a
+// top-8 recall sums to only ~3.7k tok even uncapped — so "token furnace" isn't a
+// real risk at this corpus size. Per-entry 10k clears the biggest entry whole
+// (nothing truncated); 24k total (~6k tok) covers a full multi-hit recall. Both
+// are cheap per call; revisit only if the store grows an order of magnitude.
+const MAX_TEXT_CHARS = 10_000
+const MAX_TOTAL_CHARS = 24_000
 
 interface SquadEntry {
   id?: number
