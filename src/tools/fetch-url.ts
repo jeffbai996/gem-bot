@@ -54,30 +54,48 @@ export const fetchUrlTool: Tool = {
       return `fetch_url: ${e.message ?? 'invalid URL'}`
     }
 
-    // SSRF: resolve hostname, refuse if any address is private.
-    if (process.env.FETCH_URL_TESTING_ALLOW_PRIVATE !== '1') {
+    // SSRF guard: resolve a hostname and refuse any private address.
+    const assertPublic = async (hostname: string): Promise<string | null> => {
+      if (process.env.FETCH_URL_TESTING_ALLOW_PRIVATE === '1') return null
       try {
-        const lookups = await dns.lookup(url.hostname, { all: true })
+        const lookups = await dns.lookup(hostname, { all: true })
         for (const l of lookups) {
-          if (isPrivateIp(l.address)) {
-            return 'fetch_url: refusing to fetch private network address'
-          }
+          if (isPrivateIp(l.address)) return 'fetch_url: refusing to fetch private network address'
         }
       } catch (e: any) {
         return `fetch_url: could not resolve host (${e?.code ?? e?.message ?? 'DNS failure'})`
       }
+      return null
     }
 
+    // Manual redirect handling: re-validate EVERY hop so a 3xx Location can't
+    // bounce us to an internal/metadata address (SSRF via redirect).
+    const MAX_REDIRECTS = 5
+    let current = url
     let res: Response
     try {
-      res = await fetch(url.toString(), {
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-        redirect: 'follow',
-        headers: {
-          'User-Agent': 'gemma-discord-bot/1.0',
-          'Accept': 'text/html,text/plain,text/markdown,application/json,*/*;q=0.8'
+      for (let hop = 0; ; hop++) {
+        const ssrfErr = await assertPublic(current.hostname)
+        if (ssrfErr) return ssrfErr
+        res = await fetch(current.toString(), {
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+          redirect: 'manual',
+          headers: {
+            'User-Agent': 'gemma-discord-bot/1.0',
+            'Accept': 'text/html,text/plain,text/markdown,application/json,*/*;q=0.8'
+          }
+        })
+        const loc = res.headers.get('location')
+        if (res.status >= 300 && res.status < 400 && loc) {
+          if (hop >= MAX_REDIRECTS) return 'fetch_url: too many redirects'
+          let next: URL
+          try { next = validateUrl(new URL(loc, current).toString()).url }
+          catch (e: any) { return `fetch_url: invalid redirect target (${e?.message ?? 'bad URL'})` }
+          current = next
+          continue
         }
-      })
+        break
+      }
     } catch (e: any) {
       const msg = e?.message ?? String(e)
       if (e?.name === 'TimeoutError' || /timeout/i.test(msg)) return 'fetch_url: timed out after 15s'
