@@ -417,6 +417,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       userMediaParts: allParts,
       userName: message.author.username,
       channelId: message.channelId,
+      userId: message.author.id,
       thinkingMode: flags.thinking,
       cacheEnabled: flags.cache,
       cacheTtlSec: flags.cacheTtlSec ?? undefined,

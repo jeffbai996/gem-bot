@@ -586,6 +586,7 @@ export interface BuildRequestArgs {
   userMediaParts: MediaPart[]
   userName: string
   channelId?: string       // Passed so we can execute channel-specific search_memory
+  userId?: string          // Discord author id — gates owner-only tools (IBKR/financial)
   thinkingMode?: ThinkingMode  // default "auto"
   cacheEnabled?: boolean       // default false; opt-in via per-channel flag
   cacheTtlSec?: number         // override TTL when caching; falls back to manager default
@@ -1051,7 +1052,7 @@ export class GeminiClient {
       let result: unknown
       let failed = false
       try {
-        result = await this.registry.dispatch(fnName, fnArgs, { channelId: args.channelId, gemini: this })
+        result = await this.registry.dispatch(fnName, fnArgs, { channelId: args.channelId, userId: args.userId, gemini: this })
       } catch (e: any) {
         failed = true
         result = { error: e?.message ?? String(e) }
