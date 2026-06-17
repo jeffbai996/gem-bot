@@ -116,6 +116,14 @@ export class AccessManager {
     return this.canReact(userId, channelId)
   }
 
+  // Channel-independent user gate. A slash command like /voice isn't tied to a
+  // text channel's enabled/requireMention flags — what matters is only whether
+  // this person is on the allowlist at all. Reuses the same users map as
+  // canHandle so "who can voice" tracks "who can text" automatically.
+  isUserAllowed(userId: string): boolean {
+    return this.data.users[userId]?.allowed === true
+  }
+
   async allowUser(userId: string): Promise<void> {
     this.data.users[userId] = { allowed: true }
     await this.save()
