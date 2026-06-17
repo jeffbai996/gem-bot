@@ -85,25 +85,6 @@ function formatTokenCount(n: number): string {
   return n.toLocaleString('en-US')
 }
 
-// Compact display of tool-call args. Strings get quoted + truncated; objects
-// get JSON-stringified + truncated. Keeps the inline `tool(arg1, arg2)`
-// rendering readable when args are long URLs or big payloads.
-function formatToolArgs(args: Record<string, unknown>): string {
-  const entries = Object.entries(args)
-  if (entries.length === 0) return ''
-  const formatted = entries.map(([k, v]) => {
-    let val: string
-    if (typeof v === 'string') {
-      val = v.length > 60 ? `"${v.slice(0, 57)}..."` : `"${v}"`
-    } else {
-      try { val = JSON.stringify(v) } catch { val = String(v) }
-      if (val.length > 60) val = val.slice(0, 57) + '...'
-    }
-    return `${k}=${val}`
-  })
-  return formatted.join(', ')
-}
-
 // cc-discord-kit tool-trace parity (ported from tool_watcher.py). Tool calls
 // render inside a ```diff``` fence as `+ ● ToolName(digest) [Nms]` — the `+`
 // makes Discord's diff highlighter color the line GREEN; a failed call uses
