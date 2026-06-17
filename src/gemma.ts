@@ -181,13 +181,15 @@ client.on('interactionCreate', async (interaction) => {
       summarizer,
     })
   } else if (interaction.commandName === 'voice') {
-    // Voice ownership is gated by an owner-id env var. Check
-    // CC_OWNER_DISCORD_USER_ID first (what systemd-managed deploys typically
-    // set), then fall back to DISCORD_ADMIN_ID (the documented var).
-    // gem-voice itself does owner-only audio routing by DISCORD_OWNER_USER_ID
-    // in its own .env — these should agree but are configured independently.
-    const ownerId = process.env.CC_OWNER_DISCORD_USER_ID || process.env.DISCORD_ADMIN_ID
-    await executeVoiceCommand(interaction, voiceManager, persona, ownerId, toolRegistry, gemini)
+    // Voice is gated by the same allowlist as text (access.json users), so
+    // "who can voice" tracks "who can text". The summoner becomes the
+    // gem-voice session owner (it routes audio to whoever this gate admits),
+    // so no separate owner-id env needs to agree anymore.
+    await executeVoiceCommand(
+      interaction, voiceManager, persona,
+      (uid) => access.isUserAllowed(uid),
+      toolRegistry, gemini,
+    )
   }
 })
 

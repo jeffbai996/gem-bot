@@ -44,6 +44,30 @@ describe('AccessManager', () => {
     assert.equal(mgr.canHandle({ channelId: 'C1', userId: 'U1', isMention: false }), true)
   })
 
+  // isUserAllowed: channel-independent user gate, used by /voice (a slash
+  // command isn't tied to a text channel's enabled/requireMention flags — it's
+  // about whether this person is on the allowlist at all).
+  test('isUserAllowed: true for an allowlisted user regardless of channel', async () => {
+    await writeAccess({ users: { U1: { allowed: true } }, channels: {} })
+    mgr = new AccessManager()
+    await mgr.load()
+    assert.equal(mgr.isUserAllowed('U1'), true)
+  })
+
+  test('isUserAllowed: false for an unknown user', async () => {
+    await writeAccess({ users: { U1: { allowed: true } }, channels: {} })
+    mgr = new AccessManager()
+    await mgr.load()
+    assert.equal(mgr.isUserAllowed('U2'), false)
+  })
+
+  test('isUserAllowed: false for an explicitly disallowed user', async () => {
+    await writeAccess({ users: { U1: { allowed: false } }, channels: {} })
+    mgr = new AccessManager()
+    await mgr.load()
+    assert.equal(mgr.isUserAllowed('U1'), false)
+  })
+
   test('denies known user in requireMention channel without mention', async () => {
     await writeAccess({
       users: { U1: { allowed: true } },

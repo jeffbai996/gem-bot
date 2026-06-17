@@ -22,15 +22,19 @@ export async function executeVoiceCommand(
   interaction: ChatInputCommandInteraction,
   voiceManager: VoiceManager,
   persona: PersonaLoader,
-  ownerUserId: string | undefined,
+  isAllowed: (userId: string) => boolean,
   tools?: import('./tools/index.ts').ToolRegistry,
   gemini?: import('./gemini.ts').GeminiClient,
 ): Promise<void> {
-  // Access control: only the configured owner can summon. Mirrors the
-  // gem-voice v0.1 design (owner-only). Falls through to "no one" if env unset.
-  if (!ownerUserId || interaction.user.id !== ownerUserId) {
+  // Access control: anyone on Gemma's allowlist can summon voice — the same
+  // gate as text (access.json users). "Who can voice" tracks "who can text"
+  // automatically, so adding/removing a user via /gemini flows through to
+  // voice too. (Was owner-only in v0.1; opened to the text allowlist 2026-06-17
+  // so 蛋宝 can talk to Gem in voice.) The summoner becomes the gem-voice
+  // session owner, so audio routing follows whoever passed this gate.
+  if (!isAllowed(interaction.user.id)) {
     await interaction.reply({
-      content: '🔒 voice is owner-only in v0.1.',
+      content: '🔒 you need to be on Gem\'s allowlist to use voice.',
       ephemeral: true,
     })
     return
