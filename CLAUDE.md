@@ -47,13 +47,23 @@ Logs: `~/.gemini/channels/discord/gemma.log`.
 - **Token-Aware Context Windowing:** Replace the hardcoded 20-message limit in `history.ts` with a dynamic token counter to maximize context efficiency without hitting API limits.
 - **Voice Channel Intake:** Enable the bot to join Discord Voice Channels and transcribe/process audio streams using Gemini's native multimodal capabilities.
 
-## Live Voice — work-in-progress (paused 2026-05-22)
+## Live Voice — WORKING (verified 2026-06-17)
 
-`/voice join` and `/voice leave` slash commands are wired and shipping. The
-audio loop ends at the model layer — voice connection works, audio reaches
-Gemini Live, but the model isn't responding and the WebSocket closes with
-code 1000 after 17-77 seconds. The most recent diagnostic deploy is live;
-the next session needs to read the new logs to confirm root cause.
+`/voice join` and `/voice leave` are live and the full audio loop works
+end-to-end: the user's speech reaches Gemini Live and the model responds
+with audio that plays back in the vc. Verified 2026-06-17 against the live
+gem-voice journal — a clean session with `gemini_turn_complete` (audio_chunks
+> 0, model audio out), ending on a normal idle timeout, not the old crash.
+
+The earlier WS-1000-after-17-77s failure (the May-22 "model never responds"
+bug below) is FIXED — root cause was the model name / send-kwarg pair the May 22
+deploy changed (`gemini-live-2.5-flash-preview` + `media=`). The "Open issue"
+section below is kept for history; it no longer reflects reality.
+
+Access: `/voice` is gated by Gemma's text allowlist (`access.json` users), NOT
+owner-only as of 2026-06-17 — anyone who can text Gem can voice her. The
+summoner becomes the gem-voice session owner (audio routes to whoever the gate
+admits).
 
 ### Architecture
 
@@ -80,7 +90,8 @@ IPC is NDJSON over `$XDG_RUNTIME_DIR/gem-voice.sock` (override with
 - `src/voice.ts` — `VoiceManager` class. `joinVoiceChannel()`, IPC client,
   outbound `Readable` stream for model audio piped into `AudioPlayer`.
 - `src/voice-commands.ts` — `/voice join` and `/voice leave` slash
-  commands. Owner-gated via `CC_OWNER_DISCORD_USER_ID || DISCORD_ADMIN_ID`.
+  commands. Gated by `access.isUserAllowed()` (Gemma's text allowlist), so
+  "who can voice" tracks "who can text". (Was owner-only pre-2026-06-17.)
 - `src/gemma.ts` — adds `GuildVoiceStates` intent, instantiates
   `VoiceManager` at boot, registers the `voice` slash command, routes
   interactionCreate.
@@ -96,7 +107,10 @@ Gem's role needs **Connect**, **Speak**, **Use Voice Activity**, and
 denials override role grants — diagnosed when an unrestricted vc worked
 and a specific one didn't.
 
-### Open issue: model doesn't talk back
+### [RESOLVED 2026-06-17] Was: model doesn't talk back
+
+> ✅ FIXED — voice now works end-to-end (see "Live Voice — WORKING" above).
+> Kept below for history; the May-22 model-name + `media=` kwarg fix resolved it.
 
 Sessions establish cleanly (`session_started` logged on gem-voice side,
 voice connection up on gemma side, frames flowing per `gemini_send_progress`
