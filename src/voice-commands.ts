@@ -12,7 +12,7 @@ export const voiceCommand = new SlashCommandBuilder()
   .setName('voice')
   .setDescription('Bring Gem into a voice channel for a live conversation')
   .addSubcommand(s =>
-    s.setName('join').setDescription("Join the voice channel you're currently in")
+    s.setName('call').setDescription('Live mic↔voice conversation in your current vc')
   )
   .addSubcommand(s =>
     s.setName('leave').setDescription('Disconnect from the voice channel')
@@ -38,7 +38,7 @@ export async function executeVoiceCommand(
 
   const sub = interaction.options.getSubcommand()
 
-  if (sub === 'join') {
+  if (sub === 'call') {
     await handleJoin(interaction, voiceManager, persona, tools, gemini)
     return
   }
@@ -69,7 +69,7 @@ async function handleJoin(
   const vc = member.voice?.channel
   if (!vc) {
     await interaction.reply({
-      content: "❌ you're not in a voice channel — join one first, then run /voice join.",
+      content: "❌ you're not in a voice channel — join one first, then run /voice call.",
       ephemeral: true,
     })
     return
