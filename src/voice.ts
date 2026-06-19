@@ -302,7 +302,16 @@ export class VoiceManager extends EventEmitter {
    *  Readables coalesce pushes into merged, undecodable packets. */
   private ensurePlaying(): void {
     if (!this.audioPlayer) return
-    if (this.audioPlayer.state.status !== AudioPlayerStatus.Idle) return
+    // Re-arm whenever there's no live outbound stream to push into — NOT just
+    // when the player is Idle. The player can sit in a non-Idle state
+    // (Buffering / AutoPaused, e.g. a brief connection wobble or the tick
+    // between a resource's stream being destroyed and the player flipping to
+    // Idle) while its stream is already dead. The old Idle-only gate skipped
+    // the re-arm there, so pushFrame() then dropped every frame into the dead
+    // stream → "responds a few turns, then wall of silence". Keying on stream
+    // liveness covers both: a live stream short-circuits (push into it), a
+    // dead/missing one always re-arms.
+    if (this.outboundOpus && !this.outboundOpus.destroyed) return
     try {
       this.outboundOpus = new Readable({ objectMode: true, read() { /* push() drives the flow */ } })
       const resource = createAudioResource(this.outboundOpus, {
