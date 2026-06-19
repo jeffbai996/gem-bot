@@ -77,6 +77,14 @@ export class VoiceManager extends EventEmitter {
   private txAudioFrames = 0
   private turnBuffer: Buffer[] = []
   private turnBufferTimer: ReturnType<typeof setTimeout> | null = null
+  // Jitter-buffer tuning (env-overridable so it can be dialed by ear without a
+  // redeploy). The bank is the turn-start cushion that absorbs Gemini's bursty
+  // delivery; a bigger bank = smoother through mid-turn gaps but more latency
+  // before Gem's first word. Defaults nudged up from 25/400 → 36/600 (~720ms)
+  // to soften the "lags then catches up" underruns.
+  private readonly jitterBank = parseInt(process.env.GEM_VOICE_JITTER_BANK || '36', 10)
+  private readonly jitterMs = parseInt(process.env.GEM_VOICE_JITTER_MS || '600', 10)
+  private readonly maxMissed = parseInt(process.env.GEM_VOICE_MAX_MISSED_FRAMES || '250', 10)
   private toolRegistry: ToolRegistry | null = null
   private toolContext: ToolContext | null = null
   private ipcConnection: net.Socket | null = null
@@ -199,7 +207,7 @@ export class VoiceManager extends EventEmitter {
     // = 100ms) guarantees Idle in the silence between model turns, which is
     // why the speech ring never lit. 250 ≈ 5s of tolerance.
     this.audioPlayer = createAudioPlayer({
-      behaviors: { noSubscriber: NoSubscriberBehavior.Play, maxMissedFrames: 250 },
+      behaviors: { noSubscriber: NoSubscriberBehavior.Play, maxMissedFrames: this.maxMissed },
     })
     connection.subscribe(this.audioPlayer)
     this.audioPlayer.on('error', (err) => {
@@ -287,9 +295,9 @@ export class VoiceManager extends EventEmitter {
     if (playerIdle || this.turnBufferTimer) {
       this.turnBuffer.push(opusBytes)
       if (!this.turnBufferTimer) {
-        this.turnBufferTimer = setTimeout(() => this.flushTurnBuffer(), 400)
+        this.turnBufferTimer = setTimeout(() => this.flushTurnBuffer(), this.jitterMs)
       }
-      if (this.turnBuffer.length >= 25) this.flushTurnBuffer() // ~500ms banked
+      if (this.turnBuffer.length >= this.jitterBank) this.flushTurnBuffer()
       return
     }
     this.pushFrame(opusBytes)
