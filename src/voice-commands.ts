@@ -15,6 +15,9 @@ export const voiceCommand = new SlashCommandBuilder()
     s.setName('call').setDescription('Live mic↔voice conversation in your current vc')
   )
   .addSubcommand(s =>
+    s.setName('speak').setDescription('Join your vc; type here and Gem reads her replies aloud')
+  )
+  .addSubcommand(s =>
     s.setName('leave').setDescription('Disconnect from the voice channel')
   )
 
@@ -44,6 +47,10 @@ export async function executeVoiceCommand(
 
   if (sub === 'call') {
     await handleJoin(interaction, voiceManager, persona, tools, gemini)
+    return
+  }
+  if (sub === 'speak') {
+    await handleSpeak(interaction, voiceManager)
     return
   }
   if (sub === 'leave') {
@@ -132,6 +139,50 @@ async function handleJoin(
 
   await interaction.editReply({
     content: `🎙️ joined <#${vc.id}>. say something.`,
+  })
+}
+
+// Speak mode: join the vc for OUTPUT only (no Live session, no mic). Gem still
+// replies in text + thinking trace in THIS channel like normal, and additionally
+// reads each reply aloud via gem-voice's `say` TTS. No persona/tools needed —
+// the text reply is built by the normal message handler; speak only voices it.
+async function handleSpeak(
+  interaction: ChatInputCommandInteraction,
+  voiceManager: VoiceManager,
+): Promise<void> {
+  if (!interaction.guildId || !interaction.guild) {
+    await interaction.reply({ content: '❌ /voice can only be used in a guild.', ephemeral: true })
+    return
+  }
+  const member = interaction.member
+  if (!(member instanceof GuildMember)) {
+    await interaction.reply({ content: '❌ could not resolve your member info.', ephemeral: true })
+    return
+  }
+  const vc = member.voice?.channel
+  if (!vc) {
+    await interaction.reply({
+      content: "❌ you're not in a voice channel — join one first, then run /voice speak.",
+      ephemeral: true,
+    })
+    return
+  }
+
+  await interaction.deferReply({ ephemeral: true })
+  const result = await voiceManager.start({
+    channel: vc,
+    summonerUserId: interaction.user.id,
+    ownerUserId: interaction.user.id,
+    persona: { name: 'Gem', system_prompt: '' }, // unused in speak (no Live session)
+    mode: 'speak',
+    speakChannelId: interaction.channelId,
+  })
+  if (!result.ok) {
+    await interaction.editReply({ content: `❌ voice speak failed: ${result.error}` })
+    return
+  }
+  await interaction.editReply({
+    content: `🗣️ joined <#${vc.id}> in speak mode. Type here — I'll reply in text *and* read it aloud (images/attachments work too).`,
   })
 }
 

@@ -546,6 +546,16 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       finalFullReply += replyText
     }
 
+    // Speak mode (/voice speak): if Gem is parked in a vc and this message's
+    // author is co-present in the launch channel, ALSO read the prose reply
+    // aloud via gem-voice TTS. Purely additive — the text reply + thinking
+    // trace above are unchanged. Fire-and-forget so it doesn't block the render.
+    if (replyText && voiceManager.isSpeakingTo(message)) {
+      voiceManager.sayText(replyText).then(r => {
+        if (!r.ok) console.error('[voice] speak-mode sayText failed:', r.error)
+      }).catch(e => console.error('[voice] speak-mode sayText threw:', e))
+    }
+
     if (meta.groundingSources.length > 0 && parsed.reply) {
       const sourcesBody = formatGroundingSources(meta.groundingSources, 5)
       if (sourcesBody) finalFullReply += '\n\n-# ↳ sources: ' + sourcesBody
