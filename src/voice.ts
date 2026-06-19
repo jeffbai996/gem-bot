@@ -14,7 +14,8 @@ import net from 'node:net'
 import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { Readable } from 'node:stream'
-import type { Client, VoiceBasedChannel } from 'discord.js'
+import { GuildMember } from 'discord.js'
+import type { Client, VoiceBasedChannel, Message } from 'discord.js'
 import type { ToolRegistry, ToolContext } from './tools/index.ts'
 import {
   joinVoiceChannel,
@@ -46,6 +47,13 @@ export interface JoinOptions {
    *  `tool_call` events and are executed here in Node. */
   tools?: ToolRegistry
   toolContext?: ToolContext
+  /** 'call' = realtime mic↔voice (Gemini Live). 'speak' = text-driven: join
+   *  the vc for OUTPUT only (no Live session, no mic); typed channel messages
+   *  are spoken via sayText(). Default 'call'. */
+  mode?: 'call' | 'speak'
+  /** speak mode only: the text channel /voice speak was launched from. Typed
+   *  messages there get spoken when the author is co-present in the vc. */
+  speakChannelId?: string
 }
 
 interface IpcResponse {
@@ -59,6 +67,11 @@ interface IpcResponse {
 export class VoiceManager extends EventEmitter {
   private client: Client
   private connection: VoiceConnection | null = null
+  // Which mode the active session is in + which vc/text-channel — used by
+  // isSpeakingTo() to gate text-driven speech on co-presence.
+  private mode: 'call' | 'speak' = 'call'
+  private channelId: string | null = null
+  private speakChannelId: string | null = null
   private audioPlayer: AudioPlayer | null = null
   private outboundOpus: Readable | null = null
   private txAudioFrames = 0
@@ -98,17 +111,23 @@ export class VoiceManager extends EventEmitter {
       return { ok: false, error: `ipc connect failed: ${msg}` }
     }
 
-    this.toolRegistry = opts.tools ?? null
-    this.toolContext = opts.toolContext ?? null
-    const joinResp = await this.sendIpcRequest({
-      action: 'join',
-      owner_user_id: opts.ownerUserId,
-      persona: opts.persona,
-      model_config: opts.modelConfig || {},
-      tools: this.toolRegistry ? this.toolRegistry.getDeclarations() : undefined,
-    })
-    if (!joinResp.ok) {
-      return { ok: false, error: `gem-voice join failed: ${joinResp.error}` }
+    const mode = opts.mode || 'call'
+    // Call mode opens a live Gemini session (mic↔voice). Speak mode is
+    // text-driven — no Live session; sayText() does per-utterance TTS over the
+    // same audio_out pipeline, so we skip the join + the mic entirely.
+    if (mode === 'call') {
+      this.toolRegistry = opts.tools ?? null
+      this.toolContext = opts.toolContext ?? null
+      const joinResp = await this.sendIpcRequest({
+        action: 'join',
+        owner_user_id: opts.ownerUserId,
+        persona: opts.persona,
+        model_config: opts.modelConfig || {},
+        tools: this.toolRegistry ? this.toolRegistry.getDeclarations() : undefined,
+      })
+      if (!joinResp.ok) {
+        return { ok: false, error: `gem-voice join failed: ${joinResp.error}` }
+      }
     }
 
     // 2. Join the Discord voice channel via @discordjs/voice
@@ -131,41 +150,48 @@ export class VoiceManager extends EventEmitter {
     }
 
     this.connection = connection
+    this.mode = mode
+    this.channelId = opts.channel.id
+    this.speakChannelId = opts.speakChannelId || null
 
-    // 3. Subscribe to summoner's audio stream — pipe to gem-voice via IPC
-    const receiver = connection.receiver
-    const summonerStream = receiver.subscribe(opts.summonerUserId, {
-      end: { behavior: EndBehaviorType.Manual },
-    })
+    // 3. Subscribe to summoner's audio stream — pipe to gem-voice via IPC.
+    // CALL mode only: speak is text-driven (input arrives as typed messages),
+    // so there's no mic to tap.
+    if (mode === 'call') {
+      const receiver = connection.receiver
+      const summonerStream = receiver.subscribe(opts.summonerUserId, {
+        end: { behavior: EndBehaviorType.Manual },
+      })
 
-    // Instrumentation: count frames received from Discord vs forwarded over IPC.
-    // The daemon side only saw 1 frame per session — this tells us whether Discord
-    // is delivering the summoner's RTP at all, or we forward it but the IPC drops it.
-    let rxFrames = 0
-    let txFrames = 0
-    summonerStream.on('data', (opusFrame: Buffer) => {
-      rxFrames++
-      const b64 = opusFrame.toString('base64')
-      // Fire-and-forget: don't await the ack; we don't care about per-frame replies.
-      try {
-        ipcSock.write(JSON.stringify({ action: 'audio_in', b64 }) + '\n')
-        txFrames++
-      } catch (e) {
-        // socket may have closed mid-write; let the close handler clean up
-      }
-      if (rxFrames === 1 || rxFrames % 50 === 0) {
-        console.log(`[voice/rx] summoner frames: rx=${rxFrames} tx=${txFrames} (last ${opusFrame.length}B)`)
-      }
-    })
-    summonerStream.on('end', () => {
-      console.log(`[voice/rx] summoner stream ENDED — total rx=${rxFrames} tx=${txFrames}`)
-    })
-    summonerStream.on('close', () => {
-      console.log(`[voice/rx] summoner stream CLOSED — total rx=${rxFrames} tx=${txFrames}`)
-    })
-    summonerStream.on('error', (err: Error) => {
-      console.error('[voice] summoner stream error:', err.message)
-    })
+      // Instrumentation: count frames received from Discord vs forwarded over IPC.
+      // The daemon side only saw 1 frame per session — this tells us whether Discord
+      // is delivering the summoner's RTP at all, or we forward it but the IPC drops it.
+      let rxFrames = 0
+      let txFrames = 0
+      summonerStream.on('data', (opusFrame: Buffer) => {
+        rxFrames++
+        const b64 = opusFrame.toString('base64')
+        // Fire-and-forget: don't await the ack; we don't care about per-frame replies.
+        try {
+          ipcSock.write(JSON.stringify({ action: 'audio_in', b64 }) + '\n')
+          txFrames++
+        } catch (e) {
+          // socket may have closed mid-write; let the close handler clean up
+        }
+        if (rxFrames === 1 || rxFrames % 50 === 0) {
+          console.log(`[voice/rx] summoner frames: rx=${rxFrames} tx=${txFrames} (last ${opusFrame.length}B)`)
+        }
+      })
+      summonerStream.on('end', () => {
+        console.log(`[voice/rx] summoner stream ENDED — total rx=${rxFrames} tx=${txFrames}`)
+      })
+      summonerStream.on('close', () => {
+        console.log(`[voice/rx] summoner stream CLOSED — total rx=${rxFrames} tx=${txFrames}`)
+      })
+      summonerStream.on('error', (err: Error) => {
+        console.error('[voice] summoner stream error:', err.message)
+      })
+    }
 
     // 4. Set up an AudioPlayer to play model audio back into the channel.
     // maxMissedFrames is the live-source knob: the player polls the stream
@@ -358,8 +384,40 @@ export class VoiceManager extends EventEmitter {
       }
       this.connection = null
     }
+    this.mode = 'call'
+    this.channelId = null
+    this.speakChannelId = null
 
     return { ok: true, wasActive: hadConnection || wasActive }
+  }
+
+  /** True when we're in speak mode AND the message's author is co-present in
+   *  the vc we're connected to AND the message is in the launch channel. Gates
+   *  text-driven speech: typed messages are only spoken to people who can hear. */
+  isSpeakingTo(message: Message): boolean {
+    if (this.mode !== 'speak' || !this.connection || !this.channelId) return false
+    if (this.speakChannelId && message.channelId !== this.speakChannelId) return false
+    const member = message.member
+    if (!(member instanceof GuildMember)) return false
+    return member.voice?.channelId === this.channelId
+  }
+
+  /** Speak-mode TTS: hand a finished reply to gem-voice's `say` action, which
+   *  synthesizes it (same voice as Live) and streams it back as audio_out — the
+   *  same playback path, so it just plays. No-op (ok) on empty text. */
+  async sayText(text: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (this.mode !== 'speak' || !this.connection) {
+      return { ok: false, error: 'not in an active speak-mode session' }
+    }
+    const t = text.trim()
+    if (!t) return { ok: true }
+    try {
+      const resp = await this.sendIpcRequest({ action: 'say', text: t })
+      if (!resp.ok) return { ok: false, error: resp.error || 'gem-voice say failed' }
+      return { ok: true }
+    } catch (e: unknown) {
+      return { ok: false, error: `gem-voice say failed: ${e instanceof Error ? e.message : String(e)}` }
+    }
   }
 
   // -------- IPC client --------
