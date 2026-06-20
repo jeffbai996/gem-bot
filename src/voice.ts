@@ -162,6 +162,23 @@ export class VoiceManager extends EventEmitter {
     this.channelId = opts.channel.id
     this.speakChannelId = opts.speakChannelId || null
 
+    // Diagnostic: a per-channel Speak denial lets the bot join + the player
+    // "play" but no audio reaches the vc — presents as "everything works but
+    // silent". Also log connection state changes: in speak mode there's no mic
+    // receiver, so if the connection silently drops to non-Ready, audio stops
+    // transmitting while the player still reports Playing. Wrapped so a
+    // perms-cache miss can't break the join.
+    try {
+      const me = opts.channel.guild.members.me
+      const perms = me ? opts.channel.permissionsFor(me) : null
+      console.log(`[voice/conn] joined vc=${opts.channel.id} mode=${mode} status=${connection.state.status} canSpeak=${perms?.has('Speak')} canConnect=${perms?.has('Connect')}`)
+    } catch {
+      console.log(`[voice/conn] joined vc=${opts.channel.id} mode=${mode} status=${connection.state.status} (perms check failed)`)
+    }
+    connection.on('stateChange', (o, n) => {
+      console.log(`[voice/conn] ${o.status} -> ${n.status}`)
+    })
+
     // 3. Subscribe to summoner's audio stream — pipe to gem-voice via IPC.
     // CALL mode only: speak is text-driven (input arrives as typed messages),
     // so there's no mic to tap.
@@ -352,7 +369,7 @@ export class VoiceManager extends EventEmitter {
         inputType: StreamType.Opus,
       })
       this.audioPlayer.play(resource)
-      console.log('[voice/tx] playback (re)armed — fresh stream + resource')
+      console.log(`[voice/tx] playback (re)armed — fresh stream + resource (conn=${this.connection?.state.status})`)
     } catch (err) {
       console.error('[voice/tx] re-arm FAILED:', (err as Error).message)
     }
