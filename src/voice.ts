@@ -89,8 +89,8 @@ export class VoiceManager extends EventEmitter {
   // less turn-start buffering than call (whose Live audio arrives bursty). A
   // smaller bank here = lower speak latency without re-introducing the call-mode
   // "lags then catches up". Env-tunable.
-  private readonly jitterBankSpeak = parseInt(process.env.GEM_VOICE_JITTER_BANK_SPEAK || '12', 10)
-  private readonly jitterMsSpeak = parseInt(process.env.GEM_VOICE_JITTER_MS_SPEAK || '250', 10)
+  private readonly jitterBankSpeak = parseInt(process.env.GEM_VOICE_JITTER_BANK_SPEAK || '18', 10)
+  private readonly jitterMsSpeak = parseInt(process.env.GEM_VOICE_JITTER_MS_SPEAK || '350', 10)
   private toolRegistry: ToolRegistry | null = null
   private toolContext: ToolContext | null = null
   private ipcConnection: net.Socket | null = null
