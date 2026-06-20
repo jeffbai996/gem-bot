@@ -203,6 +203,18 @@ interface HandleOpts {
   expansion?: boolean
 }
 
+// Appended to Gemma's system prompt when a message is in /voice speak mode, so
+// her reply is written to be SPOKEN by TTS (no lists/markdown that sound robotic
+// read aloud) rather than typed. The text reply still posts to the channel too.
+const SPOKEN_MODE_INSTRUCTION = `
+
+---
+🔊 SPOKEN MODE: this reply will be read aloud by text-to-speech, so write it the way a person would *say* it, not type it:
+- Natural, conversational, flowing sentences.
+- NO markdown, NO bullet points, NO numbered lists, NO headers, NO code blocks, NO links, NO emoji.
+- If you'd normally make a list, say it as a sentence ("a few things — first X, then Y, and Z").
+- Keep it concise and easy on the ear; speak symbols/abbreviations the way you'd say them aloud.`
+
 async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promise<void> {
   if (message.author.bot) return
   if (!client.user) return
@@ -394,7 +406,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       }
     }
     const { parsed, meta } = await gemini.respond({
-      systemPrompt: persona.buildSystemPrompt(message.channelId, message.guildId),
+      systemPrompt: persona.buildSystemPrompt(message.channelId, message.guildId)
+        + (voiceManager.isSpeakingTo(message) ? SPOKEN_MODE_INSTRUCTION : ''),
       history,
       userMessageText: userText,
       userMediaParts: allParts,
