@@ -154,6 +154,18 @@ async function handleSpeak(
     await interaction.reply({ content: '❌ /voice can only be used in a guild.', ephemeral: true })
     return
   }
+  // Speak mode is text-driven and reads Gem's replies aloud while she also posts
+  // them in the launch channel — so confine it to one dedicated channel, else
+  // she talks over the other bots in shared channels. Channel id is env-configured
+  // (never hardcoded). Unset = allowed anywhere (back-compat).
+  const allowedChannel = process.env.VOICE_SPEAK_CHANNEL_ID
+  if (allowedChannel && interaction.channelId !== allowedChannel) {
+    await interaction.reply({
+      content: `🔒 /voice speak only works in <#${allowedChannel}>.`,
+      ephemeral: true,
+    })
+    return
+  }
   const member = interaction.member
   if (!(member instanceof GuildMember)) {
     await interaction.reply({ content: '❌ could not resolve your member info.', ephemeral: true })
