@@ -85,6 +85,12 @@ export class VoiceManager extends EventEmitter {
   private readonly jitterBank = parseInt(process.env.GEM_VOICE_JITTER_BANK || '36', 10)
   private readonly jitterMs = parseInt(process.env.GEM_VOICE_JITTER_MS || '600', 10)
   private readonly maxMissed = parseInt(process.env.GEM_VOICE_MAX_MISSED_FRAMES || '250', 10)
+  // Speak mode is already realtime-paced by gem-voice's say(), so it needs far
+  // less turn-start buffering than call (whose Live audio arrives bursty). A
+  // smaller bank here = lower speak latency without re-introducing the call-mode
+  // "lags then catches up". Env-tunable.
+  private readonly jitterBankSpeak = parseInt(process.env.GEM_VOICE_JITTER_BANK_SPEAK || '12', 10)
+  private readonly jitterMsSpeak = parseInt(process.env.GEM_VOICE_JITTER_MS_SPEAK || '250', 10)
   private toolRegistry: ToolRegistry | null = null
   private toolContext: ToolContext | null = null
   private ipcConnection: net.Socket | null = null
@@ -307,14 +313,17 @@ export class VoiceManager extends EventEmitter {
    *  start (player idle) we hold frames until ~500ms is banked or 400ms
    *  passes, then open the tap; the bank absorbs the gaps. */
   private handleModelFrame(opusBytes: Buffer): void {
+    // Speak (paced TTS) uses a smaller jitter bank than call (bursty Live).
+    const bank = this.mode === 'speak' ? this.jitterBankSpeak : this.jitterBank
+    const ms = this.mode === 'speak' ? this.jitterMsSpeak : this.jitterMs
     const playerIdle =
       this.audioPlayer?.state.status === AudioPlayerStatus.Idle
     if (playerIdle || this.turnBufferTimer) {
       this.turnBuffer.push(opusBytes)
       if (!this.turnBufferTimer) {
-        this.turnBufferTimer = setTimeout(() => this.flushTurnBuffer(), this.jitterMs)
+        this.turnBufferTimer = setTimeout(() => this.flushTurnBuffer(), ms)
       }
-      if (this.turnBuffer.length >= this.jitterBank) this.flushTurnBuffer()
+      if (this.turnBuffer.length >= bank) this.flushTurnBuffer()
       return
     }
     this.pushFrame(opusBytes)
