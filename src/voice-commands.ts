@@ -7,6 +7,7 @@
 import { SlashCommandBuilder, ChatInputCommandInteraction, GuildMember } from 'discord.js'
 import type { VoiceManager } from './voice.ts'
 import type { PersonaLoader } from './persona.ts'
+import { VOICE_CHOICES, setVoicePref } from './voice-pref.ts'
 
 export const voiceCommand = new SlashCommandBuilder()
   .setName('voice')
@@ -19,6 +20,16 @@ export const voiceCommand = new SlashCommandBuilder()
   )
   .addSubcommand(s =>
     s.setName('leave').setDescription('Disconnect from the voice channel')
+  )
+  .addSubcommand(s =>
+    s.setName('type')
+      .setDescription("Pick Gem's voice (applies to speak + call)")
+      .addStringOption(o =>
+        o.setName('voice')
+          .setDescription('Which voice Gem speaks in')
+          .setRequired(true)
+          .addChoices(...VOICE_CHOICES.map(v => ({ name: v.label, value: v.value })))
+      )
   )
 
 export async function executeVoiceCommand(
@@ -57,6 +68,29 @@ export async function executeVoiceCommand(
     await handleLeave(interaction, voiceManager)
     return
   }
+  if (sub === 'type') {
+    await handleType(interaction)
+    return
+  }
+}
+
+// /voice type — set which Gemini prebuilt voice Gem speaks in. Persisted to
+// STATE_DIR/voice-pref.json; applies to BOTH speak (per-utterance TTS) and call
+// (the Live session voice) on the next reply/call — no restart. Gated by the
+// same allowlist as the rest of /voice (checked above).
+async function handleType(interaction: ChatInputCommandInteraction): Promise<void> {
+  const voice = interaction.options.getString('voice', true)
+  const choice = VOICE_CHOICES.find(v => v.value === voice)
+  try {
+    setVoicePref(voice)
+  } catch (e: any) {
+    await interaction.reply({ content: `❌ couldn't set voice: ${e?.message ?? e}`, ephemeral: true })
+    return
+  }
+  await interaction.reply({
+    content: `🎚️ voice → **${voice}**${choice ? ` (${choice.blurb})` : ''}. Applies to speak + call — takes effect on the next reply/call, no restart.`,
+    ephemeral: true,
+  })
 }
 
 async function handleJoin(
