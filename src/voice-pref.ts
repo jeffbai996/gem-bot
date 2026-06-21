@@ -23,11 +23,11 @@ const PREF_FILE = path.join(STATE_DIR, 'voice-pref.json')
  *  the TTS / Live API; `label` is the Discord choice label; `blurb` is the
  *  human description echoed back on a switch. */
 export const VOICE_CHOICES: ReadonlyArray<{ value: string; label: string; blurb: string }> = [
-  { value: 'Aoede',  label: 'Aoede — breezy',            blurb: 'breezy, easy-going (default)' },
-  { value: 'Puck',   label: 'Puck — upbeat',             blurb: 'upbeat, lively' },
-  { value: 'Charon', label: 'Charon — deep/informative', blurb: 'deeper, informative' },
-  { value: 'Kore',   label: 'Kore — firm',               blurb: 'firm, clear' },
-  { value: 'Zephyr', label: 'Zephyr — bright',           blurb: 'bright, light' },
+  { value: 'Aoede',  label: 'Aoede — breezy ♀',  blurb: 'breezy, easy-going · female (default)' },
+  { value: 'Puck',   label: 'Puck — upbeat ♂',   blurb: 'upbeat, lively · male' },
+  { value: 'Charon', label: 'Charon — deep ♂',   blurb: 'deeper, informative · male' },
+  { value: 'Kore',   label: 'Kore — firm ♀',     blurb: 'firm, clear · female' },
+  { value: 'Zephyr', label: 'Zephyr — bright ♀', blurb: 'bright, light · female' },
 ]
 
 // Default matches gem-voice's own defaults (Config.gemini_voice / ModelConfig.voice
