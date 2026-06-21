@@ -17,6 +17,7 @@ import { Readable } from 'node:stream'
 import { GuildMember } from 'discord.js'
 import type { Client, VoiceBasedChannel, Message } from 'discord.js'
 import type { ToolRegistry, ToolContext } from './tools/index.ts'
+import { getVoicePref } from './voice-pref.ts'
 import {
   joinVoiceChannel,
   VoiceConnection,
@@ -136,7 +137,9 @@ export class VoiceManager extends EventEmitter {
         action: 'join',
         owner_user_id: opts.ownerUserId,
         persona: opts.persona,
-        model_config: opts.modelConfig || {},
+        // Inject the persisted /voice type pick so a call uses the chosen voice.
+        // An explicit modelConfig.voice (none today) still wins over the pref.
+        model_config: { voice: getVoicePref(), ...(opts.modelConfig || {}) },
         tools: this.toolRegistry ? this.toolRegistry.getDeclarations() : undefined,
       })
       if (!joinResp.ok) {
@@ -446,7 +449,7 @@ export class VoiceManager extends EventEmitter {
     const t = text.trim()
     if (!t) return { ok: true }
     try {
-      const resp = await this.sendIpcRequest({ action: 'say', text: t })
+      const resp = await this.sendIpcRequest({ action: 'say', text: t, voice: getVoicePref() })
       if (!resp.ok) return { ok: false, error: resp.error || 'gem-voice say failed' }
       return { ok: true }
     } catch (e: unknown) {
