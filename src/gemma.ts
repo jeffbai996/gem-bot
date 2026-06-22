@@ -406,6 +406,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         // anyway, and a tool ending mid-turn just means we keep going.
       }
     }
+    // Speak mode: start the soft "thinking tone" now — the chat model's about to
+    // churn for a beat, so fill the vc silence. The real answer's say() cuts it
+    // off; gem-voice self-stops after a safety max if no say ever lands.
+    if (voiceManager.isSpeakingTo(message)) voiceManager.startThinking()
     const { parsed, meta } = await gemini.respond({
       systemPrompt: persona.buildSystemPrompt(message.channelId, message.guildId)
         + (voiceManager.isSpeakingTo(message) ? SPOKEN_MODE_INSTRUCTION : ''),

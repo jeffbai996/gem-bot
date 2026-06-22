@@ -457,6 +457,21 @@ export class VoiceManager extends EventEmitter {
     }
   }
 
+  /** Speak-mode "thinking tone": start a soft blip loop in gem-voice while the
+   *  chat model generates the reply, so the vc isn't dead-silent during the
+   *  processing gap (like a voice assistant's "still thinking" cue). The real
+   *  answer (sayText → say) stops it automatically; gem-voice also self-stops
+   *  after a safety max. No-op outside an active speak session. */
+  startThinking(): void {
+    if (this.mode !== 'speak' || !this.connection) return
+    this.sendIpcRequest({ action: 'think', on: true }).catch(() => {})
+  }
+
+  stopThinking(): void {
+    if (this.mode !== 'speak' || !this.connection) return
+    this.sendIpcRequest({ action: 'think', on: false }).catch(() => {})
+  }
+
   // -------- IPC client --------
 
   private async ensureIpcConnected(): Promise<net.Socket> {
