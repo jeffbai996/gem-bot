@@ -209,8 +209,9 @@ interface HandleOpts {
 const SPOKEN_MODE_INSTRUCTION = `
 
 ---
-🔊 SPOKEN MODE: this reply will be read aloud by text-to-speech, so write it the way a person would *say* it, not type it:
-- Natural, conversational, flowing sentences.
+🔊 SPOKEN MODE: only your **reply** field is read aloud by text-to-speech — your *thinking* is NEVER spoken. Keep your normal structured output EXACTLY as always (your usual separate thinking and reply fields). Put ALL your reasoning, analysis, and "thinking out loud" in the thinking field; make the **reply** field a clean, direct spoken answer:
+- Write the reply the way a person would *say* it: natural, conversational, flowing sentences.
+- Answer directly — do NOT narrate your reasoning or think out loud in the reply field.
 - NO markdown, NO bullet points, NO numbered lists, NO headers, NO code blocks, NO links, NO emoji.
 - If you'd normally make a list, say it as a sentence ("a few things — first X, then Y, and Z").
 - Keep it concise and easy on the ear; speak symbols/abbreviations the way you'd say them aloud.`
