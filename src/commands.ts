@@ -48,8 +48,8 @@ export const geminiCommand = new SlashCommandBuilder()
       .setDescription('Switch the active Gemini model (auto-restarts gemma)')
       .addStringOption(option => option
         .setName('id')
-        .setDescription('The model to switch to')
-        .setRequired(true)
+        .setDescription('omit to show current model; else the model to switch to')
+        .setRequired(false)
         .addChoices(
           { name: 'gemini-3-pro-preview — strongest reasoning, ~10x cost', value: 'gemini-3-pro-preview' },
           { name: 'gemini-3.5-flash — newer, repriced ~5x ($1.50/$9.00 per 1M)', value: 'gemini-3.5-flash' },
@@ -216,7 +216,11 @@ interface ExtraDeps {
     // detach a delayed `systemctl --user restart gemma` so the new value
     // is read on next boot. Choices in the builder pin valid IDs.
     if (subcommand === 'model') {
-      const newModel = interaction.options.getString('id', true)
+      const newModel = interaction.options.getString('id')
+      if (!newModel) {
+        const cur = process.env.GEMINI_MODEL || '(default \u2014 GEMINI_MODEL not set in env)'
+        return interaction.reply({ content: `\ud83e\udd16 Current Gemini model: \`${cur}\``, ephemeral: true })
+      }
       const stateDir = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
       const envPath = path.join(stateDir, '.env')
       try {
