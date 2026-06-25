@@ -2,7 +2,7 @@ import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
 
-export type ThinkingMode = 'always' | 'auto' | 'never'
+export type ThinkingMode = 'always' | 'auto' | 'never' | 'collapse'
 
 export interface ChannelConfig {
   enabled: boolean
@@ -38,7 +38,7 @@ export interface CanHandleInput {
 }
 
 const EMPTY: AccessFile = { users: {}, channels: {} }
-const VALID_THINKING_MODES: ThinkingMode[] = ['always', 'auto', 'never']
+const VALID_THINKING_MODES: ThinkingMode[] = ['always', 'auto', 'never', 'collapse']
 
 // Default rendering/behavior flags applied when a channel is first configured
 // without explicit flag overrides, and when channelFlags() is asked about an
