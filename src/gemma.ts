@@ -664,6 +664,20 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           await m.delete().catch(err => console.error(`excess delete failed (cosmetic):`, err))
         }
       }
+
+      // Collapse thinking (Jeff 2026-06-25): render the 💭 block live, then strip it
+      // from the first message after the linger, leaving the reply. Best-effort,
+      // fire-and-forget. Matches the gpt/Claude collapse UX.
+      if (flags.thinking === 'collapse' && activeMessages.length > 0 && pieces.length > 0) {
+        const first = activeMessages[0]
+        const stripped = pieces[0]
+          .replace(/💭 \*\*Thinking:\*\*\n(?:>.*\n)*\n?/, '')
+          .replace(/^\s+/, '')
+        if (stripped && stripped !== pieces[0]) {
+          const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 120_000
+          setTimeout(() => { first.edit(stripped).catch(() => {}) }, lingerMs)
+        }
+      }
     } else {
       // If the final reply is empty (e.g. only a react), delete the thinking messages
       for (const m of activeMessages) await m.delete().catch(() => {})

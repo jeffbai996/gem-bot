@@ -152,7 +152,8 @@ Manage everything from inside Discord — no terminal-side JSON edits required. 
 |---------|---------|
 | `/gemini allow @user` / `/gemini revoke @user` | User allowlist |
 | `/gemini channel #channel enabled require_mention` | Enable/disable in a channel; require @ mention or not |
-| `/gemini set <flag> <value> [#channel]` | Per-channel flags. `flag`: `thinking` (`always\|auto\|never`), `show_code` (`true\|false`), `verbose` (`true\|false`), `require_mention` (`true\|false` — flip the @-mention gate without re-running `/gemini channel`) |
+| `/gemini thinking always\|auto\|collapse\|never [#channel]` | When/how to render the 💭 thinking block. `auto` = Gemma decides (default); `always` = force every reply; `collapse` = show it then strip after the linger; `never` = off |
+| `/gemini set <flag> <value> [#channel]` | Per-channel flags. `flag`: `show_code` (`true\|false`), `verbose` (`true\|false`), `require_mention` (`true\|false` — flip the @-mention gate without re-running `/gemini channel`) |
 | `/gemini model <name>` | Switch the global Gemini model and auto-restart the bot. Choices include `gemini-3-flash-preview` (default), `gemini-3-pro-preview`, `gemini-3.5-flash`, `gemini-3.1-flash-lite-preview` |
 | `/gemini cache on\|off [#channel]` | Toggle server-side context caching |
 | `/gemini cache info` | Live cache details — size, hits, age, TTL, hash |

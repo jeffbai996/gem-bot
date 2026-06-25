@@ -72,14 +72,30 @@ export const geminiCommand = new SlashCommandBuilder()
   // shares semantics with cache info|ttl|flush.
   .addSubcommand(subcommand =>
     subcommand
+      .setName('thinking')
+      .setDescription('When to render the 💭 thinking block: always | auto | collapse | never.')
+      .addStringOption(option => option
+        .setName('mode')
+        .setDescription('always | auto (Gemma decides) | collapse (show then strip after a linger) | never')
+        .setRequired(true)
+        .addChoices(
+          { name: 'auto — Gemma decides per message (default)', value: 'auto' },
+          { name: 'always — force a thinking block every reply', value: 'always' },
+          { name: 'collapse — show it, then strip after the linger', value: 'collapse' },
+          { name: 'never — no thinking block', value: 'never' },
+        )
+      )
+      .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
+  )
+  .addSubcommand(subcommand =>
+    subcommand
       .setName('set')
-      .setDescription('Set a per-channel flag (thinking, show_code, verbose, require_mention). Defaults to current channel.')
+      .setDescription('Set a per-channel flag (show_code, verbose, require_mention). Thinking moved to /gemini thinking.')
       .addStringOption(option => option
         .setName('flag')
         .setDescription('Which flag to set')
         .setRequired(true)
         .addChoices(
-          { name: 'thinking — when to render the 💭 thinking block', value: 'thinking' },
           { name: 'show_code — render code/tool artifacts + 🔍 web-search', value: 'show_code' },
           { name: 'verbose — usage/timing footer + 🧠 reasoning block', value: 'verbose' },
           { name: 'require_mention — only respond when @-mentioned', value: 'require_mention' },
@@ -87,7 +103,7 @@ export const geminiCommand = new SlashCommandBuilder()
       )
       .addStringOption(option => option
         .setName('value')
-        .setDescription('thinking: always|auto|never. show_code/verbose/require_mention: true|false.')
+        .setDescription('show_code / verbose / require_mention: true|false.')
         .setRequired(true)
       )
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
@@ -225,6 +241,20 @@ interface ExtraDeps {
     // Unified per-flag setter — replaces /gemini thinking|showcode|verbose.
     // optInReply was dropped 2026-05-02 (gate behavior was confusing in
     // practice). Cache toggle stays under the cache subcommand group below.
+    if (subcommand === 'thinking') {
+      const mode = interaction.options.getString('mode', true).trim().toLowerCase()
+      const channel = interaction.options.getChannel('channel') ?? interaction.channel
+      if (!channel) {
+        return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
+      }
+      if (!['always', 'auto', 'collapse', 'never'].includes(mode)) {
+        return interaction.reply({ content: `❌ \`thinking\` must be one of: always, auto, collapse, never (got \`${mode}\`)`, ephemeral: true })
+      }
+      const updated = await access.setChannelFlags(channel.id, { thinking: mode as ThinkingMode })
+      const note = mode === 'collapse' ? ' — shown live, stripped after the linger' : ''
+      return interaction.reply({ content: `✅ <#${channel.id}> thinking = \`${updated.thinking}\`${note}.`, ephemeral: true })
+    }
+
     if (subcommand === 'set') {
       const flag = interaction.options.getString('flag', true)
       const rawValue = interaction.options.getString('value', true).trim().toLowerCase()
@@ -235,15 +265,7 @@ interface ExtraDeps {
 
       try {
         let updated
-        if (flag === 'thinking') {
-          if (!['always', 'auto', 'never'].includes(rawValue)) {
-            return interaction.reply({
-              content: `❌ \`thinking\` value must be one of: always, auto, never (got \`${rawValue}\`)`,
-              ephemeral: true
-            })
-          }
-          updated = await access.setChannelFlags(channel.id, { thinking: rawValue as ThinkingMode })
-        } else if (flag === 'show_code' || flag === 'verbose' || flag === 'require_mention') {
+        if (flag === 'show_code' || flag === 'verbose' || flag === 'require_mention') {
           // Accept canonical bool tokens. Reject anything ambiguous so the
           // user knows they typed something wrong vs. silently being parsed
           // as false.
@@ -265,7 +287,7 @@ interface ExtraDeps {
           updated = await access.setChannelFlags(channel.id, { [fieldKey]: parsed })
         } else {
           return interaction.reply({
-            content: `❌ unknown flag \`${flag}\`. Choices: thinking, show_code, verbose, require_mention. (cache toggles via \`/gemini cache on|off\`.)`,
+            content: `❌ unknown flag \`${flag}\`. Choices: show_code, verbose, require_mention. (thinking via \`/gemini thinking\`, cache via \`/gemini cache on|off\`.)`,
             ephemeral: true
           })
         }
