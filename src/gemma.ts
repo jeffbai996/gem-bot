@@ -589,19 +589,19 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     if (flags.verbose) {
       const u = meta.usage
       const respondElapsedSec = (respondElapsedMs / 1000).toFixed(1)
-      // Format: ` ↑ N · ↓ N · » Xs ` inside inline-code backticks WITH
+      // Format: ` ↑ N · ↓ N · ◷ Xs ` inside inline-code backticks WITH
       // leading + trailing space padding so iOS doesn't render the box
       // jammed flush against the closing backtick / "(edited)" badge.
-      // » (U+00BB) prefixes the elapsed-time field — clean ASCII glyph,
-      // monochrome everywhere, no iOS emoji autopromotion like ⏱ had.
+      // ◷ (U+25F7, clock face) prefixes the elapsed-time field — geometric
+      // glyph, monochrome everywhere, no iOS emoji autopromotion like ⏱ had.
       // Per-message footer is intentionally cache-agnostic — cache details
       // (size, hit count, age, TTL remaining) live behind /gemini cache info
       // so we don't pollute every reply with bookkeeping the user only checks
       // occasionally. Cache hits are still observed via lower bills, just not
       // surfaced inline.
       const tokenStr = u
-        ? `\` ↑ ${formatTokenCount(u.promptTokens)} · ↓ ${formatTokenCount(u.responseTokens)} · » ${respondElapsedSec}s \``
-        : `\` » ${respondElapsedSec}s — no usage data \``
+        ? `\` ↑ ${formatTokenCount(u.promptTokens)} · ↓ ${formatTokenCount(u.responseTokens)} · ◷ ${respondElapsedSec}s \``
+        : `\` ◷ ${respondElapsedSec}s — no usage data \``
       const safetyStr = meta.flaggedSafety.length > 0
         ? ` ⚠️ ${meta.flaggedSafety.map(s => `${s.category.replace('HARM_CATEGORY_', '')}=${s.probability}`).join(',')}`
         : ''

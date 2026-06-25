@@ -63,7 +63,7 @@ function describeAttachment(att: HistoryAttachment): string {
 // max-token warnings, search-query block, native reasoning, etc.) before
 // feeding the bot's own past messages back into context. Without this, the
 // model pattern-matches its own footer format and starts hallucinating
-// `↑ X · ↓ Y · » Zs` lines inside its reply text — which then get appended
+// `↑ X · ↓ Y · ◷ Zs` lines inside its reply text — which then get appended
 // alongside the real footer that gemma.ts adds, producing duplicates.
 //
 // Discord's `-# ` directive is reserved for our metadata in this bot, so any
