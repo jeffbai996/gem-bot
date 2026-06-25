@@ -40,7 +40,7 @@ A single turn against Gem in a verbose-mode channel renders something like this:
 >
 > If they had cut 25bp instead: 10Y price ~+2.1% on duration alone (mod dur ~8.4, parallel shift). Real life would be messier — curve usually steepens on a cut, so the long end moves less than the short end. Call it +1.5% to +2% on the 10Y.
 >
-> ` ↑ 14,200 · ↓ 310 · » 4.2s `
+> ` ↑ 14,200 · ↓ 310 · ◷ 4.2s `
 
 The verbose blocks (🌐 / 🛠️ / 🧠 / 💭 / token+time footer) are toggleable per channel. With them off, you get just the prose reply and a token footer — the model still uses every tool, you just don't see the receipts.
 
