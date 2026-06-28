@@ -1,5 +1,8 @@
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
+import { readdirSync, statSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 import type { GeminiContent } from './history.ts'
 import type {
   ParsedResponse,
@@ -203,6 +206,202 @@ function runAgy(prompt: string, onEvent?: (e: LifecycleEvent) => void): Promise<
   })
 }
 
+// ── agy trajectory trace (thinking + tool calls) ────────────────────────────
+//
+// agy `-p` returns only the FINAL plain-text answer on stdout — no live event
+// stream — so the native path's 💭 thinking block + 🔧 tool trace went dark on
+// agy turns. But agy ALSO writes a structured trajectory per conversation at
+//   ~/.gemini/antigravity-cli/brain/<conv-id>/.system_generated/logs/transcript_full.jsonl
+// (JSONL, one step per line). That file carries the model's real reasoning
+// (`thinking`) and its tool calls (`tool_calls`) on the PLANNER_RESPONSE steps.
+// We snapshot the set of trajectory files+mtimes BEFORE launching agy, then
+// after it returns find THIS run's trajectory (new or freshest-since-snapshot)
+// and parse it. This is POST-HOC (parse-after-return), exactly how Operator's
+// operator_agent.py does it — agy `-p` is one blocking call, and gemma.ts
+// renders the thinking block from the FINAL parsed result + does a final
+// flushStream() after respondViaAgy returns, so post-hoc emission lands in the
+// same render path the native gemini path uses (no live-tail needed). The
+// snapshot-before / find-freshest-after / parse-planner-steps approach mirrors
+// an existing Python reference implementation that drives agy the same way.
+
+const AGY_BRAIN_DIR =
+  process.env.GEMMA_AGY_BRAIN_DIR ||
+  join(homedir(), '.gemini', 'antigravity-cli', 'brain')
+
+// A trajectory step from transcript_full.jsonl. Only the fields we read.
+interface AgyTrajStep {
+  step_index?: number
+  source?: string
+  type?: string
+  thinking?: string
+  tool_calls?: Array<{ name?: string; args?: Record<string, unknown> }>
+  content?: string
+}
+
+// The structured result of parsing a run's trajectory: the model's real
+// reasoning text (joined across planner steps) + the ordered tool-call names
+// (mapped to display names). Empty/null when nothing was found.
+interface AgyTrajParse {
+  thinking: string | null
+  toolNames: string[]
+}
+
+// Map an agy tool name (+ args) to a human display name for the 🔧 trace,
+// mirroring operator_agent's _action_label intent. agy's planner tool_calls
+// carry a real tool name (run_command, browser_navigate, …) and sometimes a
+// `toolAction` label in args. Keep it simple: known map → gerund-from-verb →
+// the raw name. The display name only feeds the tool_call_start/end events
+// (which drive the transient 🔧 reaction); precision matters less than that
+// SOMETHING fires, so a sensible fallback is fine.
+const AGY_TOOL_LABELS: Record<string, string> = {
+  run_command: 'Running command',
+  browser_navigate: 'Browsing',
+  browser_click: 'Clicking',
+  browser_type: 'Typing',
+  browser_snapshot: 'Reading',
+  browser_take_screenshot: 'Screenshot',
+  web_search: 'Searching',
+  search: 'Searching',
+  read_file: 'Reading file',
+  write_file: 'Writing file',
+  recall: 'Recalling',
+}
+
+function agyToolDisplayName(
+  name: string,
+  args: Record<string, unknown> | undefined
+): string {
+  const bare = (name || '').toLowerCase().replace(/^mcp__[^_]+__/, '')
+  if (AGY_TOOL_LABELS[bare]) return AGY_TOOL_LABELS[bare]
+  // agy sometimes hands a human label on the call args.
+  const ta = args && typeof args === 'object' ? args : {}
+  const label =
+    (typeof ta.toolAction === 'string' && ta.toolAction.trim()) ||
+    (typeof ta.toolSummary === 'string' && ta.toolSummary.trim()) ||
+    ''
+  if (label) return label
+  return name || 'tool'
+}
+
+// Snapshot {trajectory_path -> mtimeMs} under the brain dir BEFORE launching agy,
+// so we can identify THIS run's trajectory afterward (the new-or-freshest one).
+// Best-effort: a missing brain dir / unreadable conv just yields fewer entries.
+function snapshotAgyTrajectories(): Map<string, number> {
+  const out = new Map<string, number>()
+  let convs: string[]
+  try {
+    convs = readdirSync(AGY_BRAIN_DIR)
+  } catch {
+    return out // brain dir doesn't exist yet (first ever run) → empty snapshot
+  }
+  for (const conv of convs) {
+    const tp = join(
+      AGY_BRAIN_DIR,
+      conv,
+      '.system_generated',
+      'logs',
+      'transcript_full.jsonl'
+    )
+    try {
+      out.set(tp, statSync(tp).mtimeMs)
+    } catch {
+      // no transcript for this conv (yet) — skip
+    }
+  }
+  return out
+}
+
+// Find THIS run's transcript_full.jsonl: a path that's NEW since the pre-launch
+// snapshot, or whose mtime advanced. Falls back to the globally-freshest if
+// nothing looks new. Mirrors operator_agent._agy_find_trajectory. Returns null
+// when the brain dir holds no trajectories at all.
+function findAgyTrajectory(before: Map<string, number>): string | null {
+  const now = snapshotAgyTrajectories()
+  let best: string | null = null
+  let bestM = -Infinity
+  // Prefer paths that are new or whose mtime advanced past the snapshot.
+  for (const [p, m] of now) {
+    const prev = before.get(p)
+    if (prev === undefined || m > prev) {
+      if (m > bestM) { bestM = m; best = p }
+    }
+  }
+  if (best) return best
+  // Nothing "changed" — take the freshest overall (best-effort).
+  for (const [p, m] of now) {
+    if (m > bestM) { bestM = m; best = p }
+  }
+  return best
+}
+
+// Parse a run's trajectory JSONL into { thinking, toolNames }, ordered by
+// step_index. Extracts `thinking` from every PLANNER_RESPONSE (MODEL source)
+// and the `tool_calls` they carry. Mirrors operator_agent._agy_parse_trajectory:
+// the planner tool_calls are the AUTHORITATIVE action list; we suppress the
+// standalone RUN_COMMAND echo steps when any planner already carried tool_calls
+// (else a tool call shows twice). USER_INPUT / CONVERSATION_HISTORY / CHECKPOINT
+// are skipped (non-MODEL source). Best-effort: any error → empty parse, and the
+// caller falls back to the current behavior.
+function parseAgyTrajectory(path: string): AgyTrajParse {
+  const empty: AgyTrajParse = { thinking: null, toolNames: [] }
+  let raw: string
+  try {
+    raw = readFileSync(path, 'utf8')
+  } catch {
+    return empty
+  }
+  const steps: AgyTrajStep[] = []
+  for (const line of raw.split('\n')) {
+    const t = line.trim()
+    if (!t) continue
+    try {
+      steps.push(JSON.parse(t) as AgyTrajStep)
+    } catch {
+      // tolerate a partial/torn final line (the file is written live)
+    }
+  }
+  if (!steps.length) return empty
+  steps.sort((a, b) => (a.step_index ?? 0) - (b.step_index ?? 0))
+
+  const anyPlannerTools = steps.some(
+    (s) =>
+      s.source === 'MODEL' &&
+      s.type === 'PLANNER_RESPONSE' &&
+      Array.isArray(s.tool_calls) &&
+      s.tool_calls.length > 0
+  )
+
+  const thinkingChunks: string[] = []
+  const toolNames: string[] = []
+  for (const s of steps) {
+    if (s.source !== 'MODEL') continue // skip USER_INPUT / CONVERSATION_HISTORY / CHECKPOINT
+    if (s.type === 'PLANNER_RESPONSE') {
+      if (typeof s.thinking === 'string' && s.thinking.trim()) {
+        thinkingChunks.push(s.thinking.trim())
+      }
+      for (const tc of s.tool_calls ?? []) {
+        if (!tc || typeof tc !== 'object') continue
+        toolNames.push(agyToolDisplayName(tc.name ?? '', tc.args))
+      }
+      // s.content on the final planner is the answer text — we DON'T use it here;
+      // the {thinking,reply} JSON from stdout (parse()) is the reply source of
+      // truth. This parse only ADDS the real thinking + tool trace.
+    } else if (!anyPlannerTools) {
+      // No planner carried tool_calls in this run → surface standalone MODEL
+      // non-planner steps (RUN_COMMAND, or a future browser/MCP step) as tools
+      // so the 🔧 trace still fires. (When planners DID carry tool_calls, these
+      // are just execution echoes — suppress to avoid duplicates.)
+      if (typeof s.type === 'string') {
+        toolNames.push(agyToolDisplayName(s.type, undefined))
+      }
+    }
+  }
+  return {
+    thinking: thinkingChunks.length ? thinkingChunks.join('\n\n') : null,
+    toolNames,
+  }
+}
+
 // Run a chat turn through the Antigravity CLI (`agy`) instead of the Gemini
 // API. Returns a RespondResult shaped exactly like GeminiClient.respond(), so
 // the gemma.ts callsite consumes { parsed, meta } interchangeably. THROWS on any
@@ -215,13 +414,53 @@ export async function respondViaAgy(
   input: AgyChatInput,
   parse: (text: string) => ParsedResponse,
 ): Promise<RespondResult> {
-  // agy -p has no live tool trace; emit a generic thinking→done pair so the
-  // gemma.ts lifecycle (👀→🤔→✅) still advances on this path.
+  // Signal that thinking has started so the gemma.ts lifecycle (👀→🤔→✅) still
+  // advances on this path. The trajectory parse below restores the real thinking
+  // TEXT + tool trace (the native path's 💭 block + 🔧 events) post-hoc.
   input.onEvent?.({ type: 'native_thinking' })
+
+  // Snapshot existing trajectory files+mtimes BEFORE launch so we can pick out
+  // THIS run's transcript afterward (Operator's approach — see the block above).
+  const trajBefore = snapshotAgyTrajectories()
 
   const prompt = buildPrompt(input)
   const text = await runAgy(prompt, input.onEvent)
   const parsed = parse(text)
+
+  // POST-HOC trace restore. agy `-p` is a single blocking call; it writes the
+  // trajectory DURING the run, so once it returns we read the finished file.
+  // gemma.ts renders the 💭 thinking block from the FINAL parsed.thinking and
+  // does one last flushStream() AFTER this function returns, so feeding the
+  // trajectory thinking into parsed.thinking here lands in the exact same render
+  // path the native gemini path uses — no special-casing in gemma.ts. The
+  // tool_call_start/end events drive the transient 🔧 reaction (also shared with
+  // the native path). All best-effort: a missing/unparseable trajectory leaves
+  // the current behavior untouched (never crashes the turn).
+  try {
+    const trajPath = findAgyTrajectory(trajBefore)
+    if (trajPath) {
+      const traj = parseAgyTrajectory(trajPath)
+      // Emit a start/end pair per tool call so the 🔧 trace fires on agy turns,
+      // exactly like gemini.ts emits at its dispatch site. (No failure signal in
+      // the trajectory — these are completed calls — so failed:false.)
+      for (const name of traj.toolNames) {
+        input.onEvent?.({ type: 'tool_call_start', name })
+        input.onEvent?.({ type: 'tool_call_end', name, failed: false })
+      }
+      // Restore the real reasoning. Prefer the trajectory's thinking (the model's
+      // actual chain-of-thought across planner steps) over the {thinking} the
+      // JSON envelope may carry — that envelope field is a persona scratchpad,
+      // whereas this is the genuine streamed reasoning we're restoring. Only
+      // fall through to the envelope value when the trajectory had none.
+      if (traj.thinking) {
+        parsed.thinking = traj.thinking
+      }
+    }
+  } catch (e) {
+    // Trace restore is additive + best-effort: on any failure keep the plain
+    // parsed reply rather than poisoning the turn.
+    console.error('[agy] trajectory trace parse failed (non-fatal):', e instanceof Error ? e.message : e)
+  }
 
   // Empty answer after a clean exit → treat as failure so we fall back to the
   // API. parseResponse never throws, but it can return an all-null parse if the
