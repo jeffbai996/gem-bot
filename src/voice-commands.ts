@@ -4,33 +4,42 @@
  * Just two subcommands: join (bot follows you into your current vc),
  * leave (bot disconnects).
  */
-import { SlashCommandBuilder, ChatInputCommandInteraction, GuildMember } from 'discord.js'
+import { SlashCommandBuilder, SlashCommandSubcommandsOnlyBuilder, ChatInputCommandInteraction, GuildMember } from 'discord.js'
 import type { VoiceManager } from './voice.ts'
 import type { PersonaLoader } from './persona.ts'
 import { VOICE_CHOICES, setVoicePref } from './voice-pref.ts'
 
-export const voiceCommand = new SlashCommandBuilder()
-  .setName('voice')
-  .setDescription('Bring Gem into a voice channel for a live conversation')
-  .addSubcommand(s =>
-    s.setName('call').setDescription('Live mic↔voice conversation in your current vc')
-  )
-  .addSubcommand(s =>
-    s.setName('speak').setDescription('Join your vc; type here and Gem reads her replies aloud')
-  )
-  .addSubcommand(s =>
-    s.setName('leave').setDescription('Disconnect from the voice channel')
-  )
-  .addSubcommand(s =>
-    s.setName('type')
-      .setDescription("Pick Gem's voice (applies to speak + call)")
-      .addStringOption(o =>
-        o.setName('voice')
-          .setDescription('Which voice Gem speaks in')
-          .setRequired(true)
-          .addChoices(...VOICE_CHOICES.map(v => ({ name: v.label, value: v.value })))
+// Voice now lives UNDER /gemini as a `voice` subcommand group (de-collide from
+// other bots' top-level /voice). This attaches `/gemini voice <call|speak|leave|
+// type>` onto the existing /gemini command builder. Mirrors gpt-bot's
+// addVoiceGroup. The handler (executeVoiceCommand) is unchanged — it reads
+// getSubcommand(), which returns the inner verb under a group exactly as it did
+// at the top level.
+export function addVoiceGroup(cmd: SlashCommandBuilder | SlashCommandSubcommandsOnlyBuilder): void {
+  cmd.addSubcommandGroup(g =>
+    g.setName('voice')
+      .setDescription('Bring Gem into a voice channel for a live conversation')
+      .addSubcommand(s =>
+        s.setName('call').setDescription('Live mic↔voice conversation in your current vc')
+      )
+      .addSubcommand(s =>
+        s.setName('speak').setDescription('Join your vc; type here and Gem reads her replies aloud')
+      )
+      .addSubcommand(s =>
+        s.setName('leave').setDescription('Disconnect from the voice channel')
+      )
+      .addSubcommand(s =>
+        s.setName('type')
+          .setDescription("Pick Gem's voice (applies to speak + call)")
+          .addStringOption(o =>
+            o.setName('voice')
+              .setDescription('Which voice Gem speaks in')
+              .setRequired(true)
+              .addChoices(...VOICE_CHOICES.map(v => ({ name: v.label, value: v.value })))
+          )
       )
   )
+}
 
 export async function executeVoiceCommand(
   interaction: ChatInputCommandInteraction,

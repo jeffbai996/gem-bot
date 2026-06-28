@@ -10,7 +10,7 @@ import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGr
 import { respondViaAgy } from './agy-chat.ts'
 import { chunk } from './chunk.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
-import { voiceCommand, executeVoiceCommand } from './voice-commands.ts'
+import { addVoiceGroup, executeVoiceCommand } from './voice-commands.ts'
 import { VoiceManager } from './voice.ts'
 import { insertMessage } from './db.ts'
 import { shouldEmbed } from './embed-throttle.ts'
@@ -153,6 +153,12 @@ const client = new Client({
 const voiceManager = new VoiceManager(client)
 voiceManager.attach()
 
+// Attach `/gemini voice <call|speak|leave|type>` onto the /gemini command
+// builder. Voice used to be a standalone /voice — moved under /gemini to
+// de-collide with other bots' /voice in shared guilds (Jeff). Must run before
+// the client.once('ready') registration below so the JSON carries the group.
+addVoiceGroup(geminiCommand)
+
 // Speak-mode barge-in: the in-flight turn's AbortController, keyed by channel.
 // When a new /voice speak message arrives while the previous one is still being
 // generated or spoken, we abort the old generation and cancel its audio so the
@@ -172,7 +178,10 @@ client.once('ready', async () => {
     const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN)
     await rest.put(
       Routes.applicationCommands(client.user!.id),
-      { body: [geminiCommand.toJSON(), voiceCommand.toJSON()] }
+      // Voice is now a subcommand group ON geminiCommand (see addVoiceGroup
+      // above), so only the single /gemini command is registered — the old
+      // top-level /voice is gone (de-collided).
+      { body: [geminiCommand.toJSON()] }
     )
     console.error('Slash commands registered.')
   } catch (error) {
@@ -183,23 +192,28 @@ client.once('ready', async () => {
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return
 
-  if (interaction.commandName === 'gemini') {
-    const adminId = process.env.DISCORD_ADMIN_ID
-    await executeGeminiCommand(interaction, access, persona, gemini, adminId, {
-      summaryStore,
-      summarizer,
-    })
-  } else if (interaction.commandName === 'voice') {
-    // Voice is gated by the same allowlist as text (access.json users), so
-    // "who can voice" tracks "who can text". The summoner becomes the
-    // gem-voice session owner (it routes audio to whoever this gate admits),
-    // so no separate owner-id env needs to agree anymore.
+  if (interaction.commandName !== 'gemini') return
+
+  // /gemini voice <call|speak|leave|type> — the voice subcommand group routes
+  // to the voice handler. Everything else (incl. the `cache` group) goes to the
+  // main /gemini handler. Voice is gated by the same allowlist as text
+  // (access.json users), so "who can voice" tracks "who can text". The summoner
+  // becomes the gem-voice session owner (it routes audio to whoever this gate
+  // admits), so no separate owner-id env needs to agree.
+  if (interaction.options.getSubcommandGroup(false) === 'voice') {
     await executeVoiceCommand(
       interaction, voiceManager, persona,
       (uid) => access.isUserAllowed(uid),
       toolRegistry, gemini,
     )
+    return
   }
+
+  const adminId = process.env.DISCORD_ADMIN_ID
+  await executeGeminiCommand(interaction, access, persona, gemini, adminId, {
+    summaryStore,
+    summarizer,
+  })
 })
 
 interface HandleOpts {
