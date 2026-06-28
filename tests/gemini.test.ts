@@ -9,8 +9,28 @@ import {
   extractUsage,
   extractFlaggedSafety,
   formatSystemPrompt,
-  selectFunctionCallPart
+  selectFunctionCallPart,
+  GeminiClient
 } from '../src/gemini.ts'
+
+describe('respond() barge-in abort', () => {
+  test('throws AbortError before any API call when signal is already aborted', async () => {
+    // The full-barge-in guard must short-circuit BEFORE network/cache work, so a
+    // turn that was preempted the instant it started spends nothing. We pass an
+    // already-aborted signal and assert respond() rejects with AbortError — the
+    // dummy key never gets used because we never reach the SDK.
+    const client = new GeminiClient('dummy-key', 'gemini-3-flash-preview', null as any)
+    const ac = new AbortController()
+    ac.abort()
+    await assert.rejects(
+      () => client.respond(
+        { systemPrompt: 'p', history: [], userMessageText: 'hi', userName: 'u', channelId: 'c', userId: 'x' } as any,
+        undefined, undefined, ac.signal,
+      ),
+      (e: any) => e?.name === 'AbortError',
+    )
+  })
+})
 
 describe('extractModelText', () => {
   test('returns empty string for undefined parts', () => {

@@ -457,6 +457,26 @@ export class VoiceManager extends EventEmitter {
     }
   }
 
+  /** Full barge-in for speak mode: a new message arrived mid-turn, so silence
+   *  whatever Gem is currently saying NOW — before the replacement reply is even
+   *  synthesized. Tells gem-voice to cancel the in-flight `say` (which also emits
+   *  an audio_flush back to us) AND flushes our own playback immediately so the
+   *  old audio stops mid-word instead of draining the jitter bank. Safe to call
+   *  with nothing playing (gem-voice reports cancelled=false; flush is a no-op).
+   *  No-op outside an active speak session. */
+  async cancelSay(): Promise<void> {
+    if (this.mode !== 'speak' || !this.connection) return
+    // Stop our side first so playback halts the instant the user barges in,
+    // without waiting on the IPC round-trip. The daemon's audio_flush will
+    // arrive too, but flushing twice is harmless (idempotent).
+    this.flushPlayback()
+    try {
+      await this.sendIpcRequest({ action: 'cancel_say' })
+    } catch (e: unknown) {
+      console.error('[voice] cancel_say failed:', e instanceof Error ? e.message : String(e))
+    }
+  }
+
   /** Speak-mode "thinking tone": start a soft blip loop in gem-voice while the
    *  chat model generates the reply, so the vc isn't dead-silent during the
    *  processing gap (like a voice assistant's "still thinking" cue). The real

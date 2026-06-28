@@ -152,6 +152,14 @@ const client = new Client({
 const voiceManager = new VoiceManager(client)
 voiceManager.attach()
 
+// Speak-mode barge-in: the in-flight turn's AbortController, keyed by channel.
+// When a new /voice speak message arrives while the previous one is still being
+// generated or spoken, we abort the old generation and cancel its audio so the
+// new message takes over immediately (full barge-in). One entry per speak
+// channel — speak mode is single-session, but keying by channel keeps it
+// correct if that ever changes.
+const speakTurnControllers = new Map<string, AbortController>()
+
 client.once('ready', async () => {
   console.error(`Gem online as ${client.user?.tag} (${client.user?.id})`)
   client.user?.setPresence({
@@ -273,6 +281,9 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // alongside a new error reply (seen 2026-05-01: thought_signature crash
   // left a dangling Thinking... message above the actual error).
   let activeMessages: Message[] = []
+  // This speak-mode turn's abort signal (set below if we're speaking to a vc).
+  // Declared out here so the catch/finally can read it for barge-in cleanup.
+  let turnSignal: AbortSignal | undefined
 
   try {
     // Fetch partial DM channels so we can send/read them
@@ -406,13 +417,29 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         // anyway, and a tool ending mid-turn just means we keep going.
       }
     }
-    // Speak mode: start the soft "thinking tone" now — the chat model's about to
-    // churn for a beat, so fill the vc silence. The real answer's say() cuts it
-    // off; gem-voice self-stops after a safety max if no say ever lands.
-    if (voiceManager.isSpeakingTo(message)) voiceManager.startThinking()
+    // Speak-mode FULL BARGE-IN. If this message is being spoken to a vc and a
+    // previous turn for this channel is still in flight — generating OR already
+    // speaking — preempt it: abort the old generation and cut its audio NOW, so
+    // this message takes over instead of waiting behind it. Then arm a fresh
+    // AbortController so the NEXT message can barge in on us the same way.
+    const speaking = voiceManager.isSpeakingTo(message)
+    if (speaking) {
+      const prior = speakTurnControllers.get(message.channelId)
+      if (prior && !prior.signal.aborted) {
+        prior.abort()                       // stop the old generation mid-stream
+        await voiceManager.cancelSay()      // cut the old audio + flush playback
+      }
+      const controller = new AbortController()
+      speakTurnControllers.set(message.channelId, controller)
+      turnSignal = controller.signal
+      // Start the soft "thinking tone" now — the chat model's about to churn for
+      // a beat, so fill the vc silence. The real answer's say() cuts it off;
+      // gem-voice self-stops after a safety max if no say ever lands.
+      voiceManager.startThinking()
+    }
     const { parsed, meta } = await gemini.respond({
       systemPrompt: persona.buildSystemPrompt(message.channelId, message.guildId)
-        + (voiceManager.isSpeakingTo(message) ? SPOKEN_MODE_INSTRUCTION : ''),
+        + (speaking ? SPOKEN_MODE_INSTRUCTION : ''),
       history,
       userMessageText: userText,
       userMediaParts: allParts,
@@ -424,7 +451,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       cacheTtlSec: flags.cacheTtlSec ?? undefined,
     }, (partial) => {
       latestParsed = partial
-    }, onLifecycleEvent)
+    }, onLifecycleEvent, turnSignal)
     const respondElapsedMs = Date.now() - respondT0
 
     if (streamInterval) {
@@ -568,7 +595,12 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // author is co-present in the launch channel, ALSO read the prose reply
     // aloud via gem-voice TTS. Purely additive — the text reply + thinking
     // trace above are unchanged. Fire-and-forget so it doesn't block the render.
-    if (replyText && voiceManager.isSpeakingTo(message)) {
+    // Barge-in guard: only speak if THIS turn is still the current one for the
+    // channel and wasn't aborted — otherwise a newer message already took over
+    // and speaking now would talk over it.
+    const stillCurrent = !turnSignal
+      || (!turnSignal.aborted && speakTurnControllers.get(message.channelId)?.signal === turnSignal)
+    if (replyText && speaking && stillCurrent) {
       voiceManager.sayText(replyText).then(r => {
         if (!r.ok) console.error('[voice] speak-mode sayText failed:', r.error)
       }).catch(e => console.error('[voice] speak-mode sayText threw:', e))
@@ -691,6 +723,17 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     summarizer.scheduleIfNeeded(message.channelId)
 
   } catch (e: any) {
+    // Barge-in: this turn was deliberately aborted because a newer /voice speak
+    // message arrived. Not an error — exit clean. Strip the transient lifecycle
+    // reactions + the "💭 Thinking..." placeholder so no orphan is left behind;
+    // the newer turn owns the channel now. No error message, no say().
+    if (e?.name === 'AbortError') {
+      console.log(`[voice] turn superseded by barge-in (channel=${message.channelId})`)
+      applyLifecycle(message, 'silenced').catch(() => {})
+      for (const m of activeMessages) await m.delete().catch(() => {})
+      activeMessages = []
+      return
+    }
     console.error('message handler error:', e)
     // Match explicit rate-limit language only. The naive /rate/i matched
     // "generateContent" in every Gemini URL, causing unrelated 400s to look
@@ -731,6 +774,13 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   } finally {
     if (typingInterval) clearInterval(typingInterval)
     if (streamInterval) clearInterval(streamInterval)
+    // Drop this turn's barge-in controller, but ONLY if it's still the current
+    // one — a newer message may have already replaced it in the map (that turn
+    // owns cleanup of its own controller). Guards against a finishing old turn
+    // wiping the active turn's abort handle.
+    if (turnSignal && speakTurnControllers.get(message.channelId)?.signal === turnSignal) {
+      speakTurnControllers.delete(message.channelId)
+    }
   }
 }
 

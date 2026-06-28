@@ -788,7 +788,8 @@ export class GeminiClient {
     cachedContentName: string | null,
     onProgress?: (partial: ParsedResponse) => void,
     onEvent?: (e: LifecycleEvent) => void,
-    forceNoTools: boolean = false
+    forceNoTools: boolean = false,
+    signal?: AbortSignal
   ): Promise<{
     functionCall: any | null
     // The FULL model part that carried the functionCall, captured verbatim
@@ -806,10 +807,14 @@ export class GeminiClient {
     // preserve the original media in activeContents.
     const dropCodeExec = contentsHaveAudioVideo(activeContents)
     const config = this.buildCallConfig(systemText, dropCodeExec, cachedContentName, forceNoTools)
+    // Thread the abort signal into the SDK call (@google/genai reads
+    // config.abortSignal). When the caller aborts mid-turn — full barge-in in
+    // speak mode — the streamed `for await` below throws AbortError, which
+    // respond() treats as a clean cancellation rather than a model error.
     const params = {
       model: this.modelName,
       contents: activeContents,
-      config,
+      config: signal ? { ...config, abortSignal: signal } : config,
     }
 
     if (onProgress) {
@@ -925,8 +930,13 @@ export class GeminiClient {
   async respond(
     args: BuildRequestArgs,
     onProgress?: (partial: ParsedResponse) => void,
-    onEvent?: (e: LifecycleEvent) => void
+    onEvent?: (e: LifecycleEvent) => void,
+    signal?: AbortSignal
   ): Promise<RespondResult> {
+    // Full barge-in (speak mode): a newer message can abort this whole
+    // generation mid-flight. Bail before any API spend if we're already aborted,
+    // and pass the signal down so the SDK stream itself gets cancelled.
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
     const userTurn = buildUserTurn(args)
     const systemText = formatSystemPrompt(args.systemPrompt, args.thinkingMode ?? 'auto')
 
@@ -965,10 +975,16 @@ export class GeminiClient {
     // a polite "couldn't find that" message.
     const MAX_TOOL_ITERATIONS = 5
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+      // Bail between tool iterations too — a barge-in during a multi-turn tool
+      // loop should stop the whole thing, not just the current API call.
+      if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
       let turn
       try {
-        turn = await this.runOneTurn(systemText, activeContents, cachedContentName, onProgress, onEvent)
+        turn = await this.runOneTurn(systemText, activeContents, cachedContentName, onProgress, onEvent, false, signal)
       } catch (e: any) {
+        // An abort is a clean cancellation, never a cache problem — let it
+        // propagate untouched (don't retry the turn).
+        if (e?.name === 'AbortError') throw e
         // Self-heal a stale cached-content handle. If the server-side cache
         // expired/evicted out from under us it returns 403 "CachedContent not
         // found"; drop the dead ref, fall back to an uncached call, and retry
@@ -977,7 +993,7 @@ export class GeminiClient {
         if (cachedContentName && /CachedContent not found|PERMISSION_DENIED/i.test(msg)) {
           this.cacheManager.dropByName(cachedContentName)
           cachedContentName = null
-          turn = await this.runOneTurn(systemText, activeContents, null, onProgress, onEvent)
+          turn = await this.runOneTurn(systemText, activeContents, null, onProgress, onEvent, false, signal)
         } else {
           throw e
         }
@@ -1104,7 +1120,7 @@ export class GeminiClient {
           },
         ]
         const forced = await this.runOneTurn(
-          systemText, forceContents, null, onProgress, onEvent, /* forceNoTools */ true
+          systemText, forceContents, null, onProgress, onEvent, /* forceNoTools */ true, signal
         )
         finalParsed = parseResponse(forced.text)
         const parts = forced.candidate?.content?.parts as any[] | undefined
