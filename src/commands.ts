@@ -97,8 +97,8 @@ export const geminiCommand = new SlashCommandBuilder()
       .setDescription('Set this channel chat engine: agy (flat sub) | api (metered) | default (env).')
       .addStringOption(option => option
         .setName('value')
-        .setDescription('agy | api | default')
-        .setRequired(true)
+        .setDescription('omit to show current engine; else agy | api | default')
+        .setRequired(false)
         .addChoices(
           { name: 'agy — Antigravity CLI / flat Google sub (no tool-trace)', value: 'agy' },
           { name: 'api — metered Gemini API (full tools + grounding + trace)', value: 'api' },
@@ -283,10 +283,19 @@ interface ExtraDeps {
     // is the null sentinel: it clears the per-channel override so the
     // GEMMA_AGY_CHAT env default takes over. Mirrors gpt-bot's /gpt engine.
     if (subcommand === 'engine') {
-      const value = interaction.options.getString('value', true).trim().toLowerCase()
+      const value = interaction.options.getString('value')?.trim().toLowerCase()
       const channel = interaction.options.getChannel('channel') ?? interaction.channel
       if (!channel) {
         return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
+      }
+      // No value → show the channel's CURRENT effective engine: the per-channel
+      // pick if set, else the GEMMA_AGY_CHAT env default, labeled "(env default)".
+      // Mirrors the /gemini model no-arg display path above.
+      if (!value) {
+        const envDefault = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
+        const pick = access.channelFlags(channel.id).engine
+        const effective = pick ?? `${envDefault} (env default)`
+        return interaction.reply({ content: `🔌 <#${channel.id}> chat engine: \`${effective}\``, ephemeral: true })
       }
       if (!['agy', 'api', 'default'].includes(value)) {
         return interaction.reply({ content: `❌ \`engine\` must be one of: agy, api, default (got \`${value}\`)`, ephemeral: true })
