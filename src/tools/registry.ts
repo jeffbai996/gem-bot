@@ -1,4 +1,5 @@
 import type { FunctionDeclaration } from '@google/genai'
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import type { GeminiClient } from '../gemini.ts'
 
 export interface ToolContext {
@@ -16,6 +17,10 @@ export interface Tool {
 export class ToolRegistry {
   private tools: Map<string, Tool> = new Map()
   private order: string[] = []
+  // Optional MCP client backing the IBKR tools. Held so callers can close its
+  // transport on shutdown — an unclosed StreamableHTTP transport keeps the Node
+  // event loop alive (which is exactly why the registry test used to hang).
+  private mcpClient: Client | null = null
 
   register(tool: Tool): void {
     if (this.tools.has(tool.name)) {
@@ -46,5 +51,25 @@ export class ToolRegistry {
     } catch (e: any) {
       return `Error in ${name}: ${e?.message ?? String(e)}`
     }
+  }
+
+  // Record the MCP client whose transport must be closed to release the event
+  // loop. buildDefaultRegistry sets this when it connects to the IBKR MCP server.
+  setMcpClient(client: Client): void {
+    this.mcpClient = client
+  }
+
+  // Close any backing MCP transport. The long-lived bot relies on process exit
+  // and never calls this, but tests (and any future graceful shutdown) need it
+  // so the open HTTP transport doesn't pin the event loop. Best-effort: a close
+  // failure is swallowed so teardown never throws.
+  async close(): Promise<void> {
+    if (!this.mcpClient) return
+    try {
+      await this.mcpClient.close()
+    } catch {
+      /* already closed / transport gone — nothing to do */
+    }
+    this.mcpClient = null
   }
 }

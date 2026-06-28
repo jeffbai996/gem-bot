@@ -24,6 +24,10 @@ export async function buildDefaultRegistry(): Promise<ToolRegistry> {
     const client = await connectMcpClient(ibkrUrl)
     const tools = await loadIbkrTools(client)
     for (const t of tools) r.register(t)
+    // Hand the registry the live client so its transport can be closed on
+    // shutdown (and so tests can release the event loop — an unclosed
+    // StreamableHTTP transport otherwise keeps Node alive forever).
+    r.setMcpClient(client)
     console.error(`[ibkr] registered ${tools.length} tools from MCP at ${ibkrUrl}`)
   } catch (e: any) {
     console.error(`[ibkr] MCP connect failed at ${ibkrUrl}: ${e?.message ?? e}. Registering fallback stub.`)
