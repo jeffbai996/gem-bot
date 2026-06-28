@@ -31,7 +31,8 @@ export const EMOJI = {
   received:        '👀',
   ingesting:       '📎',
   thinking:        '🤔',
-  native_thinking: '🧠',
+  native_thinking: '',   // was 🧠 — collapsed into 🤔 so thinking doesn't show two emojis
+
   searching:       '🌐',
   tooling:         '🔧',
   delegating:      '🤖',  // reserved — not currently fired by Gemma
