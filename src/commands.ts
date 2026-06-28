@@ -8,6 +8,21 @@ import { GeminiCacheManager } from './cache.ts'
 import { insertMessage } from './db.ts'
 import { rewriteEnvVar, scheduleSelfRestart } from './restart.ts'
 
+// Valid agy `--model` display strings (from `agy models`). The /gemini model
+// `agy_model` choice list is built from this, and the handler re-validates
+// against it so an API-style id (e.g. gemini-3-flash-preview) can never be
+// written as the agy model — agy's --model only accepts these display strings.
+// Add new tiers here when `agy models` grows.
+const VALID_AGY_MODELS: string[] = [
+  'Gemini 3.5 Flash (Medium)',
+  'Gemini 3.5 Flash (High)',
+  'Gemini 3.5 Flash (Low)',
+  'Gemini 3.1 Pro (Low)',
+  'Gemini 3.1 Pro (High)',
+  'Claude Sonnet 4.6 (Thinking)',
+  'Claude Opus 4.6 (Thinking)',
+]
+
 export const geminiCommand = new SlashCommandBuilder()
   .setName('gemini')
   .setDescription('Admin controls for the Gem bot')
@@ -45,16 +60,50 @@ export const geminiCommand = new SlashCommandBuilder()
   .addSubcommand(subcommand =>
     subcommand
       .setName('model')
-      .setDescription('Switch the active Gemini model (auto-restarts gemma)')
+      .setDescription('Switch the api OR agy model (auto-restarts gemma)')
+      // Which engine's model to rewrite. api → GEMINI_MODEL (native API engine);
+      // agy → GEMMA_AGY_MODEL (Antigravity CLI engine). Omit and it defaults to
+      // the current channel's engine pick (or api when ambiguous). No-arg /gemini
+      // model (no engine, no value) shows BOTH current models.
+      .addStringOption(option => option
+        .setName('engine')
+        .setDescription('which engine model to set: api (GEMINI_MODEL) | agy (GEMMA_AGY_MODEL). Default: channel engine.')
+        .setRequired(false)
+        .addChoices(
+          { name: 'api — the metered Gemini API model (GEMINI_MODEL)', value: 'api' },
+          { name: 'agy — the Antigravity CLI flat-sub model (GEMMA_AGY_MODEL)', value: 'agy' },
+        )
+      )
+      // The API model id (engine=api). Pinned to known-good Gemini ids — the
+      // namespace mutates (deprecations, alias renames), so we don't accept
+      // arbitrary strings. Add entries here as new models qualify.
       .addStringOption(option => option
         .setName('id')
-        .setDescription('omit to show current model; else the model to switch to')
+        .setDescription('omit to show current; the API model id to switch to (engine=api)')
         .setRequired(false)
         .addChoices(
           { name: 'gemini-3-pro-preview — strongest reasoning, ~10x cost', value: 'gemini-3-pro-preview' },
           { name: 'gemini-3.5-flash — newer, repriced ~5x ($1.50/$9.00 per 1M)', value: 'gemini-3.5-flash' },
           { name: 'gemini-3-flash-preview — balanced default', value: 'gemini-3-flash-preview' },
           { name: 'gemini-3.1-flash-lite-preview — cheapest, low-latency', value: 'gemini-3.1-flash-lite-preview' },
+        )
+      )
+      // The agy model (engine=agy). MUST be a full agy display string from
+      // `agy models`, NOT an API id — agy's --model expects exactly these. The
+      // choice list is what blocks a user from setting an API-style id as the
+      // agy model (the handler also re-validates against this set).
+      .addStringOption(option => option
+        .setName('agy_model')
+        .setDescription('omit to show current; the agy display model to switch to (engine=agy)')
+        .setRequired(false)
+        .addChoices(
+          { name: 'Gemini 3.5 Flash (Medium) — balanced default', value: 'Gemini 3.5 Flash (Medium)' },
+          { name: 'Gemini 3.5 Flash (High) — more reasoning', value: 'Gemini 3.5 Flash (High)' },
+          { name: 'Gemini 3.5 Flash (Low) — fastest/cheapest', value: 'Gemini 3.5 Flash (Low)' },
+          { name: 'Gemini 3.1 Pro (Low) — Pro tier, lighter', value: 'Gemini 3.1 Pro (Low)' },
+          { name: 'Gemini 3.1 Pro (High) — Pro tier, strongest', value: 'Gemini 3.1 Pro (High)' },
+          { name: 'Claude Sonnet 4.6 (Thinking)', value: 'Claude Sonnet 4.6 (Thinking)' },
+          { name: 'Claude Opus 4.6 (Thinking)', value: 'Claude Opus 4.6 (Thinking)' },
         )
       )
   )
@@ -232,19 +281,81 @@ interface ExtraDeps {
       return interaction.reply({ content: `✅ Persona swapped to \`${filename}\`.`, ephemeral: true })
     }
 
-    // /gemini model — rewrite GEMINI_MODEL in the bot's .env, ack, then
-    // detach a delayed `systemctl --user restart gemma` so the new value
-    // is read on next boot. Choices in the builder pin valid IDs.
+    // /gemini model — switch EITHER engine's model. api -> rewrite GEMINI_MODEL
+    // (native API engine), agy -> rewrite GEMMA_AGY_MODEL (Antigravity CLI). Both
+    // take effect the same way: write the .env var, ack, then detach a delayed
+    // `systemctl --user restart gemma` so the new value is read on next boot.
+    // Per-channel agy model isn't threaded (it would mirror the engine pick); the
+    // env-var + restart path matches how the API model already works, so the two
+    // engines stay consistent. Choices in the builder pin valid values per engine.
     if (subcommand === 'model') {
-      const newModel = interaction.options.getString('id')
-      if (!newModel) {
-        const cur = process.env.GEMINI_MODEL || '(default \u2014 GEMINI_MODEL not set in env)'
-        return interaction.reply({ content: `\ud83e\udd16 Current Gemini model: \`${cur}\``, ephemeral: true })
+      const engineArg = interaction.options.getString('engine')?.trim().toLowerCase()
+      const apiModel = interaction.options.getString('id')
+      const agyModel = interaction.options.getString('agy_model')
+
+      // No engine + no value at all -> show BOTH current models.
+      if (!engineArg && !apiModel && !agyModel) {
+        const curApi = process.env.GEMINI_MODEL || '(default \u2014 GEMINI_MODEL not set; falls back to gemini-3-flash-preview)'
+        const curAgy = process.env.GEMMA_AGY_MODEL || '(default \u2014 GEMMA_AGY_MODEL not set; falls back to Gemini 3.5 Flash (Medium))'
+        return interaction.reply({
+          content: `\ud83e\udd16 Current models:\n\u2022 **api** (GEMINI_MODEL): \`${curApi}\`\n\u2022 **agy** (GEMMA_AGY_MODEL): \`${curAgy}\``,
+          ephemeral: true,
+        })
       }
+
+      // Resolve which engine we're setting. Explicit `engine` arg wins; else
+      // infer from the value option the user filled; else default to the current
+      // channel's engine pick (or api when ambiguous / no per-channel pick).
+      let targetEngine: ChatEngine
+      if (engineArg === 'api' || engineArg === 'agy') {
+        targetEngine = engineArg
+      } else if (apiModel && !agyModel) {
+        targetEngine = 'api'
+      } else if (agyModel && !apiModel) {
+        targetEngine = 'agy'
+      } else if (apiModel && agyModel) {
+        return interaction.reply({
+          content: '\u274c Pass either `id` (api model) or `agy_model` (agy model), not both \u2014 or set `engine` to disambiguate.',
+          ephemeral: true,
+        })
+      } else {
+        // engine given without a value: default to the current channel's engine,
+        // falling back to the GEMMA_AGY_CHAT env default, then api.
+        const chId = interaction.channel?.id
+        targetEngine = (chId ? access.channelFlags(chId).engine : null)
+          ?? (process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api')
+      }
+
+      // Pick the value + env key for the resolved engine.
+      const envKey = targetEngine === 'agy' ? 'GEMMA_AGY_MODEL' : 'GEMINI_MODEL'
+      const newModel = targetEngine === 'agy' ? agyModel : apiModel
+
+      if (!newModel) {
+        // engine chosen but no matching value -> show that engine's current model.
+        const cur = targetEngine === 'agy'
+          ? (process.env.GEMMA_AGY_MODEL || '(default \u2014 GEMMA_AGY_MODEL not set; falls back to Gemini 3.5 Flash (Medium))')
+          : (process.env.GEMINI_MODEL || '(default \u2014 GEMINI_MODEL not set; falls back to gemini-3-flash-preview)')
+        const valOpt = targetEngine === 'agy' ? 'agy_model' : 'id'
+        return interaction.reply({
+          content: `\ud83e\udd16 Current **${targetEngine}** model (${envKey}): \`${cur}\`\nPass \`${valOpt}\` to change it.`,
+          ephemeral: true,
+        })
+      }
+
+      // Guard: never let an API-style id land in the agy slot. The agy --model
+      // value must be a real `agy models` display string; the choice list already
+      // constrains the UI, but re-validate in case the option is filled raw.
+      if (targetEngine === 'agy' && !VALID_AGY_MODELS.includes(newModel)) {
+        return interaction.reply({
+          content: `\u274c \`${newModel}\` is not a valid agy model. Use a display string from \`agy models\` (e.g. \`Gemini 3.5 Flash (Medium)\`), not an API id.`,
+          ephemeral: true,
+        })
+      }
+
       const stateDir = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
       const envPath = path.join(stateDir, '.env')
       try {
-        await rewriteEnvVar(envPath, 'GEMINI_MODEL', newModel)
+        await rewriteEnvVar(envPath, envKey, newModel)
       } catch (e: any) {
         return interaction.reply({
           content: `❌ Could not write \`${envPath}\`: ${e?.message ?? e}`,
@@ -255,7 +366,7 @@ interface ExtraDeps {
       // is still alive. The detached `bash -c 'sleep ... && systemctl restart'`
       // outlives this process; systemd brings us back up reading the new env.
       await interaction.reply({
-        content: `🔁 Model set to \`${newModel}\`. Restarting in ~1.5s — back in a few seconds with the new model loaded.`,
+        content: `🔁 **${targetEngine}** model set to \`${newModel}\` (${envKey}). Restarting in ~1.5s — back in a few seconds with the new model loaded.`,
         ephemeral: true,
       })
       scheduleSelfRestart('gemma', 1500)
