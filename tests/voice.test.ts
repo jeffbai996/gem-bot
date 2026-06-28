@@ -175,4 +175,40 @@ describe('VoiceManager IPC client', () => {
 
     sock.destroy()
   })
+
+  test('cancel_say barge-in request acks and carries no payload', async () => {
+    // Speak-mode full barge-in: when a new utterance preempts an in-flight one,
+    // VoiceManager.cancelSay() sends a bare { action: 'cancel_say' } IPC request
+    // and awaits the ack. Verify the wire contract: the daemon receives exactly
+    // that action with no extra fields, and the request id round-trips on the
+    // ack. (cancelSay() itself needs a live discord voice connection to call,
+    // which these socket-level tests intentionally don't mock — so we assert the
+    // protocol shape, the same way the join test does.)
+    const sock = net.createConnection(socketPath)
+    await new Promise<void>((r) => sock.once('connect', () => r()))
+
+    // Daemon returns whether anything was actually playing (cancelled bool).
+    fakeServer.setReplyFor('cancel_say', { ok: true, cancelled: true })
+
+    sock.write(JSON.stringify({ id: 'cs-1', action: 'cancel_say' }) + '\n')
+
+    const ack = await new Promise<Record<string, unknown>>((resolve) => {
+      let buf = ''
+      sock.on('data', (chunk: Buffer) => {
+        buf += chunk.toString('utf8')
+        const idx = buf.indexOf('\n')
+        if (idx !== -1) resolve(JSON.parse(buf.slice(0, idx)))
+      })
+    })
+    assert.equal(ack.ok, true)
+    assert.equal(ack.id, 'cs-1')
+    assert.equal(ack.cancelled, true)
+
+    const cancelMsg = fakeServer.received.find((m) => m.action === 'cancel_say')
+    assert.ok(cancelMsg, 'expected cancel_say message at the daemon')
+    // No payload beyond id+action — barge-in cancel is a bare signal.
+    assert.deepEqual(Object.keys(cancelMsg!).sort(), ['action', 'id'])
+
+    sock.destroy()
+  })
 })
