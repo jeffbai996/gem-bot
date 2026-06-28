@@ -1,7 +1,7 @@
 import { SlashCommandBuilder, PermissionFlagsBits, ChatInputCommandInteraction, TextChannel } from 'discord.js'
 import path from 'node:path'
 import os from 'node:os'
-import { AccessManager, type ThinkingMode, type ChatEngine, type CounterMode } from './access.ts'
+import { AccessManager, type ThinkingMode, type ChatEngine, type CounterMode, type TraceMode } from './access.ts'
 import { PersonaLoader } from './persona.ts'
 import { GeminiClient } from './gemini.ts'
 import { GeminiCacheManager } from './cache.ts'
@@ -131,6 +131,26 @@ export const geminiCommand = new SlashCommandBuilder()
           { name: 'always — force a thinking block every reply', value: 'always' },
           { name: 'collapse — show it, then strip after the linger', value: 'collapse' },
           { name: 'never — no thinking block', value: 'never' },
+        )
+      )
+      .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
+  )
+  // Dedicated 🔧 Tool-trace card (ported from gpt-bot's /gpt trace). Its OWN
+  // subcommand — NOT merged with /gemini thinking (which is a separate
+  // always|auto|collapse|never reasoning-block toggle). off = no card (default,
+  // opt-in); on = keep the card; collapse = show live, strip after the linger.
+  .addSubcommand(subcommand =>
+    subcommand
+      .setName('trace')
+      .setDescription('Tool-trace card for this channel: off | on | collapse.')
+      .addStringOption(option => option
+        .setName('value')
+        .setDescription('off | on (keep the card) | collapse (show then strip after the linger)')
+        .setRequired(true)
+        .addChoices(
+          { name: 'off — no tool-trace card (default)', value: 'off' },
+          { name: 'on — keep the 🔧 Tool-trace card', value: 'on' },
+          { name: 'collapse — show it, then strip after the linger', value: 'collapse' },
         )
       )
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
@@ -290,7 +310,7 @@ interface ExtraDeps {
       await access.setChannel(channel.id, enabled, requireMention)
       const flags = access.channelFlags(channel.id)
       return interaction.reply({
-        content: `✅ <#${channel.id}> configured. enabled=${enabled}, requireMention=${requireMention}. other flags (thinking=${flags.thinking}, showCode=${flags.showCode}, counter=${flags.counter}, cache=${flags.cache}) — change via \`/gemini set\`, \`/gemini counter\` or \`/gemini cache\`.`,
+        content: `✅ <#${channel.id}> configured. enabled=${enabled}, requireMention=${requireMention}. other flags (thinking=${flags.thinking}, showCode=${flags.showCode}, trace=${flags.trace}, counter=${flags.counter}, cache=${flags.cache}) — change via \`/gemini set\`, \`/gemini trace\`, \`/gemini counter\` or \`/gemini cache\`.`,
         ephemeral: true
       })
     }
@@ -409,6 +429,32 @@ interface ExtraDeps {
       const updated = await access.setChannelFlags(channel.id, { thinking: mode as ThinkingMode })
       const note = mode === 'collapse' ? ' — shown live, stripped after the linger' : ''
       return interaction.reply({ content: `✅ <#${channel.id}> thinking = \`${updated.thinking}\`${note}.`, ephemeral: true })
+    }
+
+    // /gemini trace off|on|collapse — the dedicated 🔧 Tool-trace card toggle,
+    // ported from gpt-bot's /gpt trace. Its OWN subcommand (NOT merged with
+    // /gemini thinking). off = no card (default); on = keep it; collapse = show
+    // live then strip after the linger. Renders on BOTH engines (native + agy).
+    if (subcommand === 'trace') {
+      const value = interaction.options.getString('value', true).trim().toLowerCase()
+      const channel = interaction.options.getChannel('channel') ?? interaction.channel
+      if (!channel) {
+        return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
+      }
+      if (!['off', 'on', 'collapse'].includes(value)) {
+        return interaction.reply({ content: `❌ \`trace\` must be one of: off, on, collapse (got \`${value}\`)`, ephemeral: true })
+      }
+      try {
+        const updated = await access.setChannelFlags(channel.id, { trace: value as TraceMode })
+        const note = value === 'collapse'
+          ? ' — shown live, stripped after the linger'
+          : value === 'on'
+            ? ' — 🔧 Tool-trace card above each reply that ran tools'
+            : ' — no tool-trace card'
+        return interaction.reply({ content: `✅ <#${channel.id}> trace = \`${updated.trace}\`${note}.`, ephemeral: true })
+      } catch (e: any) {
+        return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
+      }
     }
 
     // /gemini engine agy|api|default — per-channel chat engine pick. 'default'

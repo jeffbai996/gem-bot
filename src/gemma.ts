@@ -17,7 +17,7 @@ import { shouldEmbed } from './embed-throttle.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
 import { PendingEditsStore } from './reactions/pending-edits.ts'
 import { applyLifecycle } from './reactions/lifecycle.ts'
-import type { LifecycleEvent } from './gemini.ts'
+import type { LifecycleEvent, ToolCall } from './gemini.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
 import { handleReaction } from './reactions/handler.ts'
 import { SummaryStore } from './summarization/store.ts'
@@ -120,6 +120,52 @@ function shortToolName(name: string): string {
     if (parts.length >= 3) return parts[parts.length - 1]
   }
   return name
+}
+
+// --- Dedicated 🔧 Tool-trace card (ported from gpt-bot) ---------------------
+// gpt-bot has a per-channel `/gpt trace off|on|collapse` that posts a standalone
+// `🔧 **Tool trace**` card ABOVE the reply: a ```diff```-fenced list of tool
+// calls, one `+ ● shortName(argDigest) [Nms]` line per call (green via the diff
+// `+`), `- ● ... FAILED [Nms]` (red) on failure. This is DISTINCT from the
+// inline showCode tool dump — it's an opt-in, reasoning-order card that sits with
+// the 💭 thinking block above the answer. Reuses gem's argDigest/shortToolName.
+// gem's ToolCall has no diff/resultLines fields (simpler than gpt's), so this is
+// the trimmed assembler: header row + optional `⎿ resultPreview` line per call.
+const TRACE_BODY_CHAR_BUDGET = 1800
+const TRACE_MAX_LINES = 50
+
+function buildTraceLines(toolCalls: ToolCall[]): string[] {
+  const lines: string[] = []
+  for (const call of toolCalls) {
+    const prefix = call.failed ? '- ● ' : '+ ● '
+    const tail = call.failed ? ' FAILED' : ''
+    // agy's post-hoc trace has no per-call timing → durationMs is 0; omit the
+    // [Nms] badge in that case rather than printing a useless `[0ms]`.
+    const ms = call.durationMs > 0 ? ` [${call.durationMs}ms]` : ''
+    lines.push(`${prefix}${shortToolName(call.name)}(${argDigest(call.args)})${tail}${ms}`)
+    if (call.resultPreview) {
+      let rp = call.resultPreview.replace(/\n/g, ' ')
+      if (rp.length > 86) rp = rp.slice(0, 86) + '…'
+      lines.push(`  ⎿ ${rp}`)
+    }
+  }
+  return lines
+}
+
+// Assemble the fenced card, dropping whole trailing lines past the line/char
+// budget (with a marker) so it never blows the 2000-char Discord message cap.
+function renderTraceCard(toolCalls: ToolCall[]): string {
+  const all = buildTraceLines(toolCalls)
+  const fitted: string[] = []
+  let running = 0
+  for (const ln of all.slice(0, TRACE_MAX_LINES)) {
+    const cost = ln.length + (fitted.length ? 1 : 0)
+    if (running + cost > TRACE_BODY_CHAR_BUDGET) break
+    fitted.push(ln); running += cost
+  }
+  const dropped = all.length - fitted.length
+  if (dropped > 0) fitted.push(`... (${dropped} more lines)`)
+  return '🔧 **Tool trace**\n```diff\n' + fitted.join('\n') + '\n```'
 }
 
 process.on('SIGHUP', async () => {
@@ -573,6 +619,20 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     let finalFullReply = ''
 
+    // 🔧 Tool-trace card — the dedicated gpt-bot-style card, gated by the per-
+    // channel `trace` flag (off|on|collapse), distinct from the always-on
+    // showCode tool dump below. Sits ABOVE everything (trace → thinking → reply →
+    // footer) to read as "here's what I ran, here's my reasoning, then the
+    // answer". Renders for BOTH engines: native gemini populates meta.toolCalls
+    // at its dispatch site; agy-chat materializes its trajectory tool names into
+    // meta.toolCalls post-hoc, so this same block fires on agy turns too.
+    // 'collapse' renders the card inline now and strips it after a linger (same
+    // mechanism as thinking:collapse below); 'on' keeps it.
+    const showTrace = flags.trace !== 'off' && meta.toolCalls.length > 0
+    if (showTrace) {
+      finalFullReply += renderTraceCard(meta.toolCalls) + '\n\n'
+    }
+
     // Native thinking summaries from gemini-3 thinking models (parts with
     // `thought: true`). Distinct from `parsed.thinking` (our JSON-wrapper
     // CoT prose). Gated by the thinking mode (same as the 💭 block below) —
@@ -767,14 +827,26 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         }
       }
 
-      // Collapse thinking (Jeff 2026-06-25): render the 💭 block live, then strip it
-      // from the first message after the linger, leaving the reply. Best-effort,
-      // fire-and-forget. Matches the gpt/Claude collapse UX.
-      if (flags.thinking === 'collapse' && activeMessages.length > 0 && pieces.length > 0) {
+      // Collapse (Jeff 2026-06-25): render the 💭 thinking block and/or 🔧 trace
+      // card live, then strip them from the first message after the linger,
+      // leaving the reply. Best-effort, fire-and-forget. Matches the gpt/Claude
+      // collapse UX. Both blocks live at the TOP of pieces[0] (trace above
+      // thinking), so when either flag is 'collapse' we run its strip; chaining
+      // both regexes handles the case where both are collapsing at once.
+      const collapsingThinking = flags.thinking === 'collapse'
+      const collapsingTrace = flags.trace === 'collapse' && showTrace
+      if ((collapsingThinking || collapsingTrace) && activeMessages.length > 0 && pieces.length > 0) {
         const first = activeMessages[0]
-        const stripped = pieces[0]
-          .replace(/💭 \*\*Thinking:\*\*\n(?:>.*\n)*\n?/, '')
-          .replace(/^\s+/, '')
+        let stripped = pieces[0]
+        // Trace card is a fenced ```diff``` block under the 🔧 header — strip
+        // the whole header+fence+trailing blank line.
+        if (collapsingTrace) {
+          stripped = stripped.replace(/🔧 \*\*Tool trace\*\*\n```diff\n[\s\S]*?\n```\n*/, '')
+        }
+        if (collapsingThinking) {
+          stripped = stripped.replace(/💭 \*\*Thinking:\*\*\n(?:>.*\n)*\n?/, '')
+        }
+        stripped = stripped.replace(/^\s+/, '')
         if (stripped && stripped !== pieces[0]) {
           const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 120_000
           setTimeout(() => { first.edit(stripped).catch(() => {}) }, lingerMs)

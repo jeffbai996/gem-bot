@@ -18,11 +18,18 @@ export type ChatEngine = 'agy' | 'api'
 // the reasoning block rides the `thinking` mode.
 export type CounterMode = 'off' | 'token' | 'both'
 
+// Tool-trace card mode. off = no dedicated trace card (default — opt-in, like
+// gpt-bot); on = post a 🔧 **Tool trace** card ABOVE the reply and keep it;
+// collapse = post it live then delete after the reply lands. Distinct from the
+// `showCode` artifact dump — this is the gpt-bot-style dedicated diff-fence card.
+export type TraceMode = 'off' | 'on' | 'collapse'
+
 export interface ChannelConfig {
   enabled: boolean
   requireMention: boolean
   thinking?: ThinkingMode  // default "auto" — Gemma decides per message
   showCode?: boolean       // default true — render code-exec artifacts + tool calls
+  trace?: TraceMode        // default "off" — gpt-bot-style 🔧 Tool-trace card (off | on | collapse)
   counter?: CounterMode    // default "token" — usage/timing footer (off | token | both)
   cache?: boolean          // default true — cache the stable system-prompt prefix server-side
   cacheTtlSec?: number     // optional — override the cache TTL (seconds). Falls back to manager default when unset
@@ -32,6 +39,7 @@ export interface ChannelConfig {
 export interface ChannelFlags {
   thinking: ThinkingMode
   showCode: boolean
+  trace: TraceMode
   counter: CounterMode
   cache: boolean
   cacheTtlSec: number | null
@@ -59,6 +67,7 @@ const EMPTY: AccessFile = { users: {}, channels: {} }
 const VALID_THINKING_MODES: ThinkingMode[] = ['always', 'auto', 'never', 'collapse']
 const VALID_ENGINES: ChatEngine[] = ['agy', 'api']
 const VALID_COUNTER_MODES: CounterMode[] = ['off', 'token', 'both']
+const VALID_TRACE_MODES: TraceMode[] = ['off', 'on', 'collapse']
 
 // Default rendering/behavior flags applied when a channel is first configured
 // without explicit flag overrides, and when channelFlags() is asked about an
@@ -71,6 +80,10 @@ const VALID_COUNTER_MODES: CounterMode[] = ['off', 'token', 'both']
 const DEFAULT_FLAGS = {
   thinking: 'auto' as ThinkingMode,
   showCode: true,
+  // trace defaults OFF — matches gpt-bot. The dedicated 🔧 Tool-trace card is
+  // opt-in so enabling the feature doesn't suddenly spam every channel; the
+  // inline showCode tool dump remains the always-on surface.
+  trace: 'off' as TraceMode,
   counter: 'token' as CounterMode,
   cache: true,
 }
@@ -175,6 +188,7 @@ export class AccessManager {
       requireMention,
       thinking: flags?.thinking ?? existing?.thinking ?? DEFAULT_FLAGS.thinking,
       showCode: flags?.showCode ?? existing?.showCode ?? DEFAULT_FLAGS.showCode,
+      trace: flags?.trace ?? existing?.trace ?? DEFAULT_FLAGS.trace,
       counter: flags?.counter ?? existing?.counter ?? DEFAULT_FLAGS.counter,
       cache: flags?.cache ?? existing?.cache ?? DEFAULT_FLAGS.cache,
       ...(flags?.cacheTtlSec != null
@@ -209,10 +223,14 @@ export class AccessManager {
     if (patch.counter !== undefined && !VALID_COUNTER_MODES.includes(patch.counter)) {
       throw new Error(`invalid counter "${patch.counter}" — must be one of: off, token, both`)
     }
+    if (patch.trace !== undefined && !VALID_TRACE_MODES.includes(patch.trace)) {
+      throw new Error(`invalid trace "${patch.trace}" — must be one of: off, on, collapse`)
+    }
     this.data.channels[channelId] = {
       ...existing,
       ...(patch.thinking !== undefined ? { thinking: patch.thinking } : {}),
       ...(patch.showCode !== undefined ? { showCode: patch.showCode } : {}),
+      ...(patch.trace !== undefined ? { trace: patch.trace } : {}),
       ...(patch.counter !== undefined ? { counter: patch.counter } : {}),
       ...(patch.cache !== undefined ? { cache: patch.cache } : {}),
       ...(patch.requireMention !== undefined ? { requireMention: patch.requireMention } : {}),
@@ -238,6 +256,7 @@ export class AccessManager {
     return {
       thinking: channel?.thinking ?? DEFAULT_FLAGS.thinking,
       showCode: channel?.showCode ?? DEFAULT_FLAGS.showCode,
+      trace: channel?.trace ?? DEFAULT_FLAGS.trace,
       counter: channel?.counter ?? DEFAULT_FLAGS.counter,
       cache: channel?.cache ?? DEFAULT_FLAGS.cache,
       cacheTtlSec: channel?.cacheTtlSec ?? null,
