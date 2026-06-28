@@ -688,9 +688,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // so we don't pollute every reply with bookkeeping the user only checks
       // occasionally. Cache hits are still observed via lower bills, just not
       // surfaced inline.
+      // No usage block (the agy engine emits no token counts) → show elapsed
+      // time alone; the missing token data is assumed, not spelled out.
       const tokenStr = u
         ? `\` ↑ ${formatTokenCount(u.promptTokens)} · ↓ ${formatTokenCount(u.responseTokens)} · ◷ ${respondElapsedSec}s \``
-        : `\` ◷ ${respondElapsedSec}s — no usage data \``
+        : `\` ◷ ${respondElapsedSec}s \``
       const safetyStr = meta.flaggedSafety.length > 0
         ? ` ⚠️ ${meta.flaggedSafety.map(s => `${s.category.replace('HARM_CATEGORY_', '')}=${s.probability}`).join(',')}`
         : ''
