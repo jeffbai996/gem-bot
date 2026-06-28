@@ -6,7 +6,8 @@ import { AccessManager } from './access.ts'
 import { PersonaLoader } from './persona.ts'
 import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
-import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources } from './gemini.ts'
+import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources, parseResponse, formatSystemPrompt } from './gemini.ts'
+import { respondViaAgy } from './agy-chat.ts'
 import { chunk } from './chunk.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
 import { voiceCommand, executeVoiceCommand } from './voice-commands.ts'
@@ -437,9 +438,15 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // gem-voice self-stops after a safety max if no say ever lands.
       voiceManager.startThinking()
     }
-    const { parsed, meta } = await gemini.respond({
-      systemPrompt: persona.buildSystemPrompt(message.channelId, message.guildId)
-        + (speaking ? SPOKEN_MODE_INSTRUCTION : ''),
+    const systemPrompt = persona.buildSystemPrompt(message.channelId, message.guildId)
+      + (speaking ? SPOKEN_MODE_INSTRUCTION : '')
+
+    // The full system prompt the API path uses (persona + date + mandatory JSON
+    // envelope) — built once so the agy path feeds the model the SAME contract.
+    const fullSystemPrompt = formatSystemPrompt(systemPrompt, flags.thinking)
+
+    const apiRespond = () => gemini.respond({
+      systemPrompt,
       history,
       userMessageText: userText,
       userMediaParts: allParts,
@@ -452,6 +459,42 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     }, (partial) => {
       latestParsed = partial
     }, onLifecycleEvent, turnSignal)
+
+    // OPTIONAL agy chat engine: route text turns through the Antigravity CLI
+    // (flat Google sub) instead of the metered Gemini API. Mirrors gpt-bot's
+    // /gpt engine swap. On throw we fall back to the API so the bot never goes
+    // dark. Skipped when the turn carries media (agy -p is text-only).
+    //
+    // Engine resolution, in order:
+    //   1. the channel's explicit /gemini engine pick (flags.engine), else
+    //   2. the global GEMMA_AGY_CHAT env default ('1' = agy, else api).
+    // So a channel can opt in/out independently while the env sets the default
+    // for channels that never picked.
+    let parsed: typeof latestParsed
+    let meta: Awaited<ReturnType<typeof gemini.respond>>['meta']
+    const envDefaultEngine = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
+    const resolvedEngine = flags.engine ?? envDefaultEngine
+    // Media ALWAYS forces the native API — agy -p can't consume image/audio.
+    const useAgy = resolvedEngine === 'agy' && allParts.length === 0
+    if (useAgy) {
+      try {
+        ({ parsed, meta } = await respondViaAgy({
+          systemPrompt: fullSystemPrompt,
+          history,
+          userMessageText: userText,
+          userName: message.author.username,
+          channelId: message.channelId,
+          onEvent: onLifecycleEvent,
+        }, parseResponse))
+      } catch (e) {
+        // agy failed (timeout / empty / exec error) — surface nothing to the
+        // user, just fall back to the metered API so they still get an answer.
+        console.error('[agy] chat engine failed, falling back to API:', e instanceof Error ? e.message : e)
+        ;({ parsed, meta } = await apiRespond())
+      }
+    } else {
+      ({ parsed, meta } = await apiRespond())
+    }
     const respondElapsedMs = Date.now() - respondT0
 
     if (streamInterval) {

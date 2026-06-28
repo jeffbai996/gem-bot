@@ -139,15 +139,15 @@ describe('AccessManager', () => {
     })
     mgr = new AccessManager()
     await mgr.load()
-    assert.deepEqual(mgr.channelFlags('C1'), { thinking: 'always', showCode: true, verbose: true, cache: true, cacheTtlSec: null })
-    assert.deepEqual(mgr.channelFlags('C2'), { thinking: 'never', showCode: false, verbose: false, cache: false, cacheTtlSec: null })
+    assert.deepEqual(mgr.channelFlags('C1'), { thinking: 'always', showCode: true, verbose: true, cache: true, cacheTtlSec: null, engine: null })
+    assert.deepEqual(mgr.channelFlags('C2'), { thinking: 'never', showCode: false, verbose: false, cache: false, cacheTtlSec: null, engine: null })
   })
 
   test('channelFlags returns defaults for unknown channel', async () => {
     await writeAccess({ users: {}, channels: {} })
     mgr = new AccessManager()
     await mgr.load()
-    assert.deepEqual(mgr.channelFlags('unknown'), { thinking: 'auto', showCode: true, verbose: true, cache: true, cacheTtlSec: null })
+    assert.deepEqual(mgr.channelFlags('unknown'), { thinking: 'auto', showCode: true, verbose: true, cache: true, cacheTtlSec: null, engine: null })
   })
 
   test('setChannel preserves optional flags when provided', async () => {
@@ -248,6 +248,48 @@ describe('AccessManager', () => {
     await assert.rejects(
       () => mgr.setChannelFlags('C1', { thinking: 'maybe' as any }),
       /thinking.*always.*auto.*never/
+    )
+  })
+
+  test('setChannelFlags persists an explicit engine pick', async () => {
+    await writeAccess({
+      users: {},
+      channels: { C1: { enabled: true, requireMention: false, thinking: 'auto' } }
+    })
+    mgr = new AccessManager()
+    await mgr.load()
+    await mgr.setChannelFlags('C1', { engine: 'agy' })
+    // round-trips through disk, not just the in-memory copy
+    const reloaded = new AccessManager()
+    await reloaded.load()
+    assert.equal(reloaded.channelFlags('C1').engine, 'agy')
+  })
+
+  test('setChannelFlags engine:null clears the pick back to env default', async () => {
+    await writeAccess({
+      users: {},
+      channels: { C1: { enabled: true, requireMention: false, thinking: 'auto', engine: 'agy' } }
+    })
+    mgr = new AccessManager()
+    await mgr.load()
+    assert.equal(mgr.channelFlags('C1').engine, 'agy')
+    await mgr.setChannelFlags('C1', { engine: null })
+    // null sentinel drops the field entirely → channelFlags reports null (= env default)
+    assert.equal(mgr.channelFlags('C1').engine, null)
+    const raw = JSON.parse(await fs.readFile(path.join(testDir, 'access.json'), 'utf8'))
+    assert.equal('engine' in raw.channels.C1, false)
+  })
+
+  test('setChannelFlags rejects an invalid engine', async () => {
+    await writeAccess({
+      users: {},
+      channels: { C1: { enabled: true, requireMention: false, thinking: 'auto' } }
+    })
+    mgr = new AccessManager()
+    await mgr.load()
+    await assert.rejects(
+      () => mgr.setChannelFlags('C1', { engine: 'gpt' as any }),
+      /engine.*agy.*api/
     )
   })
 

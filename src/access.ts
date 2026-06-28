@@ -4,6 +4,12 @@ import os from 'os'
 
 export type ThinkingMode = 'always' | 'auto' | 'never' | 'collapse'
 
+// Chat engine for a channel. 'api' = the metered Gemini API (full tools +
+// grounding + trace). 'agy' = route text turns through the Antigravity CLI
+// (flat Google sub, no visible tool-trace). Media turns always use 'api'
+// regardless — agy -p is text-only.
+export type ChatEngine = 'agy' | 'api'
+
 export interface ChannelConfig {
   enabled: boolean
   requireMention: boolean
@@ -12,6 +18,7 @@ export interface ChannelConfig {
   verbose?: boolean        // default true — surface usage/finishReason footer
   cache?: boolean          // default true — cache the stable system-prompt prefix server-side
   cacheTtlSec?: number     // optional — override the cache TTL (seconds). Falls back to manager default when unset
+  engine?: ChatEngine      // optional — per-channel chat engine. UNSET = fall back to the GEMMA_AGY_CHAT env default
 }
 
 export interface ChannelFlags {
@@ -20,6 +27,9 @@ export interface ChannelFlags {
   verbose: boolean
   cache: boolean
   cacheTtlSec: number | null
+  // null = no per-channel choice — the gemma.ts callsite falls back to the
+  // GEMMA_AGY_CHAT env default. 'agy' | 'api' = an explicit per-channel pick.
+  engine: ChatEngine | null
   // requireMention isn't a "rendering" flag like the others — it sits at the
   // top of ChannelConfig — but exposing it through ChannelFlags lets the
   // /gemini set unified setter touch it without a separate command path.
@@ -39,6 +49,7 @@ export interface CanHandleInput {
 
 const EMPTY: AccessFile = { users: {}, channels: {} }
 const VALID_THINKING_MODES: ThinkingMode[] = ['always', 'auto', 'never', 'collapse']
+const VALID_ENGINES: ChatEngine[] = ['agy', 'api']
 
 // Default rendering/behavior flags applied when a channel is first configured
 // without explicit flag overrides, and when channelFlags() is asked about an
@@ -158,7 +169,13 @@ export class AccessManager {
       cache: flags?.cache ?? existing?.cache ?? DEFAULT_FLAGS.cache,
       ...(flags?.cacheTtlSec != null
         ? { cacheTtlSec: flags.cacheTtlSec }
-        : existing?.cacheTtlSec != null ? { cacheTtlSec: existing.cacheTtlSec } : {})
+        : existing?.cacheTtlSec != null ? { cacheTtlSec: existing.cacheTtlSec } : {}),
+      // engine has no DEFAULT_FLAGS fallback — an unset engine means "use the
+      // GEMMA_AGY_CHAT env default", so preserve an existing pick but never
+      // invent one here.
+      ...(flags?.engine != null
+        ? { engine: flags.engine }
+        : existing?.engine != null ? { engine: existing.engine } : {})
     }
     await this.save()
   }
@@ -176,6 +193,9 @@ export class AccessManager {
     if (patch.thinking !== undefined && !VALID_THINKING_MODES.includes(patch.thinking)) {
       throw new Error(`invalid thinking mode "${patch.thinking}" — must be one of: always, auto, never`)
     }
+    if (patch.engine != null && !VALID_ENGINES.includes(patch.engine)) {
+      throw new Error(`invalid engine "${patch.engine}" — must be one of: agy, api`)
+    }
     this.data.channels[channelId] = {
       ...existing,
       ...(patch.thinking !== undefined ? { thinking: patch.thinking } : {}),
@@ -187,7 +207,12 @@ export class AccessManager {
       // Skipping the field entirely means "leave existing override alone".
       ...(patch.cacheTtlSec === null
         ? { cacheTtlSec: undefined }
-        : patch.cacheTtlSec !== undefined ? { cacheTtlSec: patch.cacheTtlSec } : {})
+        : patch.cacheTtlSec !== undefined ? { cacheTtlSec: patch.cacheTtlSec } : {}),
+      // engine: null sentinel clears the per-channel pick (back to the env
+      // default); an explicit 'agy'|'api' sets it; undefined leaves it alone.
+      ...(patch.engine === null
+        ? { engine: undefined }
+        : patch.engine !== undefined ? { engine: patch.engine } : {})
     }
     await this.save()
     return this.data.channels[channelId]
@@ -202,7 +227,9 @@ export class AccessManager {
       showCode: channel?.showCode ?? DEFAULT_FLAGS.showCode,
       verbose: channel?.verbose ?? DEFAULT_FLAGS.verbose,
       cache: channel?.cache ?? DEFAULT_FLAGS.cache,
-      cacheTtlSec: channel?.cacheTtlSec ?? null
+      cacheTtlSec: channel?.cacheTtlSec ?? null,
+      // null = no per-channel pick → callsite falls back to GEMMA_AGY_CHAT.
+      engine: channel?.engine ?? null
     }
   }
 }
