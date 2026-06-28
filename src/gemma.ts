@@ -575,11 +575,15 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     // Native thinking summaries from gemini-3 thinking models (parts with
     // `thought: true`). Distinct from `parsed.thinking` (our JSON-wrapper
-    // CoT prose). Only render when verbose is on — otherwise this floods the
-    // chat with reasoning the user didn't ask for.
+    // CoT prose). Gated by the thinking mode (same as the 💭 block below) —
+    // both are reasoning-trace renders. Was gated by `verbose` until the
+    // 2026-06-28 split; verbose's footer duty moved to the counter flag and its
+    // reasoning-block duty folds into the thinking mode so nothing is orphaned.
+    // 'never' suppresses it; any other mode shows it (it floods less than the
+    // 💭 block since it's the model's own summary, not our wrapper prose).
     // Header sits at column 0; body blockquoted so the inner content visually
     // indents under the header without doubling up the indent on the title.
-    if (flags.verbose && meta.nativeThoughts) {
+    if (flags.thinking !== 'never' && meta.nativeThoughts) {
       const quoted = meta.nativeThoughts.split('\n').map(line => `> ${line}`).join('\n')
       finalFullReply += `🧠 **Reasoning:**\n${quoted}\n\n`
     }
@@ -675,7 +679,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // bot's prose. Response time replaces total-tokens — wall-clock is more
     // actionable than the sum (you can derive thinking-token spend from
     // total - prompt - response if you need it from the logs).
-    if (flags.verbose) {
+    if (flags.counter !== 'off') {
       const u = meta.usage
       const respondElapsedSec = (respondElapsedMs / 1000).toFixed(1)
       // Format: ` ↑ N · ↓ N · ◷ Xs ` inside inline-code backticks WITH
@@ -689,9 +693,16 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // occasionally. Cache hits are still observed via lower bills, just not
       // surfaced inline.
       // No usage block (the agy engine emits no token counts) → show elapsed
-      // time alone; the missing token data is assumed, not spelled out.
+      // time alone; the missing token data is assumed, not spelled out. So
+      // counter=token|both both degrade to time-only on agy automatically.
+      // counter=both additionally appends the cached-prefix portion (⚡ N) when
+      // a server-side cache hit billed at the cached rate — only meaningful on
+      // the API path where usage carries cachedTokens.
+      const cachedStr = u && flags.counter === 'both' && u.cachedTokens > 0
+        ? ` · ⚡ ${formatTokenCount(u.cachedTokens)}`
+        : ''
       const tokenStr = u
-        ? `\` ↑ ${formatTokenCount(u.promptTokens)} · ↓ ${formatTokenCount(u.responseTokens)} · ◷ ${respondElapsedSec}s \``
+        ? `\` ↑ ${formatTokenCount(u.promptTokens)} · ↓ ${formatTokenCount(u.responseTokens)}${cachedStr} · ◷ ${respondElapsedSec}s \``
         : `\` ◷ ${respondElapsedSec}s \``
       const safetyStr = meta.flaggedSafety.length > 0
         ? ` ⚠️ ${meta.flaggedSafety.map(s => `${s.category.replace('HARM_CATEGORY_', '')}=${s.probability}`).join(',')}`

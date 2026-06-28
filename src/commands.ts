@@ -1,7 +1,7 @@
 import { SlashCommandBuilder, PermissionFlagsBits, ChatInputCommandInteraction, TextChannel } from 'discord.js'
 import path from 'node:path'
 import os from 'node:os'
-import { AccessManager, type ThinkingMode, type ChatEngine } from './access.ts'
+import { AccessManager, type ThinkingMode, type ChatEngine, type CounterMode } from './access.ts'
 import { PersonaLoader } from './persona.ts'
 import { GeminiClient } from './gemini.ts'
 import { GeminiCacheManager } from './cache.ts'
@@ -114,11 +114,10 @@ export const geminiCommand = new SlashCommandBuilder()
       .addChannelOption(option => option.setName('channel').setDescription('Channel to scrape').setRequired(true))
       .addIntegerOption(option => option.setName('limit').setDescription('Max messages to embed').setMinValue(1).setMaxValue(500).setRequired(false))
   )
-  // Unified per-flag setter. Replaces individual /gemini thinking|showcode|
-  // verbose subcommands. `value` is a string because values vary per flag
-  // (thinking: always|auto|never; others: true|false). The handler validates.
-  // `cache on/off` lives under the cache subcommand group below since it
-  // shares semantics with cache info|ttl|flush.
+  // `value` is a string because values vary per flag (thinking: always|auto|
+  // never; others: true|false). The handler validates. `cache on/off` lives
+  // under the cache subcommand group below since it shares semantics with
+  // cache info|ttl|flush.
   .addSubcommand(subcommand =>
     subcommand
       .setName('thinking')
@@ -156,23 +155,44 @@ export const geminiCommand = new SlashCommandBuilder()
       )
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
   )
+  // Footer counter — split out of the old `verbose` flag (2026-06-28). `verbose`
+  // used to gate BOTH the usage/timing footer AND the 🧠 native-reasoning block;
+  // the footer is now this dedicated subcommand and the reasoning block rides the
+  // /gemini thinking mode. Mirrors gpt-bot's /gpt counter. off | token | both —
+  // on the agy engine there are no token counts so token/both gracefully show
+  // elapsed time only (the footer code already handles "no usage data").
+  .addSubcommand(subcommand =>
+    subcommand
+      .setName('counter')
+      .setDescription('Footer counter for this channel: off | token | both.')
+      .addStringOption(option => option
+        .setName('value')
+        .setDescription('off | token | both')
+        .setRequired(true)
+        .addChoices(
+          { name: 'off — no footer', value: 'off' },
+          { name: 'token — tokens + time (time-only on the agy engine)', value: 'token' },
+          { name: 'both — tokens + cached-prefix detail (API path; time-only on agy)', value: 'both' },
+        )
+      )
+      .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
+  )
   .addSubcommand(subcommand =>
     subcommand
       .setName('set')
-      .setDescription('Set a per-channel flag (show_code, verbose, require_mention). Thinking moved to /gemini thinking.')
+      .setDescription('Set a per-channel flag: show_code | require_mention. (thinking + footer have own subcommands.)')
       .addStringOption(option => option
         .setName('flag')
         .setDescription('Which flag to set')
         .setRequired(true)
         .addChoices(
           { name: 'show_code — render code/tool artifacts + 🔍 web-search', value: 'show_code' },
-          { name: 'verbose — usage/timing footer + 🧠 reasoning block', value: 'verbose' },
           { name: 'require_mention — only respond when @-mentioned', value: 'require_mention' },
         )
       )
       .addStringOption(option => option
         .setName('value')
-        .setDescription('show_code / verbose / require_mention: true|false.')
+        .setDescription('show_code / require_mention: true|false.')
         .setRequired(true)
       )
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
@@ -259,7 +279,7 @@ interface ExtraDeps {
     }
 
     // /gemini channel only sets the two essentials (enabled + require_mention).
-    // Other flags (thinking/showcode/verbose/optinreply/cache) have dedicated
+    // Other flags (thinking/showcode/counter/cache) have dedicated
     // subcommands that toggle them independently — having them here too was
     // redundant and made the command form unwieldy. setChannel preserves
     // existing flag values when called on an already-configured channel.
@@ -270,7 +290,7 @@ interface ExtraDeps {
       await access.setChannel(channel.id, enabled, requireMention)
       const flags = access.channelFlags(channel.id)
       return interaction.reply({
-        content: `✅ <#${channel.id}> configured. enabled=${enabled}, requireMention=${requireMention}. other flags (thinking=${flags.thinking}, showCode=${flags.showCode}, verbose=${flags.verbose}, cache=${flags.cache}) — change via \`/gemini set\` or \`/gemini cache\`.`,
+        content: `✅ <#${channel.id}> configured. enabled=${enabled}, requireMention=${requireMention}. other flags (thinking=${flags.thinking}, showCode=${flags.showCode}, counter=${flags.counter}, cache=${flags.cache}) — change via \`/gemini set\`, \`/gemini counter\` or \`/gemini cache\`.`,
         ephemeral: true
       })
     }
@@ -373,9 +393,10 @@ interface ExtraDeps {
       return
     }
 
-    // Unified per-flag setter — replaces /gemini thinking|showcode|verbose.
-    // optInReply was dropped 2026-05-02 (gate behavior was confusing in
-    // practice). Cache toggle stays under the cache subcommand group below.
+    // /gemini thinking always|auto|collapse|never — gates the 💭 thinking block
+    // AND the 🧠 native-reasoning block (both reasoning-trace renders). The
+    // footer moved to /gemini counter (2026-06-28). optInReply was dropped
+    // 2026-05-02. Cache toggle stays under the cache subcommand group below.
     if (subcommand === 'thinking') {
       const mode = interaction.options.getString('mode', true).trim().toLowerCase()
       const channel = interaction.options.getChannel('channel') ?? interaction.channel
@@ -428,6 +449,31 @@ interface ExtraDeps {
       }
     }
 
+    // /gemini counter off|token|both — per-channel footer mode. Split out of the
+    // old verbose flag; gates ONLY the usage/timing footer in gemma.ts (the 🧠
+    // native-reasoning block now rides the thinking mode). Mirrors /gpt counter.
+    if (subcommand === 'counter') {
+      const value = interaction.options.getString('value', true).trim().toLowerCase()
+      const channel = interaction.options.getChannel('channel') ?? interaction.channel
+      if (!channel) {
+        return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
+      }
+      if (value !== 'off' && value !== 'token' && value !== 'both') {
+        return interaction.reply({ content: `❌ \`counter\` must be one of: off, token, both (got \`${value}\`)`, ephemeral: true })
+      }
+      try {
+        const updated = await access.setChannelFlags(channel.id, { counter: value as CounterMode })
+        const note = value === 'off'
+          ? 'no footer'
+          : value === 'token'
+            ? 'tokens + time (time-only on the agy engine)'
+            : 'tokens + time + cached-prefix detail (API path; time-only on agy)'
+        return interaction.reply({ content: `✅ <#${channel.id}> footer counter = \`${updated.counter}\` — ${note}.`, ephemeral: true })
+      } catch (e: any) {
+        return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
+      }
+    }
+
     if (subcommand === 'set') {
       const flag = interaction.options.getString('flag', true)
       const rawValue = interaction.options.getString('value', true).trim().toLowerCase()
@@ -438,7 +484,7 @@ interface ExtraDeps {
 
       try {
         let updated
-        if (flag === 'show_code' || flag === 'verbose' || flag === 'require_mention') {
+        if (flag === 'show_code' || flag === 'require_mention') {
           // Accept canonical bool tokens. Reject anything ambiguous so the
           // user knows they typed something wrong vs. silently being parsed
           // as false.
@@ -453,19 +499,16 @@ interface ExtraDeps {
               ephemeral: true
             })
           }
-          const fieldKey =
-            flag === 'show_code' ? 'showCode'
-            : flag === 'verbose' ? 'verbose'
-            : 'requireMention'
+          const fieldKey = flag === 'show_code' ? 'showCode' : 'requireMention'
           updated = await access.setChannelFlags(channel.id, { [fieldKey]: parsed })
         } else {
           return interaction.reply({
-            content: `❌ unknown flag \`${flag}\`. Choices: show_code, verbose, require_mention. (thinking via \`/gemini thinking\`, cache via \`/gemini cache on|off\`.)`,
+            content: `❌ unknown flag \`${flag}\`. Choices: show_code, require_mention. (thinking via \`/gemini thinking\`, footer via \`/gemini counter\`, cache via \`/gemini cache on|off\`.)`,
             ephemeral: true
           })
         }
 
-        const summary = `thinking=${updated.thinking}, showCode=${updated.showCode}, verbose=${updated.verbose}, cache=${updated.cache}, requireMention=${updated.requireMention}`
+        const summary = `thinking=${updated.thinking}, showCode=${updated.showCode}, counter=${updated.counter}, cache=${updated.cache}, requireMention=${updated.requireMention}`
         return interaction.reply({
           content: `✅ <#${channel.id}> \`${flag}\` set. ${summary}`,
           ephemeral: true
