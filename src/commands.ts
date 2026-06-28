@@ -1,7 +1,7 @@
 import { SlashCommandBuilder, PermissionFlagsBits, ChatInputCommandInteraction, TextChannel } from 'discord.js'
 import path from 'node:path'
 import os from 'node:os'
-import { AccessManager, type ThinkingMode } from './access.ts'
+import { AccessManager, type ThinkingMode, type ChatEngine } from './access.ts'
 import { PersonaLoader } from './persona.ts'
 import { GeminiClient } from './gemini.ts'
 import { GeminiCacheManager } from './cache.ts'
@@ -83,6 +83,26 @@ export const geminiCommand = new SlashCommandBuilder()
           { name: 'always — force a thinking block every reply', value: 'always' },
           { name: 'collapse — show it, then strip after the linger', value: 'collapse' },
           { name: 'never — no thinking block', value: 'never' },
+        )
+      )
+      .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
+  )
+  // Per-channel chat engine. agy = Antigravity CLI (flat Google sub, no visible
+  // tool-trace); api = the metered Gemini API (full tools + grounding + trace).
+  // `default` clears the per-channel pick so the GEMMA_AGY_CHAT env default
+  // applies. Media turns always use the API regardless (agy -p is text-only).
+  .addSubcommand(subcommand =>
+    subcommand
+      .setName('engine')
+      .setDescription('Set this channel chat engine: agy (flat sub) | api (metered) | default (env).')
+      .addStringOption(option => option
+        .setName('value')
+        .setDescription('agy | api | default')
+        .setRequired(true)
+        .addChoices(
+          { name: 'agy — Antigravity CLI / flat Google sub (no tool-trace)', value: 'agy' },
+          { name: 'api — metered Gemini API (full tools + grounding + trace)', value: 'api' },
+          { name: 'default — clear pick, use the GEMMA_AGY_CHAT env default', value: 'default' },
         )
       )
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
@@ -257,6 +277,35 @@ interface ExtraDeps {
       const updated = await access.setChannelFlags(channel.id, { thinking: mode as ThinkingMode })
       const note = mode === 'collapse' ? ' — shown live, stripped after the linger' : ''
       return interaction.reply({ content: `✅ <#${channel.id}> thinking = \`${updated.thinking}\`${note}.`, ephemeral: true })
+    }
+
+    // /gemini engine agy|api|default — per-channel chat engine pick. 'default'
+    // is the null sentinel: it clears the per-channel override so the
+    // GEMMA_AGY_CHAT env default takes over. Mirrors gpt-bot's /gpt engine.
+    if (subcommand === 'engine') {
+      const value = interaction.options.getString('value', true).trim().toLowerCase()
+      const channel = interaction.options.getChannel('channel') ?? interaction.channel
+      if (!channel) {
+        return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
+      }
+      if (!['agy', 'api', 'default'].includes(value)) {
+        return interaction.reply({ content: `❌ \`engine\` must be one of: agy, api, default (got \`${value}\`)`, ephemeral: true })
+      }
+      try {
+        // 'default' → null sentinel clears the per-channel pick.
+        const patchEngine = value === 'default' ? null : (value as ChatEngine)
+        const updated = await access.setChannelFlags(channel.id, { engine: patchEngine })
+        const envDefault = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
+        const effective = updated.engine ?? `${envDefault} (env default)`
+        const note = value === 'agy'
+          ? 'agy (flat sub) — falls back to the API on error/media turns'
+          : value === 'api'
+            ? 'api (metered Gemini) — bypasses agy entirely'
+            : `cleared — using the GEMMA_AGY_CHAT env default (${envDefault})`
+        return interaction.reply({ content: `✅ <#${channel.id}> chat engine = \`${effective}\` — ${note}.`, ephemeral: true })
+      } catch (e: any) {
+        return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
+      }
     }
 
     if (subcommand === 'set') {
