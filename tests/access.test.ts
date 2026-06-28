@@ -126,8 +126,43 @@ describe('AccessManager', () => {
     const f = mgr.channelFlags('C1')
     assert.equal(f.thinking, 'auto')
     assert.equal(f.showCode, true)
+    assert.equal(f.trace, 'off')
     assert.equal(f.counter, 'token')
     assert.equal(f.cache, true)
+  })
+
+  test('trace defaults off and round-trips through setChannelFlags', async () => {
+    await writeAccess({
+      users: {},
+      channels: { C1: { enabled: true, requireMention: false } }
+    })
+    mgr = new AccessManager()
+    await mgr.load()
+    // Default: off (opt-in, matches gpt-bot).
+    assert.equal(mgr.channelFlags('C1').trace, 'off')
+    // on
+    const onCfg = await mgr.setChannelFlags('C1', { trace: 'on' })
+    assert.equal(onCfg.trace, 'on')
+    assert.equal(mgr.channelFlags('C1').trace, 'on')
+    // collapse
+    await mgr.setChannelFlags('C1', { trace: 'collapse' })
+    assert.equal(mgr.channelFlags('C1').trace, 'collapse')
+    // patching trace must not disturb other flags
+    assert.equal(mgr.channelFlags('C1').thinking, 'auto')
+    assert.equal(mgr.channelFlags('C1').showCode, true)
+  })
+
+  test('setChannelFlags rejects invalid trace mode', async () => {
+    await writeAccess({
+      users: {},
+      channels: { C1: { enabled: true, requireMention: false } }
+    })
+    mgr = new AccessManager()
+    await mgr.load()
+    await assert.rejects(
+      () => mgr.setChannelFlags('C1', { trace: 'maybe' as any }),
+      /trace.*off.*on.*collapse/
+    )
   })
 
   test('channelFlags reads explicit values', async () => {
@@ -140,15 +175,15 @@ describe('AccessManager', () => {
     })
     mgr = new AccessManager()
     await mgr.load()
-    assert.deepEqual(mgr.channelFlags('C1'), { thinking: 'always', showCode: true, counter: 'both', cache: true, cacheTtlSec: null, engine: null })
-    assert.deepEqual(mgr.channelFlags('C2'), { thinking: 'never', showCode: false, counter: 'off', cache: false, cacheTtlSec: null, engine: null })
+    assert.deepEqual(mgr.channelFlags('C1'), { thinking: 'always', showCode: true, trace: 'off', counter: 'both', cache: true, cacheTtlSec: null, engine: null })
+    assert.deepEqual(mgr.channelFlags('C2'), { thinking: 'never', showCode: false, trace: 'off', counter: 'off', cache: false, cacheTtlSec: null, engine: null })
   })
 
   test('channelFlags returns defaults for unknown channel', async () => {
     await writeAccess({ users: {}, channels: {} })
     mgr = new AccessManager()
     await mgr.load()
-    assert.deepEqual(mgr.channelFlags('unknown'), { thinking: 'auto', showCode: true, counter: 'token', cache: true, cacheTtlSec: null, engine: null })
+    assert.deepEqual(mgr.channelFlags('unknown'), { thinking: 'auto', showCode: true, trace: 'off', counter: 'token', cache: true, cacheTtlSec: null, engine: null })
   })
 
   test('setChannel preserves optional flags when provided', async () => {

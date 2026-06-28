@@ -9,6 +9,7 @@ import type {
   RespondMetadata,
   RespondResult,
   LifecycleEvent,
+  ToolCall,
 } from './gemini.ts'
 
 // Thrown on any agy failure (timeout / empty output / spawn error) so the
@@ -436,6 +437,14 @@ export async function respondViaAgy(
   // tool_call_start/end events drive the transient 🔧 reaction (also shared with
   // the native path). All best-effort: a missing/unparseable trajectory leaves
   // the current behavior untouched (never crashes the turn).
+  //
+  // We ALSO materialize the trajectory tool names into meta.toolCalls so the
+  // dedicated 🔧 Tool-trace card renders on agy turns, not just native ones (the
+  // card reads meta.toolCalls, same source the showCode dump uses). agy `-p`
+  // gives no per-call timing/args/output — it's a post-hoc trajectory — so each
+  // entry carries empty args, durationMs:0 (the card omits the [Nms] badge when
+  // <=0), no resultPreview, failed:false (no failure signal in the trajectory).
+  const toolCalls: ToolCall[] = []
   try {
     const trajPath = findAgyTrajectory(trajBefore)
     if (trajPath) {
@@ -446,6 +455,7 @@ export async function respondViaAgy(
       for (const name of traj.toolNames) {
         input.onEvent?.({ type: 'tool_call_start', name })
         input.onEvent?.({ type: 'tool_call_end', name, failed: false })
+        toolCalls.push({ name, args: {}, durationMs: 0, resultPreview: '', failed: false })
       }
       // Restore the real reasoning. Prefer the trajectory's thinking (the model's
       // actual chain-of-thought across planner steps) over the {thinking} the
@@ -469,5 +479,5 @@ export async function respondViaAgy(
     throw new AgyChatError('agy returned an unparseable / empty reply', 0)
   }
 
-  return { parsed, meta: emptyMeta() }
+  return { parsed, meta: { ...emptyMeta(), toolCalls } }
 }
