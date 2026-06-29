@@ -277,21 +277,21 @@ describe('parseResponse', () => {
 })
 
 describe('formatSystemPrompt', () => {
-  test('auto mode appends only the base format instruction', () => {
-    const out = formatSystemPrompt('You are a bot.', 'auto')
+  test('collapse mode appends only the base format instruction', () => {
+    const out = formatSystemPrompt('You are a bot.', 'collapse')
     assert.match(out, /You are a bot\./)
     assert.match(out, /Response format \(mandatory\)/)
     assert.doesNotMatch(out, /Thinking override/)
   })
 
-  test('always mode adds the ALWAYS addendum', () => {
-    const out = formatSystemPrompt('persona', 'always')
+  test('on mode adds the ALWAYS addendum', () => {
+    const out = formatSystemPrompt('persona', 'on')
     assert.match(out, /Thinking override — THIS CHANNEL/)
     assert.match(out, /forced to ALWAYS/)
   })
 
-  test('never mode adds the NEVER addendum', () => {
-    const out = formatSystemPrompt('persona', 'never')
+  test('off mode adds the NEVER addendum', () => {
+    const out = formatSystemPrompt('persona', 'off')
     assert.match(out, /Thinking override — THIS CHANNEL/)
     assert.match(out, /forced to NEVER/)
   })

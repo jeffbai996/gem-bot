@@ -60,8 +60,10 @@ export function formatSystemPrompt(base: string, mode: ThinkingMode): string {
     timeZoneName: 'short',
   })
   let out = base + `\n\nThe current date and time is ${now}. Treat this as "now" — do not guess the date.` + '\n\n' + RESPONSE_FORMAT_BASE
-  if (mode === 'always') out += THINKING_ALWAYS_ADDENDUM
-  else if (mode === 'never') out += THINKING_NEVER_ADDENDUM
+  // Unified modes: on→force thinking, off→suppress, collapse→show-then-strip
+  // (collapse adds no prompt addendum; it's a render-layer behavior).
+  if (mode === 'on') out += THINKING_ALWAYS_ADDENDUM
+  else if (mode === 'off') out += THINKING_NEVER_ADDENDUM
   return out
 }
 
@@ -939,7 +941,7 @@ export class GeminiClient {
     // and pass the signal down so the SDK stream itself gets cancelled.
     if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
     const userTurn = buildUserTurn(args)
-    const systemText = formatSystemPrompt(args.systemPrompt, args.thinkingMode ?? 'auto')
+    const systemText = formatSystemPrompt(args.systemPrompt, args.thinkingMode ?? 'off')
 
     // Last-gate mime sanitization. Rogue mimes from history-cache resurrection
     // or unexpected sub-track types would 400 the entire request otherwise.
