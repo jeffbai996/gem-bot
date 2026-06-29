@@ -53,6 +53,12 @@ const TIMEOUT_MS = Number(process.env.GEMMA_AGY_CHAT_TIMEOUT_MS) || 600_000
 // the Flask store is (codex-chat.ts does the same).
 const SQUAD_STORE_BIN = process.env.GEMMA_SQUAD_STORE_BIN || '/home/jbai/.local/bin/squad-store'
 const SQUAD_STORE_URL = process.env.SQUAD_STORE_URL || 'http://127.0.0.1:5005'
+// vecgrep CLI (semantic code/doc search). Lives in the same bin dir as
+// squad-store, so the --add-dir grant below already covers it — agy reaches it
+// by shelling out, NOT via MCP (agy has no MCP servers wired). Gemma wrongly
+// believed vecgrep was unreachable because she was looking for an MCP tool;
+// the CLI is the path on this engine.
+const VECGREP_BIN = process.env.GEMMA_VECGREP_BIN || '/home/jbai/.local/bin/vecgrep'
 // The directory --add-dir grants agy so squad-store (and any sibling CLI) is
 // reachable without leaning on the sandbox auto-escalation. Derived from the
 // bin path so a GEMMA_SQUAD_STORE_BIN override moves the granted dir with it.
@@ -150,6 +156,17 @@ function buildPrompt(input: AgyChatInput): string {
       `preference, a project, prior context). Skip it for general knowledge, code, or casual ` +
       `chat — don't slow those down. The squad memory store is sensitive: only surface ` +
       `portfolio/account specifics where Jeff already is.`,
+    '--- vecgrep (semantic search) ---',
+    // vecgrep is reachable via the CLI on this engine — NOT as an MCP tool (agy
+    // has none wired). Gemma kept refusing ("can't use vecgrep as an MCP"),
+    // which is half-true and unhelpful: she just needs to shell out. Tell her.
+    `You CAN use vecgrep — it's a semantic-search CLI on this machine (not an MCP tool, ` +
+      `so don't look for one; just run the command). Usage:\n  ${VECGREP_BIN} search "<query>"  ` +
+      `# search all corpora\n  ${VECGREP_BIN} corpora list             # see available corpora\n` +
+      `  ${VECGREP_BIN} search "<query>" -c <corpus>   # scope to one corpus\n` +
+      `Reach for it when the task is "find where/what mentions X" across indexed code or docs ` +
+      `(meaning-based, not literal grep). If a corpus you'd want isn't indexed, say so rather ` +
+      `than guessing.`,
     '--- New message ---',
     `${input.userName}: ${input.userMessageText}`,
     '',
@@ -522,14 +539,16 @@ function parseAgyTrajectory(path: string): AgyTrajParse {
       }
     }
   }
-  // Collapse blank lines in the thinking trace (Jeff 2026-06-29): agy's planner
-  // thinking is double-spaced — blank line between its own bold headings, plus
-  // we used to join steps with '\n\n'. That stacked up to too much vertical air
-  // in the rendered 💭 blockquote. Join steps with a single '\n' and squeeze any
-  // run of 2+ newlines anywhere in the text down to one — so it's exactly one
-  // break between each heading.
+  // Thinking-trace spacing (Jeff 2026-06-29, refined): two distinct levels.
+  //   WITHIN a planner step's thinking, agy double-spaces its own bold headings
+  //     — collapse those internal 2+ newline runs to a single newline so the
+  //     headings sit one line apart, not two.
+  //   BETWEEN separate planner steps, KEEP a blank line so the blocks stay
+  //     visually separated (the first collapse pass wrongly flattened these too,
+  //     fusing all blocks into one wall — not what Jeff wanted).
+  // So: squeeze each chunk internally first, THEN join chunks with '\n\n'.
   const thinking = thinkingChunks.length
-    ? thinkingChunks.join('\n').replace(/\n{2,}/g, '\n').trim()
+    ? thinkingChunks.map(c => c.replace(/\n{2,}/g, '\n').trim()).join('\n\n').trim()
     : null
   return { thinking, tools }
 }
