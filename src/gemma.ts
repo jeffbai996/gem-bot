@@ -110,7 +110,7 @@ const _ARG_DIGEST_PREFERENCE = [
 ]
 
 // Single-line, ID-shaped arg digest, <= maxLen chars. Mirrors _arg_digest.
-function argDigest(args: Record<string, unknown>, maxLen = 80): string {
+function argDigest(args: Record<string, unknown>, maxLen = 85): string {
   if (!args || typeof args !== 'object') return ''
   // Empty args (e.g. agy's post-hoc trace carries no per-call args) → '' so the
   // caller can omit the parens entirely instead of printing a useless `({})`.
@@ -470,6 +470,13 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       ),
       processYouTubeUrls(message.id, message.content, GEMINI_API_KEY)
     ])
+
+    // Observability (Jeff 2026-06-29): surface how much context this turn got.
+    // gem-bot doesn't have gpt/llm's silent-catch amnesia (a buildContextHistory
+    // throw propagates to the turn's outer catch → visible error, not silent
+    // empty history) — but logging the count makes a thin-context turn diagnosable
+    // and confirms history is flowing.
+    console.error(`[history] ch=${message.channelId} contextMsgs=${history.length}`)
 
     const allParts = [...attachmentResult.parts, ...ytResult.parts]
     const allSkipped = [...attachmentResult.skipped, ...ytResult.skipped]
