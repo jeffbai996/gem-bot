@@ -5,6 +5,7 @@ dist/
 .DS_Store
 inbox/
 *.log
+.test-state/
 persona.md
 access.json
 README_PRIVATE.md

@@ -12,8 +12,12 @@ export function chunk(text: string, limit: number = 2000, mode: 'length' | 'newl
     }
     
     // We need to leave room to append "```\n" if we have to close an open block.
-    // 4 characters for closing backticks + newline.
-    const effectiveLimit = inCodeBlock ? limit - 4 : limit
+    // Also, if the chunk starts with a closed block but opens one, we will need to append
+    // closing backticks at the end. To be absolutely safe and prevent exceeding the
+    // Discord 2000-character limit, we use a conservative 50-character buffer if limit is large.
+    // For small limits (e.g. in tests), we fall back to a smaller buffer to avoid negative limits.
+    const buffer = limit > 100 ? 50 : (inCodeBlock ? 4 : 0)
+    const effectiveLimit = limit - buffer
     
     let splitAt = -1
     

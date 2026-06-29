@@ -2,8 +2,10 @@ import Database from 'better-sqlite3'
 import * as sqliteVss from 'sqlite-vss'
 import path from 'path'
 import os from 'os'
+import fs from 'fs'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
+fs.mkdirSync(STATE_DIR, { recursive: true })
 const DB_PATH = path.join(STATE_DIR, 'memory.db')
 
 export const db = new Database(DB_PATH)
