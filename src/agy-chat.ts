@@ -254,34 +254,43 @@ interface AgyTrajParse {
 // the raw name. The display name only feeds the tool_call_start/end events
 // (which drive the transient 🔧 reaction); precision matters less than that
 // SOMETHING fires, so a sensible fallback is fine.
+// agy's REAL tool names (verified from live trajectories): run_command,
+// search_web, view_file, list_dir, grep_search, write_to_file, manage_task,
+// call_mcp_tool, ask_question, list_permissions. Map them to clean canonical
+// labels. NOTE: these are the actual `tool_calls[].name` values — earlier keys
+// (web_search/read_file/…) were guesses that never matched, which is why the
+// trace fell through to agy's freeform per-call prose ("Searching <topic>") and
+// read as wrong/garbage names (Jeff 2026-06-28).
 const AGY_TOOL_LABELS: Record<string, string> = {
   run_command: 'Running command',
+  search_web: 'Searching web',
+  view_file: 'Reading file',
+  list_dir: 'Listing files',
+  grep_search: 'Searching code',
+  write_to_file: 'Writing file',
+  manage_task: 'Managing task',
+  call_mcp_tool: 'Tool call',
+  ask_question: 'Asking',
+  list_permissions: 'Checking permissions',
+  // browser tools (only reachable when an MCP browser server is wired — Operator):
   browser_navigate: 'Browsing',
   browser_click: 'Clicking',
   browser_type: 'Typing',
-  browser_snapshot: 'Reading',
+  browser_snapshot: 'Reading page',
   browser_take_screenshot: 'Screenshot',
-  web_search: 'Searching',
-  search: 'Searching',
-  read_file: 'Reading file',
-  write_file: 'Writing file',
-  recall: 'Recalling',
 }
 
 function agyToolDisplayName(
   name: string,
-  args: Record<string, unknown> | undefined
+  _args: Record<string, unknown> | undefined
 ): string {
   const bare = (name || '').toLowerCase().replace(/^mcp__[^_]+__/, '')
   if (AGY_TOOL_LABELS[bare]) return AGY_TOOL_LABELS[bare]
-  // agy sometimes hands a human label on the call args.
-  const ta = args && typeof args === 'object' ? args : {}
-  const label =
-    (typeof ta.toolAction === 'string' && ta.toolAction.trim()) ||
-    (typeof ta.toolSummary === 'string' && ta.toolSummary.trim()) ||
-    ''
-  if (label) return label
-  return name || 'tool'
+  // No canonical label → show the ACTUAL tool name (e.g. `search_web`), NOT
+  // agy's freeform `toolAction`/`toolSummary` prose. The prose is query-specific
+  // narration ("Searching lupine lifecycle") that changes every call and reads
+  // as a wrong tool name; the bare name is consistent and correct.
+  return bare || name || 'tool'
 }
 
 // Snapshot {trajectory_path -> mtimeMs} under the brain dir BEFORE launching agy,
