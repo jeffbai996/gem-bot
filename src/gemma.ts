@@ -167,10 +167,17 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
   for (const call of ordered) {
     const prefix = call.failed ? '- ● ' : '+ ● '
     const tail = call.failed ? ' FAILED' : ''
-    // Timing badge: only show when a call is genuinely slow (≥5s) — most agy
-    // calls run 1-2s, so a per-row `[1s]`/`[2s]` was just noise. Under 5s (incl.
-    // 0/unknown, and native sub-second calls) → no badge; ≥5s → `[Ns]`.
-    const ms = call.durationMs >= 5000 ? ` [${Math.round(call.durationMs / 1000)}s]` : ''
+    // Timing badge. Two regimes so we kill the agy noise without losing native
+    // precision: native tool calls carry sub-second ms timing that's genuinely
+    // useful → show `[Nms]` for anything under 1s. agy's timing is coarse
+    // 1s-resolution derived from trajectory timestamps, so its 1-4s rows were
+    // just per-row noise (Jeff) → suppress 1000-4999ms. Genuinely slow (≥5s,
+    // either engine) → `[Ns]`. 0/unknown → no badge.
+    const d = call.durationMs
+    const ms = d <= 0 ? ''
+      : d < 1000 ? ` [${d}ms]`
+      : d < 5000 ? ''
+      : ` [${Math.round(d / 1000)}s]`
     // Omit the parens entirely when there's no arg digest (agy's post-hoc trace
     // has no per-call args) so the line reads `● Running command` not `● Running command({})`.
     const digest = argDigest(call.args)
@@ -956,22 +963,32 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       const collapsingThinking = flags.thinking === 'collapse' && replyStart > 0
       const collapsingTrace = flags.trace === 'collapse' && showTrace
       const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 120_000
+      let thinkingSpliced = 0   // how many leading thinking msgs we removed (for traceIdx)
 
       if (collapsingThinking) {
-        const thoughtMsgs = activeMessages.slice(0, replyStart)
-        // Drop them from activeMessages now so subsequent logic (and the trace
-        // collapse below) doesn't treat them as live; the actual Discord delete
-        // is deferred to the linger.
-        activeMessages.splice(0, replyStart)
-        setTimeout(() => {
-          for (const m of thoughtMsgs) m.delete().catch(() => {})
-        }, lingerMs)
+        // SAFETY: only delete leading messages that are genuinely thinking
+        // chunks. If a mid-stream send failed earlier, activeMessages can be
+        // SHORTER than `pieces`, so `replyStart` might point into (or past) the
+        // reply chunks — a blind splice(0, replyStart) could then delete answer
+        // content. Bound the count to messages that actually exist AND are still
+        // within the thinking region, and only when at least one reply chunk
+        // survived below it (else we'd be deleting the whole message set).
+        const replyMsgsPresent = activeMessages.length - replyStart
+        const deleteCount = replyMsgsPresent > 0 ? Math.min(replyStart, activeMessages.length) : 0
+        if (deleteCount > 0) {
+          const thoughtMsgs = activeMessages.slice(0, deleteCount)
+          activeMessages.splice(0, deleteCount)
+          thinkingSpliced = deleteCount
+          setTimeout(() => {
+            for (const m of thoughtMsgs) m.delete().catch(() => {})
+          }, lingerMs)
+        }
       }
 
       if (collapsingTrace) {
         // After a (possible) thinking collapse above, the reply's first chunk is
         // activeMessages[0] if thinking was spliced out, else activeMessages[replyStart].
-        const traceIdx = collapsingThinking ? 0 : replyStart
+        const traceIdx = replyStart - thinkingSpliced
         const traceMsg = activeMessages[traceIdx]
         const original = replyPieces[0]
         if (traceMsg && original) {
@@ -1123,7 +1140,14 @@ async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<
     await handleUserMessage(message, opts)
     while (st.queue.length) {
       const batch = st.queue.splice(0, st.queue.length)
-      const carrier = batch[batch.length - 1]
+      // Carrier = the message whose attachments get processed. Default to the
+      // LAST message, but if an EARLIER batched message carried attachments
+      // (image/file) and the last didn't, prefer the one WITH attachments — else
+      // a "[image]" then "what is this?" pair would silently drop the image
+      // (only the carrier's attachments are ingested). Picks the last message
+      // that has attachments; falls back to the final message.
+      const withAtt = [...batch].reverse().find(m => m.attachments.size > 0)
+      const carrier = withAtt ?? batch[batch.length - 1]
       const combined = batch.map(m => m.content).filter(Boolean).join('\n')
       const botId = client.user?.id
       if (botId) for (const m of batch) {

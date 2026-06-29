@@ -106,6 +106,13 @@ function buildPrompt(input: AgyChatInput): string {
     // Drop the "## Response format (mandatory)" section through to the next
     // header or end-of-string (the block that forces the JSON envelope).
     .replace(/##\s*Response format \(mandatory\)[\s\S]*?(?=\n##\s|\n*$)/i, '')
+    // ALSO drop any "## Thinking override" block — formatSystemPrompt appends it
+    // for thinking=always/never, and it re-references the JSON `thinking` field
+    // ("populate the `thinking` field" / "set the `thinking` field to null"),
+    // which would re-nudge agy back toward emitting the envelope. The agy path
+    // gets its thinking from the trajectory, so this instruction is moot AND
+    // harmful here — strip it too so the no-JSON contract holds in every mode.
+    .replace(/##\s*Thinking override[\s\S]*?(?=\n##\s|\n*$)/i, '')
     .trim()
 
   return [
@@ -382,23 +389,34 @@ function snapshotAgyTrajectories(): Map<string, number> {
 // snapshot, or whose mtime advanced. Falls back to the globally-freshest if
 // nothing looks new. Mirrors operator_agent._agy_find_trajectory. Returns null
 // when the brain dir holds no trajectories at all.
-function findAgyTrajectory(before: Map<string, number>): string | null {
+function findAgyTrajectory(before: Map<string, number>, fingerprint?: string): string | null {
   const now = snapshotAgyTrajectories()
-  let best: string | null = null
-  let bestM = -Infinity
-  // Prefer paths that are new or whose mtime advanced past the snapshot.
+  // Candidate set: ONLY files that are new or whose mtime advanced since the
+  // pre-launch snapshot. (We deliberately do NOT fall back to "freshest overall"
+  // — under concurrent multi-channel agy turns that could grab ANOTHER channel's
+  // trajectory and render its thinking/tools under our reply. Better to return
+  // null and keep current behavior than to attach the wrong run.)
+  const changed: Array<[string, number]> = []
   for (const [p, m] of now) {
     const prev = before.get(p)
-    if (prev === undefined || m > prev) {
-      if (m > bestM) { bestM = m; best = p }
+    if (prev === undefined || m > prev) changed.push([p, m])
+  }
+  if (!changed.length) return null
+  changed.sort((a, b) => b[1] - a[1]) // freshest first
+  // Disambiguate concurrent runs by content: prefer the changed trajectory whose
+  // USER_INPUT contains a distinctive slice of THIS turn's message. Only one
+  // channel's transcript will carry our exact user text.
+  if (fingerprint && fingerprint.trim().length >= 12) {
+    const fp = fingerprint.trim().slice(0, 120)
+    for (const [p] of changed) {
+      try {
+        if (readFileSync(p, 'utf8').includes(fp)) return p
+      } catch { /* unreadable — skip */ }
     }
   }
-  if (best) return best
-  // Nothing "changed" — take the freshest overall (best-effort).
-  for (const [p, m] of now) {
-    if (m > bestM) { bestM = m; best = p }
-  }
-  return best
+  // No fingerprint match (or none provided) → freshest changed file. Still
+  // restricted to the since-snapshot set, so the blast radius is small.
+  return changed[0][0]
 }
 
 // Parse a run's trajectory JSONL into { thinking, toolNames }, ordered by
@@ -523,12 +541,31 @@ export async function respondViaAgy(
   // leaking verbatim into Discord). If the reply still looks like a raw envelope,
   // pull the inner `reply` value out by hand so the user never sees the JSON.
   if (parsed.reply && /^\s*\{\s*"(?:react|thinking|reply)"\s*:/.test(parsed.reply)) {
-    const m = parsed.reply.match(/"reply"\s*:\s*"([^]*?)(?<!\\)"\s*\}?\s*$/)
-    if (m) {
-      const inner = m[1]
-        .replace(/\\n/g, '\n').replace(/\\r/g, '\r')
-        .replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\')
-      parsed = { ...parsed, reply: inner.trim() || parsed.reply }
+    let recovered: string | null = null
+    // First try a real JSON parse — robust to ANY field order and trailing
+    // whitespace. Trim to the outermost {...} so trailing prose after the
+    // object ("…} Hope that helps!") doesn't defeat JSON.parse.
+    const objEnd = parsed.reply.lastIndexOf('}')
+    const objStart = parsed.reply.indexOf('{')
+    if (objStart >= 0 && objEnd > objStart) {
+      try {
+        const o = JSON.parse(parsed.reply.slice(objStart, objEnd + 1))
+        if (o && typeof o.reply === 'string') recovered = o.reply
+      } catch { /* fall through to regex */ }
+    }
+    // Regex fallback: match the `reply` value wherever it sits (NOT anchored to
+    // end-of-string — reply may not be the last key, and prose may trail the
+    // object), terminating at the first unescaped closing quote.
+    if (recovered === null) {
+      const m = parsed.reply.match(/"reply"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+      if (m) {
+        recovered = m[1]
+          .replace(/\\n/g, '\n').replace(/\\r/g, '\r')
+          .replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+      }
+    }
+    if (recovered !== null && recovered.trim()) {
+      parsed = { ...parsed, reply: recovered.trim() }
     }
   }
 
@@ -550,7 +587,7 @@ export async function respondViaAgy(
   // <=0), no resultPreview, failed:false (no failure signal in the trajectory).
   const toolCalls: ToolCall[] = []
   try {
-    const trajPath = findAgyTrajectory(trajBefore)
+    const trajPath = findAgyTrajectory(trajBefore, input.userMessageText)
     if (trajPath) {
       const traj = parseAgyTrajectory(trajPath)
       // Emit a start/end pair per tool call so the 🔧 trace fires on agy turns,
