@@ -314,6 +314,13 @@ interface AgyTrajParse {
   // diff (every content line as a '+') — what a Claude-style new-file write looks
   // like. Leaving it undefined renders the call as a plain row.
   tools: Array<{ name: string; durationMs: number; diff?: string }>
+  // The FINAL planner step's content — agy's actual answer text. On a multi-step
+  // agentic turn, agy's stdout can carry the running "I'll do X" action narration
+  // from every intermediate step (a wall — see Jeff's 2026-06-29 screenshot). The
+  // last planner step (typically tools=0) is the real reply; we surface it here so
+  // respondViaAgy prefers it over the raw stdout wall. Null on a 0/1-step turn
+  // (then stdout IS the clean answer and we keep using it).
+  answer: string | null
 }
 
 // Map an agy tool name (+ args) to a human display name for the 🔧 trace,
@@ -467,7 +474,7 @@ function findAgyTrajectory(before: Map<string, number>, fingerprint?: string): s
 // are skipped (non-MODEL source). Best-effort: any error → empty parse, and the
 // caller falls back to the current behavior.
 function parseAgyTrajectory(path: string): AgyTrajParse {
-  const empty: AgyTrajParse = { thinking: null, tools: [] }
+  const empty: AgyTrajParse = { thinking: null, tools: [], answer: null }
   let raw: string
   try {
     raw = readFileSync(path, 'utf8')
@@ -508,14 +515,36 @@ function parseAgyTrajectory(path: string): AgyTrajParse {
     return tb - ta
   }
 
+  // Index of the LAST MODEL PLANNER_RESPONSE step — its content is agy's final
+  // answer (the real reply). Every planner step BEFORE it is intermediate
+  // action work whose `content` is the "I'll do X" narration → route those to
+  // the Thinking trace (observability Jeff asked for), NOT the reply.
+  let lastPlannerIdx = -1
+  for (let i = steps.length - 1; i >= 0; i--) {
+    if (steps[i].source === 'MODEL' && steps[i].type === 'PLANNER_RESPONSE') { lastPlannerIdx = i; break }
+  }
+
   const thinkingChunks: string[] = []
   const tools: Array<{ name: string; durationMs: number; diff?: string }> = []
+  let answer: string | null = null
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i]
     if (s.source !== 'MODEL') continue // skip USER_INPUT / CONVERSATION_HISTORY / CHECKPOINT
     if (s.type === 'PLANNER_RESPONSE') {
+      const isFinal = i === lastPlannerIdx
+      if (isFinal) {
+        // The final planner step's content IS the answer text.
+        if (typeof s.content === 'string' && s.content.trim()) answer = s.content.trim()
+      }
+      // Reasoning trace: prefer the real `thinking` field; otherwise fall back to
+      // the step's action-narration `content` ("I'll search for X…") on every
+      // NON-final step, so the Thinking block shows what agy actually did
+      // step-by-step (Jeff 2026-06-29: "stream what agy is tryna do under
+      // Thinking…"). The final step's content is the answer, never thinking.
       if (typeof s.thinking === 'string' && s.thinking.trim()) {
         thinkingChunks.push(s.thinking.trim())
+      } else if (!isFinal && typeof s.content === 'string' && s.content.trim()) {
+        thinkingChunks.push(s.content.trim())
       }
       const dur = stepMs(i)
       for (const tc of s.tool_calls ?? []) {
@@ -529,9 +558,6 @@ function parseAgyTrajectory(path: string): AgyTrajParse {
           ...(diff ? { diff } : {}),
         })
       }
-      // s.content on the final planner is the answer text — we DON'T use it here;
-      // the reply is agy's plain stdout (no JSON envelope on this path now). This
-      // parse only ADDS the real thinking + tool trace.
     } else if (!anyPlannerTools) {
       // No planner carried tool_calls in this run → surface standalone MODEL
       // non-planner steps (RUN_COMMAND, or a future browser/MCP step) as tools
@@ -553,7 +579,7 @@ function parseAgyTrajectory(path: string): AgyTrajParse {
   const thinking = thinkingChunks.length
     ? thinkingChunks.map(c => c.replace(/\n{2,}/g, '\n').trim()).join('\n\n').trim()
     : null
-  return { thinking, tools }
+  return { thinking, tools, answer }
 }
 
 // Run a chat turn through the Antigravity CLI (`agy`) instead of the Gemini
@@ -652,6 +678,17 @@ export async function respondViaAgy(
       // fall through to the envelope value when the trajectory had none.
       if (traj.thinking) {
         parsed.thinking = traj.thinking
+      }
+      // Prefer the trajectory's FINAL-step answer over the raw stdout reply when
+      // they diverge (Jeff 2026-06-29 "fucked it bad" screenshot): on a multi-step
+      // agentic turn, agy's stdout carried the running "I'll do X" action
+      // narration from every intermediate step — a wall. The last planner step's
+      // content is the clean answer; the per-step narration is now in traj.thinking
+      // (the observable Thinking block). Only override when the trajectory answer
+      // is materially SHORTER (the wall is longer than the clean answer) so a
+      // 0/1-step turn — where stdout already IS the clean answer — is untouched.
+      if (traj.answer && parsed.reply && traj.answer.length < parsed.reply.trim().length) {
+        parsed.reply = traj.answer
       }
     }
   } catch (e) {
