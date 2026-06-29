@@ -258,6 +258,12 @@ export const geminiCommand = new SlashCommandBuilder()
       .setDescription('Force a context-summary rollup now, regardless of message threshold')
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
   )
+  .addSubcommand(subcommand =>
+    subcommand
+      .setName('settings')
+      .setDescription('Show every resolved setting for this channel (read-only)')
+      .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
+  )
 
 // Compact "Xs / Xm Ys / Xh Ym" rendering for the cache info card. Avoids
 // pulling in a date-fns dependency for one display surface.
@@ -697,6 +703,42 @@ interface ExtraDeps {
       } catch (e: any) {
         return interaction.editReply({ content: `❌ compact failed: ${e?.message ?? e}` })
       }
+    }
+
+    // /gemini settings — read-only dump of every RESOLVED setting for a channel.
+    // Unified across the three squad bots (gpt/llm have the same layout): one
+    // fenced block, `key : value (default X)`. Shows the effective value (per-
+    // channel pick if set, else the env/code default) so there's no guessing.
+    if (subcommand === 'settings') {
+      const channel = interaction.options.getChannel('channel') ?? interaction.channel
+      if (!channel) {
+        return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
+      }
+      const f = access.channelFlags(channel.id)
+      // Engine: per-channel pick, else the GEMMA_AGY_CHAT env default.
+      const envEngine = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
+      const engine = f.engine ?? `${envEngine} (env default)`
+      // Models are env-level (not per-channel): show the one for the active engine.
+      const apiModel = process.env.GEMINI_MODEL || 'gemini-3-flash-preview'
+      const agyModel = process.env.GEMMA_AGY_MODEL || 'Gemini 3.5 Flash (Medium)'
+      const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000
+      const rows: Array<[string, string]> = [
+        ['engine', String(engine)],
+        ['api model', apiModel],
+        ['agy model', agyModel],
+        ['thinking', `${f.thinking} (default auto)`],
+        ['trace', `${f.trace} (default off)`],
+        ['counter', `${f.counter} (default token)`],
+        ['show code', `${f.showCode} (default true)`],
+        ['cache', `${f.cache} (default true)`],
+        ['cache ttl', f.cacheTtlSec != null ? `${f.cacheTtlSec}s` : 'default'],
+        ['require @', f.requireMention ? 'yes' : 'no'],
+        ['collapse linger', `${Math.round(lingerMs / 1000)}s`],
+      ]
+      const pad = Math.max(...rows.map(([k]) => k.length))
+      const body = rows.map(([k, v]) => `${k.padEnd(pad)} : ${v}`).join('\n')
+      const card = `⚙️ **gemini settings** — <#${channel.id}>\n\`\`\`\n${body}\n\`\`\``
+      return interaction.reply({ content: card, ephemeral: true })
     }
 
     if (subcommand === 'backfill') {
