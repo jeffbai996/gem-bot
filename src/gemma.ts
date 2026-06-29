@@ -678,15 +678,25 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     let finalFullReply = ''
 
+    // The 🧠 reasoning + 💭 thinking blocks are assembled into their OWN string
+    // and posted as a SEPARATE Discord message ABOVE the reply (Jeff 2026-06-28).
+    // Previously they were woven into the top of finalFullReply as `>` quotes, so
+    // the reasoning "read as part of the message". Now: thinkingMessage → its own
+    // grayed thought-message (the "💭 Thinking…" placeholder is edited to become
+    // it); finalFullReply → the clean answer as a separate message below. Same
+    // gating as before (`flags.thinking !== 'never'`, collapse/never modes).
+    let thinkingMessage = ''
+
     // 🔧 Tool-trace card — the dedicated gpt-bot-style card, gated by the per-
     // channel `trace` flag (off|on|collapse), distinct from the always-on
-    // showCode tool dump below. Sits ABOVE everything (trace → thinking → reply →
-    // footer) to read as "here's what I ran, here's my reasoning, then the
-    // answer". Renders for BOTH engines: native gemini populates meta.toolCalls
-    // at its dispatch site; agy-chat materializes its trajectory tool names into
+    // showCode tool dump below. STAYS WITH THE REPLY (top of finalFullReply) —
+    // the thinking split is deliberately scoped to reasoning only; the trace card
+    // keeps its existing inline-then-strip collapse keyed off the reply's first
+    // chunk. Renders for BOTH engines: native gemini populates meta.toolCalls at
+    // its dispatch site; agy-chat materializes its trajectory tool names into
     // meta.toolCalls post-hoc, so this same block fires on agy turns too.
-    // 'collapse' renders the card inline now and strips it after a linger (same
-    // mechanism as thinking:collapse below); 'on' keeps it.
+    // 'collapse' renders the card inline now and strips it after a linger; 'on'
+    // keeps it.
     const showTrace = flags.trace !== 'off' && meta.toolCalls.length > 0
     if (showTrace) {
       finalFullReply += renderTraceCard(meta.toolCalls) + '\n\n'
@@ -702,16 +712,18 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // 💭 block since it's the model's own summary, not our wrapper prose).
     // Header sits at column 0; body blockquoted so the inner content visually
     // indents under the header without doubling up the indent on the title.
+    // Goes into thinkingMessage (the separate thought-message), NOT the reply.
     if (flags.thinking !== 'never' && meta.nativeThoughts) {
       const quoted = meta.nativeThoughts.split('\n').map(line => `> ${line}`).join('\n')
-      finalFullReply += `🧠 **Reasoning:**\n${quoted}\n\n`
+      thinkingMessage += `🧠 **Reasoning:**\n${quoted}\n\n`
     }
 
     const showThinkingFinal = flags.thinking !== 'never' && !!parsed.thinking
     if (showThinkingFinal && parsed.thinking) {
       const quotedThinking = parsed.thinking.split('\n').map(line => `> ${line}`).join('\n')
-      finalFullReply += `💭 **Thinking:**\n${quotedThinking}\n\n`
+      thinkingMessage += `💭 **Thinking:**\n${quotedThinking}\n\n`
     }
+    thinkingMessage = thinkingMessage.replace(/\s+$/, '')
 
     // Search queries Gemma typed into Google. Lets the user catch misframed
     // queries without parsing the output. Same gate as code artifacts — same
@@ -857,12 +869,27 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     applyLifecycle(message, terminalState).catch(() => {})
 
     if (finalFullReply) {
-      // Edit streaming preview messages in place to become the final output.
-      // The prior approach (delete all streaming messages, then send fresh ones)
-      // produced duplicate messages when a delete silently failed — the send
-      // ran regardless, leaving the old message alive next to the new one.
-      // Trading the "(edited)" marker for zero-duplicate guarantee.
-      const pieces = chunk(finalFullReply, 2000, 'newline')
+      // Two-message render (Jeff 2026-06-28): the 💭/🧠 reasoning becomes its own
+      // grayed thought-message ABOVE the reply, then the clean answer below. We
+      // build ONE ordered list of pieces — thinking chunks first, reply chunks
+      // after — and map it onto activeMessages by index. The "💭 Thinking…"
+      // placeholder (activeMessages[0]) thus naturally becomes the first thinking
+      // chunk; if there's no thinking, it becomes the first reply chunk instead
+      // (identical to the old single-message behavior, no empty thought left).
+      //
+      // Keeping it one index-mapped list preserves the multi-send dedupe: each
+      // streaming message is edited-in-place by index, overflow is sent fresh,
+      // and any excess streaming messages are deleted at the end. Splitting into
+      // two separate send loops would have re-introduced the duplicate-on-failed-
+      // delete bug that the edit-in-place approach exists to prevent.
+      const thinkingPieces = thinkingMessage ? chunk(thinkingMessage, 2000, 'newline') : []
+      const replyPieces = chunk(finalFullReply, 2000, 'newline')
+      const pieces = [...thinkingPieces, ...replyPieces]
+      // Index in activeMessages where the reply (vs thinking) begins. Used by the
+      // trace-collapse strip (operates on the reply's first chunk) and by the
+      // thinking-collapse delete (removes the leading thinking messages).
+      const replyStart = thinkingPieces.length
+
       for (let i = 0; i < pieces.length; i++) {
         const piece = pieces[i]
         if (i < activeMessages.length) {
@@ -886,33 +913,79 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         }
       }
 
-      // Collapse (Jeff 2026-06-25): render the 💭 thinking block and/or 🔧 trace
-      // card live, then strip them from the first message after the linger,
-      // leaving the reply. Best-effort, fire-and-forget. Matches the gpt/Claude
-      // collapse UX. Both blocks live at the TOP of pieces[0] (trace above
-      // thinking), so when either flag is 'collapse' we run its strip; chaining
-      // both regexes handles the case where both are collapsing at once.
-      const collapsingThinking = flags.thinking === 'collapse'
+      // Collapse (Jeff 2026-06-25, reworked 2026-06-28 for the split). After a
+      // linger, best-effort fire-and-forget:
+      //   • thinking:collapse → DELETE the separate thinking message(s) entirely
+      //     (indices 0..replyStart-1), leaving just the reply below. No more
+      //     regex-stripping a combined string — the thought is its own message now,
+      //     so we just remove it.
+      //   • trace:collapse → strip the 🔧 trace card from the reply's first chunk,
+      //     which now lives at activeMessages[replyStart] (the trace card stayed
+      //     with the reply, not the thinking message).
+      // Snapshot the messages we touch so a later turn mutating activeMessages
+      // can't make the deferred callback hit the wrong message.
+      const collapsingThinking = flags.thinking === 'collapse' && replyStart > 0
       const collapsingTrace = flags.trace === 'collapse' && showTrace
-      if ((collapsingThinking || collapsingTrace) && activeMessages.length > 0 && pieces.length > 0) {
-        const first = activeMessages[0]
-        let stripped = pieces[0]
-        // Trace card is a fenced ```diff``` block under the 🔧 header — strip
-        // the whole header+fence+trailing blank line.
-        if (collapsingTrace) {
-          stripped = stripped.replace(/🔧 \*\*Tool trace\*\*\n```diff\n[\s\S]*?\n```\n*/, '')
-        }
-        if (collapsingThinking) {
-          stripped = stripped.replace(/💭 \*\*Thinking:\*\*\n(?:>.*\n)*\n?/, '')
-        }
-        stripped = stripped.replace(/^\s+/, '')
-        if (stripped && stripped !== pieces[0]) {
-          const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 120_000
-          setTimeout(() => { first.edit(stripped).catch(() => {}) }, lingerMs)
+      const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 120_000
+
+      if (collapsingThinking) {
+        const thoughtMsgs = activeMessages.slice(0, replyStart)
+        // Drop them from activeMessages now so subsequent logic (and the trace
+        // collapse below) doesn't treat them as live; the actual Discord delete
+        // is deferred to the linger.
+        activeMessages.splice(0, replyStart)
+        setTimeout(() => {
+          for (const m of thoughtMsgs) m.delete().catch(() => {})
+        }, lingerMs)
+      }
+
+      if (collapsingTrace) {
+        // After a (possible) thinking collapse above, the reply's first chunk is
+        // activeMessages[0] if thinking was spliced out, else activeMessages[replyStart].
+        const traceIdx = collapsingThinking ? 0 : replyStart
+        const traceMsg = activeMessages[traceIdx]
+        const original = replyPieces[0]
+        if (traceMsg && original) {
+          // Trace card is a fenced ```diff``` block under the 🔧 header — strip
+          // the whole header+fence+trailing blank line.
+          let stripped = original.replace(/🔧 \*\*Tool trace\*\*\n```diff\n[\s\S]*?\n```\n*/, '')
+          stripped = stripped.replace(/^\s+/, '')
+          if (stripped && stripped !== original) {
+            setTimeout(() => { traceMsg.edit(stripped).catch(() => {}) }, lingerMs)
+          }
         }
       }
+    } else if (thinkingMessage) {
+      // React-only turn (empty reply) that STILL produced reasoning: don't orphan
+      // or drop the thinking. Render thinkingMessage into the placeholder/messages
+      // so the thought survives as its own grayed message even with no answer
+      // below it. (Previously thinking lived inside finalFullReply, so this case
+      // never hit the empty branch; now it can, so we handle it explicitly.)
+      const thinkingPieces = chunk(thinkingMessage, 2000, 'newline')
+      for (let i = 0; i < thinkingPieces.length; i++) {
+        const piece = thinkingPieces[i]
+        if (i < activeMessages.length) {
+          if (activeMessages[i].content !== piece) {
+            await activeMessages[i].edit(piece).catch(() => {})
+          }
+        } else {
+          const msg = await message.reply({ content: piece, allowedMentions: { repliedUser: false } }).catch(() => null)
+          if (msg) activeMessages.push(msg as Message)
+        }
+      }
+      if (thinkingPieces.length < activeMessages.length) {
+        const excess = activeMessages.splice(thinkingPieces.length)
+        for (const m of excess) await m.delete().catch(() => {})
+      }
+      // Honor thinking:collapse here too — delete the thought message(s) after the
+      // linger, same as the main path.
+      if (flags.thinking === 'collapse') {
+        const thoughtMsgs = activeMessages.splice(0)
+        const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 120_000
+        setTimeout(() => { for (const m of thoughtMsgs) m.delete().catch(() => {}) }, lingerMs)
+      }
     } else {
-      // If the final reply is empty (e.g. only a react), delete the thinking messages
+      // Truly empty (react-only, no reasoning): delete the placeholder messages.
       for (const m of activeMessages) await m.delete().catch(() => {})
     }
 
