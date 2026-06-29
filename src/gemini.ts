@@ -379,7 +379,7 @@ function normalizeCodeForDedupe(code: string): string {
 // gemini-3-pro-preview often emits the same code twice — once in its prose
 // reply as a markdown fenced block, and once via the codeExecution tool as an
 // executableCode part. The artifact path is rendered separately by gemma.ts
-// when showCode is on; the prose copy is a duplicate that the user explicitly
+// when there are code artifacts; the prose copy is a duplicate that the user
 // opted in to seeing once via the artifact rendering.
 //
 // When artifacts exist with a given language, strip ALL fenced blocks of that

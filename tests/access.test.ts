@@ -112,7 +112,7 @@ describe('AccessManager', () => {
     assert.equal(mgr.canHandle({ channelId: 'C1', userId: 'U1', isMention: false }), true)
   })
 
-  // Per-channel rendering flags. Defaults: thinking=auto, showCode/cache default
+  // Per-channel rendering flags. Defaults: thinking=off, cache default
   // true, counter='token' (preserves the pre-split verbose=true footer). The
   // verbose flag was split into /gemini counter (footer) + the thinking mode
   // (🧠 reasoning block) on 2026-06-28. optInReply was removed 2026-05-02.
@@ -125,7 +125,6 @@ describe('AccessManager', () => {
     await mgr.load()
     const f = mgr.channelFlags('C1')
     assert.equal(f.thinking, 'off')
-    assert.equal(f.showCode, true)
     assert.equal(f.trace, 'off')
     assert.equal(f.counter, 'both')
     assert.equal(f.cache, true)
@@ -149,7 +148,6 @@ describe('AccessManager', () => {
     assert.equal(mgr.channelFlags('C1').trace, 'collapse')
     // patching trace must not disturb other flags
     assert.equal(mgr.channelFlags('C1').thinking, 'off')
-    assert.equal(mgr.channelFlags('C1').showCode, true)
   })
 
   test('setChannelFlags rejects invalid trace mode', async () => {
@@ -171,14 +169,14 @@ describe('AccessManager', () => {
     await writeAccess({
       users: { U1: { allowed: true } },
       channels: {
-        C1: { enabled: true, requireMention: false, thinking: 'always', showCode: true, counter: 'both', cache: true },
-        C2: { enabled: true, requireMention: false, thinking: 'never', showCode: false, counter: 'off', cache: false }
+        C1: { enabled: true, requireMention: false, thinking: 'always', counter: 'both', cache: true },
+        C2: { enabled: true, requireMention: false, thinking: 'never', counter: 'off', cache: false }
       }
     })
     mgr = new AccessManager()
     await mgr.load()
-    assert.deepEqual(mgr.channelFlags('C1'), { thinking: 'on', showCode: true, trace: 'off', counter: 'both', cache: true, cacheTtlSec: null, engine: null })
-    assert.deepEqual(mgr.channelFlags('C2'), { thinking: 'off', showCode: false, trace: 'off', counter: 'off', cache: false, cacheTtlSec: null, engine: null })
+    assert.deepEqual(mgr.channelFlags('C1'), { thinking: 'on', trace: 'off', counter: 'both', cache: true, cacheTtlSec: null, engine: null })
+    assert.deepEqual(mgr.channelFlags('C2'), { thinking: 'off', trace: 'off', counter: 'off', cache: false, cacheTtlSec: null, engine: null })
   })
 
   test('legacy auto thinking coerces to off on read', async () => {
@@ -195,17 +193,16 @@ describe('AccessManager', () => {
     await writeAccess({ users: {}, channels: {} })
     mgr = new AccessManager()
     await mgr.load()
-    assert.deepEqual(mgr.channelFlags('unknown'), { thinking: 'off', showCode: true, trace: 'off', counter: 'both', cache: true, cacheTtlSec: null, engine: null })
+    assert.deepEqual(mgr.channelFlags('unknown'), { thinking: 'off', trace: 'off', counter: 'both', cache: true, cacheTtlSec: null, engine: null })
   })
 
   test('setChannel preserves optional flags when provided', async () => {
     await writeAccess({ users: {}, channels: {} })
     mgr = new AccessManager()
     await mgr.load()
-    await mgr.setChannel('C1', true, false, { thinking: 'on', showCode: false })
+    await mgr.setChannel('C1', true, false, { thinking: 'on' })
     const f = mgr.channelFlags('C1')
     assert.equal(f.thinking, 'on')
-    assert.equal(f.showCode, false)
   })
 
   test('setChannel with no flags applies new defaults', async () => {
@@ -215,24 +212,22 @@ describe('AccessManager', () => {
     await mgr.setChannel('C1', true, false)
     const f = mgr.channelFlags('C1')
     assert.equal(f.thinking, 'off')
-    assert.equal(f.showCode, true)
     assert.equal(f.counter, 'both')
     assert.equal(f.cache, true)
   })
 
   test('setChannel preserves existing flags on reconfigure', async () => {
-    // Re-running /gemini channel must not silently reset thinking/showCode/
+    // Re-running /gemini channel must not silently reset thinking/
     // counter/cache to defaults — those are set via /gemini set, /gemini
     // counter or /gemini cache and should survive.
     await writeAccess({ users: {}, channels: {} })
     mgr = new AccessManager()
     await mgr.load()
-    await mgr.setChannel('C1', true, false, { thinking: 'off', showCode: false, counter: 'off', cache: false })
+    await mgr.setChannel('C1', true, false, { thinking: 'off', counter: 'off', cache: false })
     // Now reconfigure with only the required args
     await mgr.setChannel('C1', true, true)
     const f = mgr.channelFlags('C1')
     assert.equal(f.thinking, 'off')
-    assert.equal(f.showCode, false)
     assert.equal(f.counter, 'off')
     assert.equal(f.cache, false)
   })
@@ -242,7 +237,7 @@ describe('AccessManager', () => {
     mgr = new AccessManager()
     await mgr.load()
     await assert.rejects(
-      () => mgr.setChannel('C1', true, false, { thinking: 'maybe' as any, showCode: false }),
+      () => mgr.setChannel('C1', true, false, { thinking: 'maybe' as any }),
       /thinking.*off.*on.*collapse/
     )
   })
@@ -250,7 +245,7 @@ describe('AccessManager', () => {
   test('setChannelFlags patches thinking without touching requireMention', async () => {
     await writeAccess({
       users: {},
-      channels: { C1: { enabled: true, requireMention: true, thinking: 'off', showCode: false } }
+      channels: { C1: { enabled: true, requireMention: true, thinking: 'off' } }
     })
     mgr = new AccessManager()
     await mgr.load()
@@ -259,21 +254,21 @@ describe('AccessManager', () => {
     const parsed = JSON.parse(raw)
     assert.equal(parsed.channels.C1.thinking, 'on')
     assert.equal(parsed.channels.C1.requireMention, true)  // preserved
-    assert.equal(parsed.channels.C1.enabled, true)         // preserved
-    assert.equal(parsed.channels.C1.showCode, false)       // preserved
+    assert.equal(parsed.channels.C1.enabled, true)         // preserved       // preserved
   })
 
-  test('setChannelFlags patches showCode independently', async () => {
+  test('setChannelFlags patches one flag without disturbing others', async () => {
     await writeAccess({
       users: {},
-      channels: { C1: { enabled: true, requireMention: false, thinking: 'off', showCode: false } }
+      channels: { C1: { enabled: true, requireMention: false, thinking: 'off', counter: 'both' } }
     })
     mgr = new AccessManager()
     await mgr.load()
-    await mgr.setChannelFlags('C1', { showCode: true })
+    await mgr.setChannelFlags('C1', { trace: 'on' })
     const f = mgr.channelFlags('C1')
-    assert.equal(f.showCode, true)
-    assert.equal(f.thinking, 'off')  // preserved
+    assert.equal(f.trace, 'on')       // updated
+    assert.equal(f.thinking, 'off')   // preserved
+    assert.equal(f.counter, 'both')   // preserved
   })
 
   test('setChannelFlags throws on unconfigured channel', async () => {
@@ -289,7 +284,7 @@ describe('AccessManager', () => {
   test('setChannelFlags rejects invalid thinking mode', async () => {
     await writeAccess({
       users: {},
-      channels: { C1: { enabled: true, requireMention: false, thinking: 'off', showCode: false } }
+      channels: { C1: { enabled: true, requireMention: false, thinking: 'off' } }
     })
     mgr = new AccessManager()
     await mgr.load()

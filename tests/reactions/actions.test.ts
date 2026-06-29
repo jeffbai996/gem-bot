@@ -28,7 +28,7 @@ function makeAccess() {
   const calls: any[] = []
   return {
     calls,
-    channelFlags: () => ({ thinking: 'auto', showCode: false }),
+    channelFlags: () => ({ thinking: 'off' }),
     setChannel: async (channelId: string, enabled: boolean, requireMention: boolean, flags: any) => {
       calls.push({ channelId, enabled, requireMention, flags })
     }

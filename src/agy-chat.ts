@@ -378,7 +378,7 @@ function agyToolDisplayName(
     if (typeof v === 'string' && v.trim()) {
       detail = v.trim().replace(/\s+/g, ' ')
       if (spec.basename) detail = detail.replace(/\/+$/, '').split('/').pop() || detail
-      if (detail.length > 60) detail = detail.slice(0, 59) + '…'
+      if (detail.length > 85) detail = detail.slice(0, 84) + '…'
     }
   }
   return detail ? `${spec.verb}(${detail})` : spec.verb
@@ -654,7 +654,7 @@ export async function respondViaAgy(
   //
   // We ALSO materialize the trajectory tool names into meta.toolCalls so the
   // dedicated 🔧 Tool-trace card renders on agy turns, not just native ones (the
-  // card reads meta.toolCalls, same source the showCode dump uses). agy `-p`
+  // card reads meta.toolCalls, the single trace surface). agy `-p`
   // gives no per-call timing/args/output — it's a post-hoc trajectory — so each
   // entry carries empty args, durationMs:0 (the card omits the [Nms] badge when
   // <=0), no resultPreview, failed:false (no failure signal in the trajectory).

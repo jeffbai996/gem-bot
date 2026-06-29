@@ -17,7 +17,7 @@ import { shouldEmbed } from './embed-throttle.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
 import { PendingEditsStore } from './reactions/pending-edits.ts'
 import { applyLifecycle } from './reactions/lifecycle.ts'
-import type { LifecycleEvent, ToolCall } from './gemini.ts'
+import type { LifecycleEvent, ToolCall, CodeExecArtifact } from './gemini.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
 import { handleReaction } from './reactions/handler.ts'
 import { SummaryStore } from './summarization/store.ts'
@@ -164,9 +164,9 @@ function formatDiff(unified: string): { badge: string; body: string[] } {
 // gpt-bot has a per-channel `/gpt trace off|on|collapse` that posts a standalone
 // `🔧 **Tool trace**` card ABOVE the reply: a ```diff```-fenced list of tool
 // calls, one `+ ● shortName(argDigest) [Nms]` line per call (green via the diff
-// `+`), `- ● ... FAILED [Nms]` (red) on failure. This is DISTINCT from the
-// inline showCode tool dump — it's an opt-in, reasoning-order card that sits with
-// the 💭 thinking block above the answer. Reuses gem's argDigest/shortToolName.
+// `+`), `- ● ... FAILED [Nms]` (red) on failure. It's the SINGLE trace surface:
+// tool calls + web-search + code-execution (show_code's old inline blocks were
+// folded in here 2026-06-29). Reuses gem's argDigest/shortToolName.
 // gem's ToolCall has no diff/resultLines fields (simpler than gpt's), so this is
 // the trimmed assembler: header row + optional `⎿ resultPreview` line per call.
 const TRACE_BODY_CHAR_BUDGET = 1800
@@ -216,8 +216,53 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
 
 // Assemble the fenced card, dropping whole trailing lines past the line/char
 // budget (with a marker) so it never blows the 2000-char Discord message cap.
-function renderTraceCard(toolCalls: ToolCall[]): string {
-  const all = buildTraceLines(toolCalls)
+// Extra trace content folded into the single card (Jeff 2026-06-29): the old
+// `show_code` flag rendered web-searches + code-execution as SEPARATE inline
+// blocks, and ALSO re-dumped the tool calls — duplicating the trace card. Now
+// there's one card. Web searches and code-exec render as `● `-prefixed rows in
+// the same Claude-bot tool_watcher format, so everything reads as one trace.
+interface TraceExtras {
+  searchQueries?: string[]
+  codeArtifacts?: CodeExecArtifact[]
+}
+
+// Render web-search queries as trace rows: `+ ● Web search(query)`. Server-side
+// grounding has no per-call timing, so no [Nms] badge — matches agy's arg-only rows.
+function searchTraceLines(queries: string[]): string[] {
+  return queries.map(q => {
+    let d = q.replace(/\n/g, ' ').trim()
+    if (d.length > 80) d = d.slice(0, 79) + '…'
+    return `+ ● Web search(${d})`
+  })
+}
+
+// Render code-execution as trace rows: `+ ● Code(lang)` header (red `-` on a
+// failed outcome) + the output on a `⎿` continuation line, mirroring how a tool
+// call shows its resultPreview. The full code body is NOT dumped into the card
+// (it'd blow the line budget); the card is a TRACE, not a code listing.
+function codeTraceLines(arts: CodeExecArtifact[]): string[] {
+  const lines: string[] = []
+  for (const a of arts) {
+    const failed = a.outcome != null && /FAIL/i.test(a.outcome)
+    lines.push(`${failed ? '- ● ' : '+ ● '}Code(${a.language})${failed ? ' FAILED' : ''}`)
+    if (a.output) {
+      let out = a.output.replace(/\n/g, ' ').trim()
+      if (out.length > 86) out = out.slice(0, 86) + '…'
+      if (out) lines.push(`  ⎿ ${out}`)
+    }
+  }
+  return lines
+}
+
+function renderTraceCard(toolCalls: ToolCall[], extras: TraceExtras = {}): string {
+  // Order: web-searches → tool calls → code-execution. Searches are usually the
+  // first thing the model does (grounding), code-exec the last (compute on what
+  // it found), so this reads chronologically enough without per-row timestamps.
+  const all = [
+    ...searchTraceLines(extras.searchQueries ?? []),
+    ...buildTraceLines(toolCalls),
+    ...codeTraceLines(extras.codeArtifacts ?? []),
+  ]
   const fitted: string[] = []
   let running = 0
   for (const ln of all.slice(0, TRACE_MAX_LINES)) {
@@ -554,7 +599,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           const quotedThinking = latestParsed.thinking.split('\n').map(line => `>   ${line}`).join('\n')
           fullReply += `💭 **Thinking:**\n${quotedThinking}\n\n`
         }
-        const showLiveTools = (flags.showCode || flags.trace !== 'off') && liveToolCalls.length > 0
+        const showLiveTools = flags.trace !== 'off' && liveToolCalls.length > 0
         if (showLiveTools) {
           const lines = liveToolCalls.map(c => {
             const prefix = c.running ? '● ' : (c.failed ? '- ● ' : '+ ● ')
@@ -797,19 +842,19 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // gating as before (`flags.thinking !== 'off'`, collapse/never modes).
     let thinkingMessage = ''
 
-    // 🔧 Tool-trace card — the dedicated gpt-bot-style card, gated by the per-
-    // channel `trace` flag (off|on|collapse), distinct from the always-on
-    // showCode tool dump below. STAYS WITH THE REPLY (top of finalFullReply) —
-    // the thinking split is deliberately scoped to reasoning only; the trace card
-    // keeps its existing inline-then-strip collapse keyed off the reply's first
-    // chunk. Renders for BOTH engines: native gemini populates meta.toolCalls at
-    // its dispatch site; agy-chat materializes its trajectory tool names into
-    // meta.toolCalls post-hoc, so this same block fires on agy turns too.
-    // 'collapse' renders the card inline now and strips it after a linger; 'on'
-    // keeps it.
-    const showTrace = flags.trace !== 'off' && meta.toolCalls.length > 0
+    // 🔧 Tool-trace card — the single per-channel trace surface, gated by the
+    // `trace` flag (off|on|collapse). Renders tool calls + web-searches +
+    // code-execution as ONE card (Jeff 2026-06-29 — folded in the old show_code
+    // content so they don't double-render or fragment into separate blocks).
+    // STAYS WITH THE REPLY (top of finalFullReply). Renders for BOTH engines:
+    // native gemini populates meta.toolCalls/searchQueries/codeArtifacts at its
+    // dispatch site; agy materializes trajectory tool names into meta.toolCalls
+    // post-hoc. 'collapse' renders inline then strips after a linger; 'on' keeps it.
+    const traceExtras = { searchQueries: meta.searchQueries, codeArtifacts: meta.codeArtifacts }
+    const showTrace = flags.trace !== 'off'
+      && (meta.toolCalls.length > 0 || meta.searchQueries.length > 0 || meta.codeArtifacts.length > 0)
     if (showTrace) {
-      finalFullReply += renderTraceCard(meta.toolCalls) + '\n\n'
+      finalFullReply += renderTraceCard(meta.toolCalls, traceExtras) + '\n\n'
     }
 
     // Native thinking summaries from gemini-3 thinking models (parts with
@@ -840,47 +885,18 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // audience that wants "show your work" wants this. Format mirrors
     // ticker-tape's chat.py: header at column 0, query bullets blockquoted
     // for visual indent under the header.
-    if (flags.showCode && meta.searchQueries.length > 0) {
-      finalFullReply += `🔍 **Web search**\n`
-      for (const q of meta.searchQueries) {
-        finalFullReply += `> · ${q}\n`
-      }
-      finalFullReply += '\n'
-    }
+    // (Web-search, inline tool-dump, and code-artifact blocks removed 2026-06-29
+    // — that content now renders inside the single 🔧 Tool-trace card above,
+    // gated by `trace`. The old show_code flag is retired.)
 
-    // Tool calls (fetch_url, search_memory, IBKR tools, etc). googleSearch +
-    // codeExecution are server-side, surfaced via their own dedicated blocks.
-    // Rendered cc-discord-kit-style: a ```diff``` fence with one
-    // `+ ● ToolName(digest) [Nms]` line per call (green via `+`), `- ● ...
-    // FAILED [Nms]` (red) on error. The result preview goes on a plain
-    // 2-space-indented `  ⎿` line so the diff highlighter leaves it grey.
-    if (flags.showCode && meta.toolCalls.length > 0) {
-      // Reuse buildTraceLines (same omit-empty-args + omit-[0ms] logic as the
-      // trace card) so this inline showCode dump renders identically clean —
-      // no `({})` / `[0ms]` on agy's arg-less, timing-less post-hoc calls.
-      const lines = buildTraceLines(meta.toolCalls)
-      finalFullReply += '```diff\n' + lines.join('\n') + '\n```\n'
-    }
-
-    if (flags.showCode && meta.codeArtifacts.length > 0) {
-      for (const art of meta.codeArtifacts) {
-        finalFullReply += `🛠️ **Code (${art.language}):**\n\`\`\`${art.language}\n${art.code}\n\`\`\`\n`
-        if (art.output) {
-          finalFullReply += `**Output:**\n\`\`\`\n${art.output.trim()}\n\`\`\`\n`
-        }
-        finalFullReply += '\n'
-      }
-    }
-
-    // Strip prose-side fenced code blocks that duplicate an artifact we already
-    // rendered above. gemini-3-pro-preview repeats executed code in its reply
-    // text; the artifact block is the canonical render.
-    // Strip any token-footer / sources / metadata pattern the model might
-    // hallucinate inside its own reply text (it learns the pattern from past
-    // turns where the bot stamped footers; with stripBotMetadata in
-    // history.ts the input is now clean, but belt-and-suspenders.)
+    // Strip prose-side fenced code blocks that duplicate code we executed — the
+    // trace card's Code(lang) row is the canonical surface, so the model echoing
+    // the same code in its reply text is redundant. gemini-3-pro-preview does
+    // this; strip it whenever there are code artifacts. Also strip any token-
+    // footer / sources / metadata pattern the model might hallucinate (learned
+    // from past turns where the bot stamped footers).
     const replyText = parsed.reply
-      ? stripBotMetadata(flags.showCode ? stripDuplicateCodeBlocks(parsed.reply, meta.codeArtifacts) : parsed.reply)
+      ? stripBotMetadata(stripDuplicateCodeBlocks(parsed.reply, meta.codeArtifacts))
       : null
     if (replyText) {
       finalFullReply += replyText
