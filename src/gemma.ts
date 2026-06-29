@@ -98,6 +98,9 @@ const _ARG_DIGEST_PREFERENCE = [
 // Single-line, ID-shaped arg digest, <= maxLen chars. Mirrors _arg_digest.
 function argDigest(args: Record<string, unknown>, maxLen = 80): string {
   if (!args || typeof args !== 'object') return ''
+  // Empty args (e.g. agy's post-hoc trace carries no per-call args) → '' so the
+  // caller can omit the parens entirely instead of printing a useless `({})`.
+  if (Object.keys(args).length === 0) return ''
   for (const key of _ARG_DIGEST_PREFERENCE) {
     const v = (args as Record<string, unknown>)[key]
     if (typeof v === 'string') {
@@ -142,7 +145,11 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
     // agy's post-hoc trace has no per-call timing → durationMs is 0; omit the
     // [Nms] badge in that case rather than printing a useless `[0ms]`.
     const ms = call.durationMs > 0 ? ` [${call.durationMs}ms]` : ''
-    lines.push(`${prefix}${shortToolName(call.name)}(${argDigest(call.args)})${tail}${ms}`)
+    // Omit the parens entirely when there's no arg digest (agy's post-hoc trace
+    // has no per-call args) so the line reads `● Running command` not `● Running command({})`.
+    const digest = argDigest(call.args)
+    const argPart = digest ? `(${digest})` : ''
+    lines.push(`${prefix}${shortToolName(call.name)}${argPart}${tail}${ms}`)
     if (call.resultPreview) {
       let rp = call.resultPreview.replace(/\n/g, ' ')
       if (rp.length > 86) rp = rp.slice(0, 86) + '…'
@@ -270,6 +277,11 @@ interface HandleOpts {
   // When true, prepend an "expand on previous reply" instruction to the
   // user message text before passing to Gemini.
   expansion?: boolean
+  // When set, use this text as the user message fed to Gemini instead of
+  // message.content. Used by the per-channel turn queue to fold several
+  // rapid-fire messages into ONE batched follow-up turn (one placeholder,
+  // one generation) rather than a stack of concurrent "Thinking…" replies.
+  combinedText?: string
 }
 
 // Appended to Gemma's system prompt when a message is in /voice speak mode, so
@@ -285,9 +297,14 @@ const SPOKEN_MODE_INSTRUCTION = `
 - If you'd normally make a list, say it as a sentence ("a few things — first X, then Y, and Z").
 - Keep it concise and easy on the ear; speak symbols/abbreviations the way you'd say them aloud.`
 
-async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promise<void> {
-  if (message.author.bot) return
-  if (!client.user) return
+// Background Memory Ingestion + access gate. Returns whether the message is
+// gated-IN (Gemma should generate a reply). Embedding runs for every allowed
+// message regardless of the gate (passive learning), so it lives here and is
+// called per inbound message BEFORE the turn queue — that way a queued/batched
+// message is still embedded even though only the batch carrier reaches the
+// generation path in handleUserMessage.
+function ingestAndGate(message: Message): boolean {
+  if (message.author.bot || !client.user) return false
 
   const isMention = message.mentions.users.has(client.user.id)
   const gate = access.canHandle({
@@ -295,15 +312,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     userId: message.author.id,
     isMention
   })
-  
-  // Background Memory Ingestion
+
   // If the user is allowed to speak in the channel, log the message to SQLite VSS.
-  // We do this independently of the `gate` (which requires mention) so the bot
-  // learns from passive conversation in allowed channels.
-  //
-  // Throttle: at most one embed per (channel, user) per GEMINI_EMBED_COOLDOWN_MS
-  // (default 3s). Without this a chatty user / busy channel would fire embed
-  // API calls continuously, racking up cost on every keystroke-batch.
+  // Independent of `gate` (which requires mention) so the bot learns from passive
+  // conversation. Throttle: at most one embed per (channel, user) per
+  // GEMINI_EMBED_COOLDOWN_MS (default 3s) to cap cost on a busy channel.
   if (access.isAllowedAndEnabled(message.author.id, message.channelId)
       && message.content.trim()
       && shouldEmbed(message.channelId, message.author.id)) {
@@ -321,7 +334,12 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       .catch(e => console.error('Failed to embed message for memory:', e))
   }
 
-  if (!gate) return
+  return gate
+}
+
+async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promise<void> {
+  if (message.author.bot) return
+  if (!client.user) return
 
   // Opt-in reply gate removed 2026-05-02. The two-tier classifier (regex +
   // flash-lite) silenced messages it judged "not for Gemma" — but the UX was
@@ -345,6 +363,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // This speak-mode turn's abort signal (set below if we're speaking to a vc).
   // Declared out here so the catch/finally can read it for barge-in cleanup.
   let turnSignal: AbortSignal | undefined
+  // Spinner animation handle for the "💭 Thinking…" placeholder. Hoisted out of
+  // the try so catch/finally can clear it (mirrors gpt/llm-bot's stopThinkingAnim
+  // guard) — a dangling interval would keep editing a deleted message.
+  let thinkingAnim: ReturnType<typeof setInterval> | null = null
+  const stopThinkingAnim = () => { if (thinkingAnim) { clearInterval(thinkingAnim); thinkingAnim = null } }
 
   try {
     // Fetch partial DM channels so we can send/read them
@@ -405,15 +428,36 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // message (regenerate / ✏️ flow) instead of sending a new reply.
     if (opts.editTarget) {
       activeMessages.push(opts.editTarget)
-      await opts.editTarget.edit('💭 *Thinking...*').catch(() => {})
+      await opts.editTarget.edit('💭 **Thinking…**').catch(() => {})
     } else {
-      const initialMsg = await message.reply({ content: '💭 *Thinking...*', allowedMentions: { repliedUser: false } }).catch(() => null)
+      const initialMsg = await message.reply({ content: '💭 **Thinking…**', allowedMentions: { repliedUser: false } }).catch(() => null)
       if (initialMsg) activeMessages.push(initialMsg as Message)
     }
 
     // Lifecycle: 🤔 once the placeholder is up and we're about to call
     // Gemini. Cleans up the prior 👀.
     applyLifecycle(message, 'thinking').catch(() => {})
+
+    // Animate the placeholder while we wait, matching the squad (gpt/llm-bot):
+    // a spinner glyph sitting between the 💭 and the bold word, with pulsing
+    // trailing dots, edited every 1.5s. Gem streams partials via flushStream,
+    // so the spinner OWNS the placeholder only until the first real content
+    // lands — flushStream calls stopThinkingAnim() the moment it renders
+    // reply/thinking text, and skips its own placeholder fallback while the
+    // spinner is live so the two never fight over activeMessages[0].
+    {
+      const GLYPHS = ['✻', '✢', '✱', '✶', '✷', '✸']
+      const dots = ['.', '..', '…']
+      let fi = 1
+      thinkingAnim = setInterval(() => {
+        const target = activeMessages[0]
+        if (!target) return
+        const sp = GLYPHS[fi % GLYPHS.length]
+        const d = dots[fi % dots.length]
+        fi++
+        target.edit(`💭 ${sp} **Thinking${d}**`).catch(() => {})
+      }, 1500)
+    }
 
     let isFlushing = false
     const flushStream = async () => {
@@ -429,8 +473,18 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         if (latestParsed.reply) {
           fullReply += latestParsed.reply
         }
-        
-        if (!fullReply) fullReply = '💭 *Thinking...*'
+
+        // No real content yet: leave the placeholder to the spinner animation
+        // (thinkingAnim owns activeMessages[0] until first content). Only fall
+        // back to a static line if the spinner somehow isn't running.
+        if (!fullReply) {
+          if (thinkingAnim) return
+          fullReply = '💭 **Thinking…**'
+        }
+
+        // Real content has arrived — kill the spinner before we render so it
+        // can't overwrite streamed text on its next 1.5s tick.
+        stopThinkingAnim()
 
         if (fullReply === lastFlushedFullReply) return
         lastFlushedFullReply = fullReply
@@ -455,9 +509,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     streamInterval = setInterval(() => { flushStream() }, 2000)
 
+    const baseText = opts.combinedText ?? message.content
     const userText = opts.expansion
-      ? `[The user wants you to expand on your previous reply with more depth and detail.]\n\n${message.content}`
-      : message.content
+      ? `[The user wants you to expand on your previous reply with more depth and detail.]\n\n${baseText}`
+      : baseText
 
     const respondT0 = Date.now()
     // Track active in-flight tool calls so we know when 🔧 should drop.
@@ -561,6 +616,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       clearInterval(streamInterval)
       streamInterval = null
     }
+    // Kill the spinner before final rendering so it can't edit a message we're
+    // about to overwrite/delete (flushStream stops it on first content, but a
+    // silent/empty turn may never have streamed any — stop it unconditionally).
+    stopThinkingAnim()
     // One last flush to ensure we haven't missed anything before final rendering
     await flushStream()
 
@@ -604,7 +663,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       console.error(`[silent] channel=${message.channelId} message=${message.id} — model returned nothing, exiting clean`)
       // Strip 👀/🤔/etc without applying any final emoji.
       applyLifecycle(message, 'silenced').catch(() => {})
-      // Delete the "💭 *Thinking...*" placeholder — no orphan above the silence.
+      // Delete the "💭 **Thinking…**" placeholder — no orphan above the silence.
       for (const m of activeMessages) {
         await m.delete().catch(err => console.error('silent-exit placeholder delete failed:', err))
       }
@@ -871,11 +930,13 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // the newer turn owns the channel now. No error message, no say().
     if (e?.name === 'AbortError') {
       console.log(`[voice] turn superseded by barge-in (channel=${message.channelId})`)
+      stopThinkingAnim()
       applyLifecycle(message, 'silenced').catch(() => {})
       for (const m of activeMessages) await m.delete().catch(() => {})
       activeMessages = []
       return
     }
+    stopThinkingAnim()
     console.error('message handler error:', e)
     // Match explicit rate-limit language only. The naive /rate/i matched
     // "generateContent" in every Gemini URL, causing unrelated 400s to look
@@ -914,6 +975,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       }
     } catch { /* nothing to do */ }
   } finally {
+    stopThinkingAnim()
     if (typingInterval) clearInterval(typingInterval)
     if (streamInterval) clearInterval(streamInterval)
     // Drop this turn's barge-in controller, but ONLY if it's still the current
@@ -923,6 +985,53 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     if (turnSignal && speakTurnControllers.get(message.channelId)?.signal === turnSignal) {
       speakTurnControllers.delete(message.channelId)
     }
+  }
+}
+
+// Per-channel turn serializer. Without this, N Discord messages arriving in
+// rapid succession each spawn a concurrent handleUserMessage → a STACK of N
+// "💭 Thinking…" placeholders in the same channel (Jeff, 2026-06-28). Mirrors
+// llm-bot's channelTurns queue: while a turn is in flight for a channel, later
+// messages queue (with a 🕗 react so the user knows they're seen) instead of
+// starting their own generation. When the active turn finishes, ALL queued
+// messages are folded into ONE batched follow-up turn (their text joined),
+// repeated until the queue drains. Result: exactly one thinking indicator per
+// active generation per channel. Cross-channel turns still run concurrently.
+const channelTurns = new Map<string, { running: boolean; queue: Message[] }>()
+
+async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<void> {
+  // Embed (always, for allowed messages) + gate. A gated-OUT message never
+  // produces a placeholder, so it must not be queued or batched — just embed
+  // it (done inside ingestAndGate) and drop it. Only gated-IN messages flow
+  // into the serializer below.
+  if (!ingestAndGate(message)) return
+
+  const cid = message.channelId
+  let st = channelTurns.get(cid)
+  if (!st) { st = { running: false, queue: [] }; channelTurns.set(cid, st) }
+  if (st.running) {
+    // A turn is already generating for this channel — queue this message and
+    // mark it seen. It'll be batched into the follow-up turn below.
+    st.queue.push(message)
+    void message.react('\u{1F557}').catch(() => {})
+    return
+  }
+  st.running = true
+  try {
+    await handleUserMessage(message, opts)
+    while (st.queue.length) {
+      const batch = st.queue.splice(0, st.queue.length)
+      const carrier = batch[batch.length - 1]
+      const combined = batch.map(m => m.content).filter(Boolean).join('\n')
+      const botId = client.user?.id
+      if (botId) for (const m of batch) {
+        void m.reactions.cache.get('\u{1F557}')?.users.remove(botId).catch(() => {})
+      }
+      await handleUserMessage(carrier, { combinedText: combined || undefined })
+    }
+  } finally {
+    st.running = false
+    if (!st.queue.length) channelTurns.delete(cid)
   }
 }
 
@@ -936,14 +1045,14 @@ client.on('messageCreate', async (message: Message) => {
       pendingEdits.clear(message.channelId)
       try {
         const target = await message.channel.messages.fetch(pending) as Message
-        await handleUserMessage(message, { editTarget: target })
+        await runChannelTurn(message, { editTarget: target })
         return
       } catch (e) {
         console.error('[reactions] edit-target fetch failed, falling through:', e)
       }
     }
   }
-  await handleUserMessage(message, {})
+  await runChannelTurn(message, {})
 })
 
 client.on('messageReactionAdd', async (reaction, user) => {
