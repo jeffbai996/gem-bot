@@ -27,6 +27,20 @@ import { fetchMessagesSince } from './db.ts'
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
 
+// Send a plain channel message instead of a Discord reply-reference.
+//
+// Why: message.reply() attaches a reply-reference, which Discord renders as a
+// "↰ replying to @user" header on EVERY message — so Gemma visibly @-tags the
+// user on each turn, unlike the Claude --channels bots which send plain
+// channel messages. allowedMentions:{repliedUser:false} only suppresses the
+// notification ping, not the header. Sending to message.channel directly drops
+// the reference entirely, matching the Claude bots. Same return contract as
+// message.reply().catch(()=>null) so call sites are a drop-in swap.
+async function sendReply(message: Message, content: string): Promise<Message | null> {
+  const channel = message.channel as any
+  return channel.send({ content, allowedMentions: { repliedUser: false } }).catch(() => null) as Promise<Message | null>
+}
+
 const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-3-flash-preview'
 // Cap conversation history sent per turn. 80k tokens is generous for chat
 // (~60k words of prior context) while keeping per-turn input cost bounded
@@ -411,6 +425,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // guard) — a dangling interval would keep editing a deleted message.
   let thinkingAnim: ReturnType<typeof setInterval> | null = null
   const stopThinkingAnim = () => { if (thinkingAnim) { clearInterval(thinkingAnim); thinkingAnim = null } }
+  // Deferred-placeholder timer (option 3): posts the 💭 bubble only if the turn
+  // is still working after a delay. Hoisted so catch/finally can cancel a
+  // pending one — else a timer that fires after an error/return would post an
+  // orphan "Thinking…" bubble with no turn behind it.
+  let placeholderTimer: ReturnType<typeof setTimeout> | null = null
 
   try {
     // Fetch partial DM channels so we can send/read them
@@ -456,10 +475,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     if (allSkipped.length > 0) {
       const notes = allSkipped.map(s => `- ${s.name}: ${s.reason}`).join('\n')
-      await message.reply({
-        content: `skipped some attachments:\n${notes}`,
-        allowedMentions: { repliedUser: false }
-      })
+      await sendReply(message, `skipped some attachments:\n${notes}`)
     }
 
     const flags = access.channelFlags(message.channelId)
@@ -467,28 +483,25 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     let latestParsed = { react: null as string | null, thinking: null as string | null, reply: null as string | null }
     let lastFlushedFullReply = ''
 
-    // Initial loading message. When opts.editTarget is set, reuse that bot
-    // message (regenerate / ✏️ flow) instead of sending a new reply.
-    if (opts.editTarget) {
-      activeMessages.push(opts.editTarget)
-      await opts.editTarget.edit('💭 **Thinking…**').catch(() => {})
-    } else {
-      const initialMsg = await message.reply({ content: '💭 **Thinking…**', allowedMentions: { repliedUser: false } }).catch(() => null)
-      if (initialMsg) activeMessages.push(initialMsg as Message)
-    }
-
-    // Lifecycle: 🤔 once the placeholder is up and we're about to call
-    // Gemini. Cleans up the prior 👀.
+    // Lifecycle: 🤔 — we're about to call the model. Cleans up the prior 👀.
     applyLifecycle(message, 'thinking').catch(() => {})
 
-    // Animate the placeholder while we wait, matching the squad (gpt/llm-bot):
-    // a spinner glyph sitting between the 💭 and the bold word, with pulsing
-    // trailing dots, edited every 1.5s. Gem streams partials via flushStream,
-    // so the spinner OWNS the placeholder only until the first real content
-    // lands — flushStream calls stopThinkingAnim() the moment it renders
-    // reply/thinking text, and skips its own placeholder fallback while the
-    // spinner is live so the two never fight over activeMessages[0].
-    {
+    // Deferred placeholder (Jeff 2026-06-29, option 3 "both"): show the native
+    // "Gemma is typing…" dots first (the sendTyping heartbeat above already
+    // fires them), and only post the 💭 placeholder bubble + spinner if we're
+    // STILL working after PLACEHOLDER_DELAY_MS. Fast turns then look clean —
+    // just dots, then the answer, no transient "Thinking…" message. Slow turns
+    // still get the animated placeholder so the user knows it's alive.
+    //
+    // postPlaceholder() is idempotent and is called either by the timer (slow
+    // path) or eagerly by flushStream the instant real content needs a home
+    // before the timer fired (so streamed content never has nowhere to land).
+    // The editTarget (regenerate / ✏️) path skips the delay: it's reusing an
+    // existing bot message, so there are no typing dots to show first.
+    const PLACEHOLDER_DELAY_MS = parseInt(process.env.GEMMA_PLACEHOLDER_DELAY_MS ?? '2500', 10)
+
+    const startSpinner = () => {
+      if (thinkingAnim) return
       const GLYPHS = ['✻', '✢', '✱', '✶', '✷', '✸']
       const dots = ['.', '..', '…']
       let fi = 1
@@ -500,6 +513,26 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         fi++
         target.edit(`💭 ${sp} **Thinking${d}**`).catch(() => {})
       }, 1500)
+    }
+
+    // Post the placeholder bubble + start the spinner, once. No-op if a message
+    // already occupies activeMessages[0] (timer + flushStream may both call it).
+    const postPlaceholder = async () => {
+      if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
+      if (activeMessages.length > 0) { startSpinner(); return }
+      const initialMsg = await sendReply(message, '💭 **Thinking…**')
+      if (initialMsg) activeMessages.push(initialMsg as Message)
+      startSpinner()
+    }
+
+    if (opts.editTarget) {
+      // Regenerate: reuse the existing bot message immediately, spinner on.
+      activeMessages.push(opts.editTarget)
+      await opts.editTarget.edit('💭 **Thinking…**').catch(() => {})
+      startSpinner()
+    } else {
+      // Normal turn: dots now, placeholder only if still working after the delay.
+      placeholderTimer = setTimeout(() => { postPlaceholder().catch(() => {}) }, PLACEHOLDER_DELAY_MS)
     }
 
     let isFlushing = false
@@ -517,16 +550,20 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           fullReply += latestParsed.reply
         }
 
-        // No real content yet: leave the placeholder to the spinner animation
-        // (thinkingAnim owns activeMessages[0] until first content). Only fall
-        // back to a static line if the spinner somehow isn't running.
+        // No real content yet. During the deferred-placeholder window there's
+        // no bubble at all (the typing dots are carrying the wait), so just
+        // return and let the dots / pending timer continue. If the spinner is
+        // already running it owns activeMessages[0] — also return. Only synthesize
+        // a static placeholder line if neither dots-window nor spinner applies.
         if (!fullReply) {
-          if (thinkingAnim) return
+          if (placeholderTimer || thinkingAnim) return
           fullReply = '💭 **Thinking…**'
         }
 
-        // Real content has arrived — kill the spinner before we render so it
-        // can't overwrite streamed text on its next 1.5s tick.
+        // Real content has arrived. Cancel the pending placeholder timer (a fast
+        // turn beat the delay → no transient bubble) and kill any running spinner
+        // so it can't overwrite streamed text on its next 1.5s tick.
+        if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
         stopThinkingAnim()
 
         if (fullReply === lastFlushedFullReply) return
@@ -541,7 +578,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
               await activeMessages[i].edit(piece).catch(() => {})
             }
           } else {
-            const msg = await message.reply({ content: piece, allowedMentions: { repliedUser: false } }).catch(() => null)
+            const msg = await sendReply(message, piece)
             if (msg) activeMessages.push(msg as Message)
           }
         }
@@ -634,6 +671,12 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     const resolvedEngine = flags.engine ?? envDefaultEngine
     // Media ALWAYS forces the native API — agy -p can't consume image/audio.
     const useAgy = resolvedEngine === 'agy' && allParts.length === 0
+    // Set when an intended agy turn silently degraded to the metered API engine
+    // (timeout/empty/exec error). The two engines aren't interchangeable — the
+    // API path has NO shell/filesystem — so a fallback changes what gemma can do.
+    // Surfaced as a footer badge below so the degrade isn't invisible (Jeff
+    // 2026-06-29).
+    let agyFellBack = false
     if (useAgy) {
       try {
         ({ parsed, meta } = await respondViaAgy({
@@ -645,9 +688,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           onEvent: onLifecycleEvent,
         }, parseResponse))
       } catch (e) {
-        // agy failed (timeout / empty / exec error) — surface nothing to the
-        // user, just fall back to the metered API so they still get an answer.
+        // agy failed (timeout / empty / exec error) — fall back to the metered
+        // API so the user still gets an answer, but FLAG it: the API path can't
+        // shell/read files, so this turn quietly lost those capabilities.
         console.error('[agy] chat engine failed, falling back to API:', e instanceof Error ? e.message : e)
+        agyFellBack = true
         ;({ parsed, meta } = await apiRespond())
       }
     } else {
@@ -883,6 +928,17 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       finalFullReply += `\n\n-# ${tokenStr}${safetyStr}`
     }
 
+    // Engine-fallback badge (Jeff 2026-06-29). When an agy turn degraded to the
+    // API engine, say so — the API path has no shell/filesystem, so the user
+    // should know this reply came from the limited engine (and that agy is
+    // having trouble). Shown regardless of the counter flag: a capability
+    // degrade is not optional bookkeeping. Appended on its own line so it reads
+    // as a distinct status note, not part of the token footer.
+    if (agyFellBack) {
+      finalFullReply = finalFullReply.replace(/\s+$/, '')
+      finalFullReply += `\n\n-# ↩️ agy unavailable — answered on the API engine (no shell/files this turn)`
+    }
+
     if (meta.finishReason === 'MAX_TOKENS') {
       finalFullReply += '\n\n-# ⚠️ response hit max-tokens limit (reply may be truncated)'
     } else if (meta.finishReason === 'SAFETY') {
@@ -935,7 +991,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
             })
           }
         } else {
-          const msg = await message.reply({ content: piece, allowedMentions: { repliedUser: false } }).catch(() => null)
+          const msg = await sendReply(message, piece)
           if (msg) activeMessages.push(msg as Message)
         }
       }
@@ -1015,7 +1071,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
             await activeMessages[i].edit(piece).catch(() => {})
           }
         } else {
-          const msg = await message.reply({ content: piece, allowedMentions: { repliedUser: false } }).catch(() => null)
+          const msg = await sendReply(message, piece)
           if (msg) activeMessages.push(msg as Message)
         }
       }
@@ -1090,11 +1146,12 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           await extra.delete().catch(() => {})
         }
       } else {
-        await message.reply({ content: msg, allowedMentions: { repliedUser: false } })
+        await sendReply(message, msg)
       }
     } catch { /* nothing to do */ }
   } finally {
     stopThinkingAnim()
+    if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
     if (typingInterval) clearInterval(typingInterval)
     if (streamInterval) clearInterval(streamInterval)
     // Drop this turn's barge-in controller, but ONLY if it's still the current
