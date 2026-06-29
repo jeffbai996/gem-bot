@@ -2,7 +2,11 @@ import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
 
-export type ThinkingMode = 'always' | 'auto' | 'never' | 'collapse'
+// Unified across the squad bots (gpt/llm use the same triple): off | on | collapse.
+// Legacy gem values 'never'/'always'/'auto' are coerced on read (normThinking):
+// never→off, always→on, auto→off (auto had no distinct wired behavior — it just
+// fell through with no system-prompt addendum, so it's folded into off).
+export type ThinkingMode = 'off' | 'on' | 'collapse'
 
 // Chat engine for a channel. 'api' = the metered Gemini API (full tools +
 // grounding + trace). 'agy' = route text turns through the Antigravity CLI
@@ -64,7 +68,16 @@ export interface CanHandleInput {
 }
 
 const EMPTY: AccessFile = { users: {}, channels: {} }
-const VALID_THINKING_MODES: ThinkingMode[] = ['always', 'auto', 'never', 'collapse']
+const VALID_THINKING_MODES: ThinkingMode[] = ['off', 'on', 'collapse']
+
+// Coerce a persisted thinking value (which may be a legacy gem mode) to the
+// unified triple. never→off, always→on, auto→off; anything already valid passes.
+function normThinking(v: unknown): ThinkingMode {
+  if (v === 'never' || v === 'auto') return 'off'
+  if (v === 'always') return 'on'
+  if (v === 'off' || v === 'on' || v === 'collapse') return v
+  return DEFAULT_FLAGS.thinking
+}
 const VALID_ENGINES: ChatEngine[] = ['agy', 'api']
 const VALID_COUNTER_MODES: CounterMode[] = ['off', 'token', 'both']
 const VALID_TRACE_MODES: TraceMode[] = ['off', 'on', 'collapse']
@@ -72,19 +85,17 @@ const VALID_TRACE_MODES: TraceMode[] = ['off', 'on', 'collapse']
 // Default rendering/behavior flags applied when a channel is first configured
 // without explicit flag overrides, and when channelFlags() is asked about an
 // unknown channel. showCode/cache default true — more transparent output +
-// cheaper bills. thinking stays "auto" since "always" is too verbose for
-// casual chat. counter defaults to "token" — preserves the prior effective
-// behavior (verbose defaulted true, i.e. footer ON with tokens-if-available)
-// after the 2026-06-28 verbose→counter split, so existing channels don't
-// silently lose their footer. The optInReply gate was removed 2026-05-02.
+// cheaper bills. Defaults UNIFIED across the squad bots (gem/gpt/llm) per Jeff
+// 2026-06-29: thinking=off (quiet default), trace=off, counter=both. The
+// optInReply gate was removed 2026-05-02.
 const DEFAULT_FLAGS = {
-  thinking: 'auto' as ThinkingMode,
+  thinking: 'off' as ThinkingMode,
   showCode: true,
-  // trace defaults OFF — matches gpt-bot. The dedicated 🔧 Tool-trace card is
+  // trace defaults OFF — matches gpt/llm. The dedicated 🔧 Tool-trace card is
   // opt-in so enabling the feature doesn't suddenly spam every channel; the
   // inline showCode tool dump remains the always-on surface.
   trace: 'off' as TraceMode,
-  counter: 'token' as CounterMode,
+  counter: 'both' as CounterMode,
   cache: true,
 }
 
@@ -175,7 +186,7 @@ export class AccessManager {
     flags?: Partial<ChannelFlags>
   ): Promise<void> {
     if (flags?.thinking !== undefined && !VALID_THINKING_MODES.includes(flags.thinking)) {
-      throw new Error(`invalid thinking mode "${flags.thinking}" — must be one of: always, auto, never`)
+      throw new Error(`invalid thinking mode "${flags.thinking}" — must be one of: off, on, collapse`)
     }
     // Preserve existing flag values when re-running /gemini channel on an
     // already-configured channel. Only enabled+requireMention are mandatory;
@@ -215,7 +226,7 @@ export class AccessManager {
       throw new Error(`channel ${channelId} not configured — run /gemini channel first`)
     }
     if (patch.thinking !== undefined && !VALID_THINKING_MODES.includes(patch.thinking)) {
-      throw new Error(`invalid thinking mode "${patch.thinking}" — must be one of: always, auto, never`)
+      throw new Error(`invalid thinking mode "${patch.thinking}" — must be one of: off, on, collapse`)
     }
     if (patch.engine != null && !VALID_ENGINES.includes(patch.engine)) {
       throw new Error(`invalid engine "${patch.engine}" — must be one of: agy, api`)
@@ -254,7 +265,8 @@ export class AccessManager {
   channelFlags(channelId: string): ChannelFlags {
     const channel = this.data.channels[channelId]
     return {
-      thinking: channel?.thinking ?? DEFAULT_FLAGS.thinking,
+      // normThinking coerces legacy never/always/auto → off/on/off.
+      thinking: normThinking(channel?.thinking ?? DEFAULT_FLAGS.thinking),
       showCode: channel?.showCode ?? DEFAULT_FLAGS.showCode,
       trace: channel?.trace ?? DEFAULT_FLAGS.trace,
       counter: channel?.counter ?? DEFAULT_FLAGS.counter,

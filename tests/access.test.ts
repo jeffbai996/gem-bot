@@ -124,10 +124,10 @@ describe('AccessManager', () => {
     mgr = new AccessManager()
     await mgr.load()
     const f = mgr.channelFlags('C1')
-    assert.equal(f.thinking, 'auto')
+    assert.equal(f.thinking, 'off')
     assert.equal(f.showCode, true)
     assert.equal(f.trace, 'off')
-    assert.equal(f.counter, 'token')
+    assert.equal(f.counter, 'both')
     assert.equal(f.cache, true)
   })
 
@@ -148,7 +148,7 @@ describe('AccessManager', () => {
     await mgr.setChannelFlags('C1', { trace: 'collapse' })
     assert.equal(mgr.channelFlags('C1').trace, 'collapse')
     // patching trace must not disturb other flags
-    assert.equal(mgr.channelFlags('C1').thinking, 'auto')
+    assert.equal(mgr.channelFlags('C1').thinking, 'off')
     assert.equal(mgr.channelFlags('C1').showCode, true)
   })
 
@@ -165,7 +165,9 @@ describe('AccessManager', () => {
     )
   })
 
-  test('channelFlags reads explicit values', async () => {
+  test('channelFlags reads explicit values (incl. legacy thinking coercion)', async () => {
+    // Legacy thinking modes on disk (always/never) coerce on read to the unified
+    // triple: always→on, never→off. New values (on/off/collapse) pass through.
     await writeAccess({
       users: { U1: { allowed: true } },
       channels: {
@@ -175,24 +177,34 @@ describe('AccessManager', () => {
     })
     mgr = new AccessManager()
     await mgr.load()
-    assert.deepEqual(mgr.channelFlags('C1'), { thinking: 'always', showCode: true, trace: 'off', counter: 'both', cache: true, cacheTtlSec: null, engine: null })
-    assert.deepEqual(mgr.channelFlags('C2'), { thinking: 'never', showCode: false, trace: 'off', counter: 'off', cache: false, cacheTtlSec: null, engine: null })
+    assert.deepEqual(mgr.channelFlags('C1'), { thinking: 'on', showCode: true, trace: 'off', counter: 'both', cache: true, cacheTtlSec: null, engine: null })
+    assert.deepEqual(mgr.channelFlags('C2'), { thinking: 'off', showCode: false, trace: 'off', counter: 'off', cache: false, cacheTtlSec: null, engine: null })
+  })
+
+  test('legacy auto thinking coerces to off on read', async () => {
+    await writeAccess({
+      users: {},
+      channels: { C1: { enabled: true, requireMention: false, thinking: 'auto' as any } }
+    })
+    mgr = new AccessManager()
+    await mgr.load()
+    assert.equal(mgr.channelFlags('C1').thinking, 'off')
   })
 
   test('channelFlags returns defaults for unknown channel', async () => {
     await writeAccess({ users: {}, channels: {} })
     mgr = new AccessManager()
     await mgr.load()
-    assert.deepEqual(mgr.channelFlags('unknown'), { thinking: 'auto', showCode: true, trace: 'off', counter: 'token', cache: true, cacheTtlSec: null, engine: null })
+    assert.deepEqual(mgr.channelFlags('unknown'), { thinking: 'off', showCode: true, trace: 'off', counter: 'both', cache: true, cacheTtlSec: null, engine: null })
   })
 
   test('setChannel preserves optional flags when provided', async () => {
     await writeAccess({ users: {}, channels: {} })
     mgr = new AccessManager()
     await mgr.load()
-    await mgr.setChannel('C1', true, false, { thinking: 'always', showCode: false })
+    await mgr.setChannel('C1', true, false, { thinking: 'on', showCode: false })
     const f = mgr.channelFlags('C1')
-    assert.equal(f.thinking, 'always')
+    assert.equal(f.thinking, 'on')
     assert.equal(f.showCode, false)
   })
 
@@ -202,9 +214,9 @@ describe('AccessManager', () => {
     await mgr.load()
     await mgr.setChannel('C1', true, false)
     const f = mgr.channelFlags('C1')
-    assert.equal(f.thinking, 'auto')
+    assert.equal(f.thinking, 'off')
     assert.equal(f.showCode, true)
-    assert.equal(f.counter, 'token')
+    assert.equal(f.counter, 'both')
     assert.equal(f.cache, true)
   })
 
@@ -215,11 +227,11 @@ describe('AccessManager', () => {
     await writeAccess({ users: {}, channels: {} })
     mgr = new AccessManager()
     await mgr.load()
-    await mgr.setChannel('C1', true, false, { thinking: 'never', showCode: false, counter: 'off', cache: false })
+    await mgr.setChannel('C1', true, false, { thinking: 'off', showCode: false, counter: 'off', cache: false })
     // Now reconfigure with only the required args
     await mgr.setChannel('C1', true, true)
     const f = mgr.channelFlags('C1')
-    assert.equal(f.thinking, 'never')
+    assert.equal(f.thinking, 'off')
     assert.equal(f.showCode, false)
     assert.equal(f.counter, 'off')
     assert.equal(f.cache, false)
@@ -231,21 +243,21 @@ describe('AccessManager', () => {
     await mgr.load()
     await assert.rejects(
       () => mgr.setChannel('C1', true, false, { thinking: 'maybe' as any, showCode: false }),
-      /thinking.*always.*auto.*never/
+      /thinking.*off.*on.*collapse/
     )
   })
 
   test('setChannelFlags patches thinking without touching requireMention', async () => {
     await writeAccess({
       users: {},
-      channels: { C1: { enabled: true, requireMention: true, thinking: 'auto', showCode: false } }
+      channels: { C1: { enabled: true, requireMention: true, thinking: 'off', showCode: false } }
     })
     mgr = new AccessManager()
     await mgr.load()
-    await mgr.setChannelFlags('C1', { thinking: 'always' })
+    await mgr.setChannelFlags('C1', { thinking: 'on' })
     const raw = await fs.readFile(path.join(testDir, 'access.json'), 'utf8')
     const parsed = JSON.parse(raw)
-    assert.equal(parsed.channels.C1.thinking, 'always')
+    assert.equal(parsed.channels.C1.thinking, 'on')
     assert.equal(parsed.channels.C1.requireMention, true)  // preserved
     assert.equal(parsed.channels.C1.enabled, true)         // preserved
     assert.equal(parsed.channels.C1.showCode, false)       // preserved
@@ -254,14 +266,14 @@ describe('AccessManager', () => {
   test('setChannelFlags patches showCode independently', async () => {
     await writeAccess({
       users: {},
-      channels: { C1: { enabled: true, requireMention: false, thinking: 'never', showCode: false } }
+      channels: { C1: { enabled: true, requireMention: false, thinking: 'off', showCode: false } }
     })
     mgr = new AccessManager()
     await mgr.load()
     await mgr.setChannelFlags('C1', { showCode: true })
     const f = mgr.channelFlags('C1')
     assert.equal(f.showCode, true)
-    assert.equal(f.thinking, 'never')  // preserved
+    assert.equal(f.thinking, 'off')  // preserved
   })
 
   test('setChannelFlags throws on unconfigured channel', async () => {
@@ -269,7 +281,7 @@ describe('AccessManager', () => {
     mgr = new AccessManager()
     await mgr.load()
     await assert.rejects(
-      () => mgr.setChannelFlags('unknown', { thinking: 'always' }),
+      () => mgr.setChannelFlags('unknown', { thinking: 'on' }),
       /not configured/
     )
   })
@@ -277,13 +289,13 @@ describe('AccessManager', () => {
   test('setChannelFlags rejects invalid thinking mode', async () => {
     await writeAccess({
       users: {},
-      channels: { C1: { enabled: true, requireMention: false, thinking: 'auto', showCode: false } }
+      channels: { C1: { enabled: true, requireMention: false, thinking: 'off', showCode: false } }
     })
     mgr = new AccessManager()
     await mgr.load()
     await assert.rejects(
       () => mgr.setChannelFlags('C1', { thinking: 'maybe' as any }),
-      /thinking.*always.*auto.*never/
+      /thinking.*off.*on.*collapse/
     )
   })
 

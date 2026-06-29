@@ -121,16 +121,15 @@ export const geminiCommand = new SlashCommandBuilder()
   .addSubcommand(subcommand =>
     subcommand
       .setName('thinking')
-      .setDescription('When to render the 💭 thinking block: always | auto | collapse | never.')
+      .setDescription('When to render the 💭 thinking block: off | on | collapse.')
       .addStringOption(option => option
         .setName('mode')
-        .setDescription('always | auto (Gemma decides) | collapse (show then strip after a linger) | never')
+        .setDescription('off (no block) | on (force every reply) | collapse (show then strip after a linger)')
         .setRequired(true)
         .addChoices(
-          { name: 'auto — Gemma decides per message (default)', value: 'auto' },
-          { name: 'always — force a thinking block every reply', value: 'always' },
+          { name: 'off — no thinking block (default)', value: 'off' },
+          { name: 'on — force a thinking block every reply', value: 'on' },
           { name: 'collapse — show it, then strip after the linger', value: 'collapse' },
-          { name: 'never — no thinking block', value: 'never' },
         )
       )
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
@@ -262,6 +261,19 @@ export const geminiCommand = new SlashCommandBuilder()
     subcommand
       .setName('settings')
       .setDescription('Show every resolved setting for this channel (read-only)')
+      .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
+  )
+  .addSubcommand(subcommand =>
+    subcommand
+      .setName('mention')
+      .setDescription('Require an @-mention before responding in this channel: on | off.')
+      .addStringOption(option => option
+        .setName('value').setDescription('on | off').setRequired(true)
+        .addChoices(
+          { name: 'on — only respond when @-mentioned', value: 'on' },
+          { name: 'off — respond to all messages', value: 'off' },
+        )
+      )
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
   )
 
@@ -429,8 +441,8 @@ interface ExtraDeps {
       if (!channel) {
         return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
       }
-      if (!['always', 'auto', 'collapse', 'never'].includes(mode)) {
-        return interaction.reply({ content: `❌ \`thinking\` must be one of: always, auto, collapse, never (got \`${mode}\`)`, ephemeral: true })
+      if (!['off', 'on', 'collapse'].includes(mode)) {
+        return interaction.reply({ content: `❌ \`thinking\` must be one of: off, on, collapse (got \`${mode}\`)`, ephemeral: true })
       }
       const updated = await access.setChannelFlags(channel.id, { thinking: mode as ThinkingMode })
       const note = mode === 'collapse' ? ' — shown live, stripped after the linger' : ''
@@ -726,9 +738,9 @@ interface ExtraDeps {
         ['engine', String(engine)],
         ['api model', apiModel],
         ['agy model', agyModel],
-        ['thinking', `${f.thinking} (default auto)`],
+        ['thinking', `${f.thinking} (default off)`],
         ['trace', `${f.trace} (default off)`],
-        ['counter', `${f.counter} (default token)`],
+        ['counter', `${f.counter} (default both)`],
         ['show code', `${f.showCode} (default true)`],
         ['cache', `${f.cache} (default true)`],
         ['cache ttl', f.cacheTtlSec != null ? `${f.cacheTtlSec}s` : 'default'],
@@ -739,6 +751,26 @@ interface ExtraDeps {
       const body = rows.map(([k, v]) => `${k.padEnd(pad)} : ${v}`).join('\n')
       const card = `⚙️ **gemini settings** — <#${channel.id}>\n\`\`\`\n${body}\n\`\`\``
       return interaction.reply({ content: card, ephemeral: true })
+    }
+
+    // /gemini mention on|off — dedicated require-@ setter, unified with /gpt and
+    // /llm (replaces the old `/gemini set flag:require_mention` path, which stays
+    // for back-compat but is no longer the documented way).
+    if (subcommand === 'mention') {
+      const value = interaction.options.getString('value', true).trim().toLowerCase()
+      const channel = interaction.options.getChannel('channel') ?? interaction.channel
+      if (!channel) {
+        return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
+      }
+      if (!['on', 'off'].includes(value)) {
+        return interaction.reply({ content: `❌ \`mention\` must be on | off (got \`${value}\`)`, ephemeral: true })
+      }
+      try {
+        const updated = await access.setChannelFlags(channel.id, { requireMention: value === 'on' })
+        return interaction.reply({ content: `✅ <#${channel.id}> require-mention = \`${value}\` (${updated.requireMention}).`, ephemeral: true })
+      } catch (e: any) {
+        return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
+      }
     }
 
     if (subcommand === 'backfill') {

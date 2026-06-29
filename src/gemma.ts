@@ -542,7 +542,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       isFlushing = true
       try {
         let fullReply = ''
-        const showThinking = flags.thinking !== 'never' && !!latestParsed.thinking
+        const showThinking = flags.thinking !== 'off' && !!latestParsed.thinking
         if (showThinking && latestParsed.thinking) {
           const quotedThinking = latestParsed.thinking.split('\n').map(line => `>   ${line}`).join('\n')
           fullReply += `💭 **Thinking:**\n${quotedThinking}\n\n`
@@ -787,7 +787,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // the reasoning "read as part of the message". Now: thinkingMessage → its own
     // grayed thought-message (the "💭 Thinking…" placeholder is edited to become
     // it); finalFullReply → the clean answer as a separate message below. Same
-    // gating as before (`flags.thinking !== 'never'`, collapse/never modes).
+    // gating as before (`flags.thinking !== 'off'`, collapse/never modes).
     let thinkingMessage = ''
 
     // 🔧 Tool-trace card — the dedicated gpt-bot-style card, gated by the per-
@@ -816,12 +816,12 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // Header sits at column 0; body blockquoted so the inner content visually
     // indents under the header without doubling up the indent on the title.
     // Goes into thinkingMessage (the separate thought-message), NOT the reply.
-    if (flags.thinking !== 'never' && meta.nativeThoughts) {
+    if (flags.thinking !== 'off' && meta.nativeThoughts) {
       const quoted = meta.nativeThoughts.split('\n').map(line => `>   ${line}`).join('\n')
       thinkingMessage += `🧠 **Reasoning:**\n${quoted}\n\n`
     }
 
-    const showThinkingFinal = flags.thinking !== 'never' && !!parsed.thinking
+    const showThinkingFinal = flags.thinking !== 'off' && !!parsed.thinking
     if (showThinkingFinal && parsed.thinking) {
       const quotedThinking = parsed.thinking.split('\n').map(line => `>   ${line}`).join('\n')
       thinkingMessage += `💭 **Thinking:**\n${quotedThinking}\n\n`
