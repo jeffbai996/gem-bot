@@ -263,7 +263,11 @@ interface AgyTrajParse {
   // `created_at` per step (no completed_at), so we derive a call's duration as
   // the gap to the NEXT step's created_at. 0 when unknown (the trace omits the
   // [Ns] badge for 0). Real for anything that took ≥1s.
-  tools: Array<{ name: string; durationMs: number }>
+  // `diff` is set only for write_to_file steps: agy logs the full new file
+  // content (CodeContent) but no unified diff, so we synthesize an all-additions
+  // diff (every content line as a '+') — what a Claude-style new-file write looks
+  // like. Leaving it undefined renders the call as a plain row.
+  tools: Array<{ name: string; durationMs: number; diff?: string }>
 }
 
 // Map an agy tool name (+ args) to a human display name for the 🔧 trace,
@@ -325,6 +329,25 @@ function agyToolDisplayName(
     }
   }
   return detail ? `${spec.verb}(${detail})` : spec.verb
+}
+
+// Synthesize a unified-diff body from an agy write_to_file step. agy logs the
+// full new file content (`CodeContent`) but no diff and no prior content, so the
+// best faithful render is an all-additions diff: every content line prefixed `+`,
+// the way a Claude-style new-file write shows. Returns null when there's no usable
+// content (so the call falls back to a plain trace row). Capped to keep the trace
+// card small — the renderer also caps body lines, this is a cheap early bound.
+const AGY_DIFF_MAX_LINES = 40
+function agyWriteDiff(args: Record<string, unknown> | undefined): string | null {
+  if (!args || typeof args !== 'object') return null
+  const content = (args as Record<string, unknown>).CodeContent
+  if (typeof content !== 'string' || !content.trim()) return null
+  const raw = content.replace(/\n+$/, '').split('\n')
+  const lines = raw.slice(0, AGY_DIFF_MAX_LINES).map(l => '+' + l)
+  if (raw.length > AGY_DIFF_MAX_LINES) {
+    lines.push(`+... (${raw.length - AGY_DIFF_MAX_LINES} more lines)`)
+  }
+  return lines.join('\n')
 }
 
 // Snapshot {trajectory_path -> mtimeMs} under the brain dir BEFORE launching agy,
@@ -429,7 +452,7 @@ function parseAgyTrajectory(path: string): AgyTrajParse {
   }
 
   const thinkingChunks: string[] = []
-  const tools: Array<{ name: string; durationMs: number }> = []
+  const tools: Array<{ name: string; durationMs: number; diff?: string }> = []
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i]
     if (s.source !== 'MODEL') continue // skip USER_INPUT / CONVERSATION_HISTORY / CHECKPOINT
@@ -440,7 +463,14 @@ function parseAgyTrajectory(path: string): AgyTrajParse {
       const dur = stepMs(i)
       for (const tc of s.tool_calls ?? []) {
         if (!tc || typeof tc !== 'object') continue
-        tools.push({ name: agyToolDisplayName(tc.name ?? '', tc.args), durationMs: dur })
+        // write_to_file → attach a synthesized all-additions diff so the trace
+        // card renders the edit content (not just a `Write(file)` row).
+        const diff = (tc.name === 'write_to_file') ? agyWriteDiff(tc.args) : null
+        tools.push({
+          name: agyToolDisplayName(tc.name ?? '', tc.args),
+          durationMs: dur,
+          ...(diff ? { diff } : {}),
+        })
       }
       // s.content on the final planner is the answer text — we DON'T use it here;
       // the reply is agy's plain stdout (no JSON envelope on this path now). This
@@ -526,10 +556,10 @@ export async function respondViaAgy(
       // Emit a start/end pair per tool call so the 🔧 trace fires on agy turns,
       // exactly like gemini.ts emits at its dispatch site. (No failure signal in
       // the trajectory — these are completed calls — so failed:false.)
-      for (const { name, durationMs } of traj.tools) {
+      for (const { name, durationMs, diff } of traj.tools) {
         input.onEvent?.({ type: 'tool_call_start', name })
         input.onEvent?.({ type: 'tool_call_end', name, failed: false })
-        toolCalls.push({ name, args: {}, durationMs, resultPreview: '', failed: false })
+        toolCalls.push({ name, args: {}, durationMs, resultPreview: '', failed: false, ...(diff ? { diff } : {}) })
       }
       // Restore the real reasoning. Prefer the trajectory's thinking (the model's
       // actual chain-of-thought across planner steps) over the {thinking} the

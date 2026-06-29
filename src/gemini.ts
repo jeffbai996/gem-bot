@@ -546,6 +546,7 @@ export interface ToolCall {
   durationMs: number
   resultPreview: string
   failed: boolean
+  diff?: string   // unified diff for file edits (shown in the trace card as a [+N, -M] badge + body)
 }
 
 export interface RespondMetadata {
