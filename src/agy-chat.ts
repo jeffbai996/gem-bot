@@ -115,8 +115,27 @@ function buildPrompt(input: AgyChatInput): string {
     .replace(/##\s*Thinking override[\s\S]*?(?=\n##\s|\n*$)/i, '')
     .trim()
 
+  // CAPABILITY OVERRIDE for the agy path (Jeff 2026-06-29). The base persona
+  // tells gemma she has NO shell, NO file read/write, can't restart herself,
+  // etc. — true on the native Gemini API engine, FALSE here. On agy she's a
+  // real coding agent with run_command (full shell on the host), file
+  // read/write, and MCP tools. So she was wrongly refusing ("I have no
+  // filesystem access") on the very engine that does. Append an override that
+  // supersedes the persona's "you don't have" list for THIS turn only.
+  const agyCapabilities =
+    '## Engine override — you are running as agy (coding agent) this turn\n' +
+    "Ignore any earlier claim that you lack shell or filesystem access. On THIS engine you DO " +
+    'have a full shell on this machine (run_command → run `ls`, `cat`, `git`, `systemctl`, `curl`, ' +
+    'read and write files, inspect logs) plus MCP tools. Use them when the task needs them — ' +
+    "actually run the command, don't claim you can't. Two things still hold: you remain TEXT-only " +
+    '(no image/audio/video generation), and the core honesty rule is unchanged — never claim you ' +
+    "ran something you didn't. If you genuinely can't reach a thing, say so; but don't pre-refuse " +
+    'filesystem/shell work that you can in fact do here.'
+
   return [
     sysNoJson,
+    '',
+    agyCapabilities,
     '',
     '--- You are chatting in a Discord conversation. Recent history (oldest first): ---',
     transcript || '(no prior messages)',
@@ -503,10 +522,16 @@ function parseAgyTrajectory(path: string): AgyTrajParse {
       }
     }
   }
-  return {
-    thinking: thinkingChunks.length ? thinkingChunks.join('\n\n') : null,
-    tools,
-  }
+  // Collapse blank lines in the thinking trace (Jeff 2026-06-29): agy's planner
+  // thinking is double-spaced — blank line between its own bold headings, plus
+  // we used to join steps with '\n\n'. That stacked up to too much vertical air
+  // in the rendered 💭 blockquote. Join steps with a single '\n' and squeeze any
+  // run of 2+ newlines anywhere in the text down to one — so it's exactly one
+  // break between each heading.
+  const thinking = thinkingChunks.length
+    ? thinkingChunks.join('\n').replace(/\n{2,}/g, '\n').trim()
+    : null
+  return { thinking, tools }
 }
 
 // Run a chat turn through the Antigravity CLI (`agy`) instead of the Gemini
