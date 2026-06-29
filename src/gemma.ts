@@ -281,7 +281,7 @@ client.once('ready', async () => {
   console.error(`Gem online as ${client.user?.tag} (${client.user?.id})`)
   client.user?.setPresence({
     status: 'online',
-    activities: [{ name: '🔮 hallucinating confidently', type: ActivityType.Custom, state: '🔮 hallucinating confidently' }]
+    activities: [{ name: '🗄️ indexing the rubble', type: ActivityType.Custom, state: '🗄️ indexing the rubble' }]
   })
 
   try {
@@ -417,6 +417,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // alongside a new error reply (seen 2026-05-01: thought_signature crash
   // left a dangling Thinking... message above the actual error).
   let activeMessages: Message[] = []
+  const liveToolCalls: Array<{ name: string; running: boolean; failed?: boolean }> = []
   // This speak-mode turn's abort signal (set below if we're speaking to a vc).
   // Declared out here so the catch/finally can read it for barge-in cleanup.
   let turnSignal: AbortSignal | undefined
@@ -543,8 +544,17 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         let fullReply = ''
         const showThinking = flags.thinking !== 'never' && !!latestParsed.thinking
         if (showThinking && latestParsed.thinking) {
-          const quotedThinking = latestParsed.thinking.split('\n').map(line => `> ${line}`).join('\n')
+          const quotedThinking = latestParsed.thinking.split('\n').map(line => `>   ${line}`).join('\n')
           fullReply += `💭 **Thinking:**\n${quotedThinking}\n\n`
+        }
+        const showLiveTools = (flags.showCode || flags.trace !== 'off') && liveToolCalls.length > 0
+        if (showLiveTools) {
+          const lines = liveToolCalls.map(c => {
+            const prefix = c.running ? '● ' : (c.failed ? '- ● ' : '+ ● ')
+            const suffix = c.running ? '...' : (c.failed ? ' FAILED' : '')
+            return `${prefix}${shortToolName(c.name)}${suffix}`
+          })
+          fullReply += '🔧 **Tool trace**\n```diff\n' + lines.join('\n') + '\n```\n\n'
         }
         if (latestParsed.reply) {
           fullReply += latestParsed.reply
@@ -606,11 +616,16 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       } else if (e.type === 'tool_call_start') {
         activeToolCount += 1
         applyLifecycle(message, 'tooling').catch(() => {})
+        liveToolCalls.push({ name: e.name, running: true })
+        flushStream().catch(() => {})
       } else if (e.type === 'tool_call_end') {
         activeToolCount = Math.max(0, activeToolCount - 1)
-        // We don't actively drop 🔧 when activeToolCount hits 0 — the
-        // terminal state (✅ / ❌ / etc) cleans up all transients
-        // anyway, and a tool ending mid-turn just means we keep going.
+        const call = liveToolCalls.find(c => c.name === e.name && c.running)
+        if (call) {
+          call.running = false
+          call.failed = e.failed
+        }
+        flushStream().catch(() => {})
       }
     }
     // Speak-mode FULL BARGE-IN. If this message is being spoken to a vc and a
@@ -802,13 +817,13 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // indents under the header without doubling up the indent on the title.
     // Goes into thinkingMessage (the separate thought-message), NOT the reply.
     if (flags.thinking !== 'never' && meta.nativeThoughts) {
-      const quoted = meta.nativeThoughts.split('\n').map(line => `> ${line}`).join('\n')
+      const quoted = meta.nativeThoughts.split('\n').map(line => `>   ${line}`).join('\n')
       thinkingMessage += `🧠 **Reasoning:**\n${quoted}\n\n`
     }
 
     const showThinkingFinal = flags.thinking !== 'never' && !!parsed.thinking
     if (showThinkingFinal && parsed.thinking) {
-      const quotedThinking = parsed.thinking.split('\n').map(line => `> ${line}`).join('\n')
+      const quotedThinking = parsed.thinking.split('\n').map(line => `>   ${line}`).join('\n')
       thinkingMessage += `💭 **Thinking:**\n${quotedThinking}\n\n`
     }
     thinkingMessage = thinkingMessage.replace(/\s+$/, '')
@@ -1042,20 +1057,41 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       }
 
       if (collapsingTrace) {
-        // After a (possible) thinking collapse above, the reply's first chunk is
-        // activeMessages[0] if thinking was spliced out, else activeMessages[replyStart].
+        // Calculate the collapsed reply pieces eagerly so we don't have to deal
+        // with partial/split trace cards in individual chunks later.
+        const collapsedReply = finalFullReply.replace(/🔧 \*\*Tool trace\*\*\n```diff\n[\s\S]*?\n```\n*/, '').replace(/^\s+/, '')
+        const collapsedPieces = chunk(collapsedReply, 2000, 'newline')
         const traceIdx = replyStart - thinkingSpliced
-        const traceMsg = activeMessages[traceIdx]
-        const original = replyPieces[0]
-        if (traceMsg && original) {
-          // Trace card is a fenced ```diff``` block under the 🔧 header — strip
-          // the whole header+fence+trailing blank line.
-          let stripped = original.replace(/🔧 \*\*Tool trace\*\*\n```diff\n[\s\S]*?\n```\n*/, '')
-          stripped = stripped.replace(/^\s+/, '')
-          if (stripped && stripped !== original) {
-            setTimeout(() => { traceMsg.edit(stripped).catch(() => {}) }, lingerMs)
+        
+        setTimeout(async () => {
+          try {
+            const replyMessages = activeMessages.slice(traceIdx)
+            if (replyMessages.length === 0) return
+
+            for (let i = 0; i < collapsedPieces.length; i++) {
+              const piece = collapsedPieces[i]
+              if (i < replyMessages.length) {
+                if (replyMessages[i].content !== piece) {
+                  await replyMessages[i].edit(piece).catch(() => {})
+                }
+              } else {
+                const msg = await sendReply(message, piece)
+                if (msg) activeMessages.push(msg as Message)
+              }
+            }
+            
+            if (collapsedPieces.length < replyMessages.length) {
+              const excess = replyMessages.slice(collapsedPieces.length)
+              for (const m of excess) {
+                await m.delete().catch(() => {})
+                const idx = activeMessages.indexOf(m)
+                if (idx !== -1) activeMessages.splice(idx, 1)
+              }
+            }
+          } catch (err) {
+            console.error('Failed to collapse trace card:', err)
           }
-        }
+        }, lingerMs)
       }
     } else if (thinkingMessage) {
       // React-only turn (empty reply) that STILL produced reasoning: don't orphan
