@@ -22,18 +22,18 @@ export type ChatEngine = 'agy' | 'api'
 // the reasoning block rides the `thinking` mode.
 export type CounterMode = 'off' | 'token' | 'both'
 
-// Tool-trace card mode. off = no dedicated trace card (default — opt-in, like
-// gpt-bot); on = post a 🔧 **Tool trace** card ABOVE the reply and keep it;
-// collapse = post it live then delete after the reply lands. Distinct from the
-// `showCode` artifact dump — this is the gpt-bot-style dedicated diff-fence card.
+// Tool-trace card mode. off = no card (default — opt-in, like gpt-bot); on =
+// post a 🔧 **Tool trace** card ABOVE the reply and keep it; collapse = post it
+// live then delete after the reply lands. The card is the SINGLE trace surface:
+// tool calls + web-search + code-execution (the old show_code inline dump was
+// folded in here 2026-06-29).
 export type TraceMode = 'off' | 'on' | 'collapse'
 
 export interface ChannelConfig {
   enabled: boolean
   requireMention: boolean
-  thinking?: ThinkingMode  // default "auto" — Gemma decides per message
-  showCode?: boolean       // default true — render code-exec artifacts + tool calls
-  trace?: TraceMode        // default "off" — gpt-bot-style 🔧 Tool-trace card (off | on | collapse)
+  thinking?: ThinkingMode  // default "off" — render the 💭 thinking block (off | on | collapse)
+  trace?: TraceMode        // default "off" — the 🔧 Tool-trace card: tools + web-search + code-exec (off | on | collapse)
   counter?: CounterMode    // default "token" — usage/timing footer (off | token | both)
   cache?: boolean          // default true — cache the stable system-prompt prefix server-side
   cacheTtlSec?: number     // optional — override the cache TTL (seconds). Falls back to manager default when unset
@@ -42,7 +42,6 @@ export interface ChannelConfig {
 
 export interface ChannelFlags {
   thinking: ThinkingMode
-  showCode: boolean
   trace: TraceMode
   counter: CounterMode
   cache: boolean
@@ -52,7 +51,7 @@ export interface ChannelFlags {
   engine: ChatEngine | null
   // requireMention isn't a "rendering" flag like the others — it sits at the
   // top of ChannelConfig — but exposing it through ChannelFlags lets the
-  // /gemini set unified setter touch it without a separate command path.
+  // /gemini mention setter touch requireMention via ChannelFlags.
   requireMention?: boolean
 }
 
@@ -84,16 +83,14 @@ const VALID_TRACE_MODES: TraceMode[] = ['off', 'on', 'collapse']
 
 // Default rendering/behavior flags applied when a channel is first configured
 // without explicit flag overrides, and when channelFlags() is asked about an
-// unknown channel. showCode/cache default true — more transparent output +
-// cheaper bills. Defaults UNIFIED across the squad bots (gem/gpt/llm) per Jeff
-// 2026-06-29: thinking=off (quiet default), trace=off, counter=both. The
-// optInReply gate was removed 2026-05-02.
+// unknown channel. Defaults UNIFIED across the squad bots (gem/gpt/llm) per Jeff
+// 2026-06-29: thinking=off (quiet default), trace=off, counter=both. cache
+// defaults true. The optInReply gate was removed 2026-05-02; the show_code flag
+// was retired 2026-06-29 (its content folded into the trace card).
 const DEFAULT_FLAGS = {
   thinking: 'off' as ThinkingMode,
-  showCode: true,
-  // trace defaults OFF — matches gpt/llm. The dedicated 🔧 Tool-trace card is
-  // opt-in so enabling the feature doesn't suddenly spam every channel; the
-  // inline showCode tool dump remains the always-on surface.
+  // trace defaults OFF — matches gpt/llm. The 🔧 Tool-trace card (tools +
+  // web-search + code-exec) is opt-in so it doesn't spam every channel.
   trace: 'off' as TraceMode,
   counter: 'both' as CounterMode,
   cache: true,
@@ -192,13 +189,12 @@ export class AccessManager {
     // already-configured channel. Only enabled+requireMention are mandatory;
     // anything not in the flags patch falls back to the existing value, then
     // the global default. Without this, calling /gemini channel a second time
-    // would silently reset thinking/showCode/counter/etc back to defaults.
+    // would silently reset thinking/trace/counter/etc back to defaults.
     const existing = this.data.channels[channelId]
     this.data.channels[channelId] = {
       enabled,
       requireMention,
       thinking: flags?.thinking ?? existing?.thinking ?? DEFAULT_FLAGS.thinking,
-      showCode: flags?.showCode ?? existing?.showCode ?? DEFAULT_FLAGS.showCode,
       trace: flags?.trace ?? existing?.trace ?? DEFAULT_FLAGS.trace,
       counter: flags?.counter ?? existing?.counter ?? DEFAULT_FLAGS.counter,
       cache: flags?.cache ?? existing?.cache ?? DEFAULT_FLAGS.cache,
@@ -240,7 +236,6 @@ export class AccessManager {
     this.data.channels[channelId] = {
       ...existing,
       ...(patch.thinking !== undefined ? { thinking: patch.thinking } : {}),
-      ...(patch.showCode !== undefined ? { showCode: patch.showCode } : {}),
       ...(patch.trace !== undefined ? { trace: patch.trace } : {}),
       ...(patch.counter !== undefined ? { counter: patch.counter } : {}),
       ...(patch.cache !== undefined ? { cache: patch.cache } : {}),
@@ -267,7 +262,6 @@ export class AccessManager {
     return {
       // normThinking coerces legacy never/always/auto → off/on/off.
       thinking: normThinking(channel?.thinking ?? DEFAULT_FLAGS.thinking),
-      showCode: channel?.showCode ?? DEFAULT_FLAGS.showCode,
       trace: channel?.trace ?? DEFAULT_FLAGS.trace,
       counter: channel?.counter ?? DEFAULT_FLAGS.counter,
       cache: channel?.cache ?? DEFAULT_FLAGS.cache,

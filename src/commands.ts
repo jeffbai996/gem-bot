@@ -196,26 +196,6 @@ export const geminiCommand = new SlashCommandBuilder()
       )
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
   )
-  .addSubcommand(subcommand =>
-    subcommand
-      .setName('set')
-      .setDescription('Set a per-channel flag: show_code | require_mention. (thinking + footer have own subcommands.)')
-      .addStringOption(option => option
-        .setName('flag')
-        .setDescription('Which flag to set')
-        .setRequired(true)
-        .addChoices(
-          { name: 'show_code — render code/tool artifacts + 🔍 web-search', value: 'show_code' },
-          { name: 'require_mention — only respond when @-mentioned', value: 'require_mention' },
-        )
-      )
-      .addStringOption(option => option
-        .setName('value')
-        .setDescription('show_code / require_mention: true|false.')
-        .setRequired(true)
-      )
-      .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
-  )
   .addSubcommandGroup(group =>
     group
       .setName('cache')
@@ -328,7 +308,7 @@ interface ExtraDeps {
       await access.setChannel(channel.id, enabled, requireMention)
       const flags = access.channelFlags(channel.id)
       return interaction.reply({
-        content: `✅ <#${channel.id}> configured. enabled=${enabled}, requireMention=${requireMention}. other flags (thinking=${flags.thinking}, showCode=${flags.showCode}, trace=${flags.trace}, counter=${flags.counter}, cache=${flags.cache}) — change via \`/gemini set\`, \`/gemini trace\`, \`/gemini counter\` or \`/gemini cache\`.`,
+        content: `✅ <#${channel.id}> configured. enabled=${enabled}, requireMention=${requireMention}. other flags (thinking=${flags.thinking}, trace=${flags.trace}, counter=${flags.counter}, cache=${flags.cache}) — change via \`/gemini thinking\`, \`/gemini trace\`, \`/gemini counter\`, \`/gemini cache\` or \`/gemini mention\`. See all with \`/gemini settings\`.`,
         ephemeral: true
       })
     }
@@ -538,50 +518,6 @@ interface ExtraDeps {
       }
     }
 
-    if (subcommand === 'set') {
-      const flag = interaction.options.getString('flag', true)
-      const rawValue = interaction.options.getString('value', true).trim().toLowerCase()
-      const channel = interaction.options.getChannel('channel') ?? interaction.channel
-      if (!channel) {
-        return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
-      }
-
-      try {
-        let updated
-        if (flag === 'show_code' || flag === 'require_mention') {
-          // Accept canonical bool tokens. Reject anything ambiguous so the
-          // user knows they typed something wrong vs. silently being parsed
-          // as false.
-          const truthy = ['true', 't', 'yes', 'y', 'on', '1']
-          const falsy = ['false', 'f', 'no', 'n', 'off', '0']
-          let parsed: boolean
-          if (truthy.includes(rawValue)) parsed = true
-          else if (falsy.includes(rawValue)) parsed = false
-          else {
-            return interaction.reply({
-              content: `❌ \`${flag}\` value must be true or false (got \`${rawValue}\`)`,
-              ephemeral: true
-            })
-          }
-          const fieldKey = flag === 'show_code' ? 'showCode' : 'requireMention'
-          updated = await access.setChannelFlags(channel.id, { [fieldKey]: parsed })
-        } else {
-          return interaction.reply({
-            content: `❌ unknown flag \`${flag}\`. Choices: show_code, require_mention. (thinking via \`/gemini thinking\`, footer via \`/gemini counter\`, cache via \`/gemini cache on|off\`.)`,
-            ephemeral: true
-          })
-        }
-
-        const summary = `thinking=${updated.thinking}, showCode=${updated.showCode}, counter=${updated.counter}, cache=${updated.cache}, requireMention=${updated.requireMention}`
-        return interaction.reply({
-          content: `✅ <#${channel.id}> \`${flag}\` set. ${summary}`,
-          ephemeral: true
-        })
-      } catch (e: any) {
-        return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
-      }
-    }
-
     // /gemini cache <on|off|info|ttl|flush>. SubcommandGroup means
     // getSubcommandGroup() returns 'cache' and getSubcommand() returns the
     // inner verb.
@@ -741,7 +677,6 @@ interface ExtraDeps {
         ['thinking', `${f.thinking} (default off)`],
         ['trace', `${f.trace} (default off)`],
         ['counter', `${f.counter} (default both)`],
-        ['show code', `${f.showCode} (default true)`],
         ['cache', `${f.cache} (default true)`],
         ['cache ttl', f.cacheTtlSec != null ? `${f.cacheTtlSec}s` : 'default'],
         ['require @', f.requireMention ? 'yes' : 'no'],
