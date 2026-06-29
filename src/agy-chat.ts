@@ -130,13 +130,18 @@ function buildPrompt(input: AgyChatInput): string {
   // supersedes the persona's "you don't have" list for THIS turn only.
   const agyCapabilities =
     '## Engine override — you are running as agy (coding agent) this turn\n' +
-    "Ignore any earlier claim that you lack shell or filesystem access. On THIS engine you DO " +
+    "Ignore any earlier claim that you lack shell, filesystem, or MCP access. On THIS engine you DO " +
     'have a full shell on this machine (run_command → run `ls`, `cat`, `git`, `systemctl`, `curl`, ' +
-    'read and write files, inspect logs) plus MCP tools. Use them when the task needs them — ' +
-    "actually run the command, don't claim you can't. Two things still hold: you remain TEXT-only " +
-    '(no image/audio/video generation), and the core honesty rule is unchanged — never claim you ' +
-    "ran something you didn't. If you genuinely can't reach a thing, say so; but don't pre-refuse " +
-    'filesystem/shell work that you can in fact do here.'
+    'read and write files, inspect logs). You ALSO have these MCP tool servers wired in (use them ' +
+    'directly, they are real tools this turn — not something you must shell out for):\n' +
+    '  • vecgrep — semantic search (`search`, `list_corpora`, `get_corpus`): find code/docs by meaning.\n' +
+    '  • ibkr — Jeff\'s broker (`ibkr_get_account_summary`, `ibkr_margin`, `ibkr_get_positions`, etc.): ' +
+    'account/positions/margin/quotes. This is LIVE financial data — only surface specifics where Jeff already is.\n' +
+    '  • playwright — headless browser (`browser_navigate`, `browser_snapshot`, `browser_take_screenshot`, …).\n' +
+    "Use them when the task needs them — actually call the tool, don't claim you can't. Two things still " +
+    'hold: you remain TEXT-only (no image/audio/video GENERATION — browser screenshots are fine, they\'re ' +
+    'captured not generated), and the core honesty rule is unchanged — never claim you ran something you ' +
+    "didn't. If a tool genuinely errors or a server is down, say so; but don't pre-refuse work you can do here."
 
   return [
     sysNoJson,
@@ -157,16 +162,14 @@ function buildPrompt(input: AgyChatInput): string {
       `chat — don't slow those down. The squad memory store is sensitive: only surface ` +
       `portfolio/account specifics where Jeff already is.`,
     '--- vecgrep (semantic search) ---',
-    // vecgrep is reachable via the CLI on this engine — NOT as an MCP tool (agy
-    // has none wired). Gemma kept refusing ("can't use vecgrep as an MCP"),
-    // which is half-true and unhelpful: she just needs to shell out. Tell her.
-    `You CAN use vecgrep — it's a semantic-search CLI on this machine (not an MCP tool, ` +
-      `so don't look for one; just run the command). Usage:\n  ${VECGREP_BIN} search "<query>"  ` +
-      `# search all corpora\n  ${VECGREP_BIN} corpora list             # see available corpora\n` +
-      `  ${VECGREP_BIN} search "<query>" -c <corpus>   # scope to one corpus\n` +
-      `Reach for it when the task is "find where/what mentions X" across indexed code or docs ` +
-      `(meaning-based, not literal grep). If a corpus you'd want isn't indexed, say so rather ` +
-      `than guessing.`,
+    // vecgrep is now wired as an MCP tool on agy (mcp_config.json, 2026-06-29),
+    // so the MCP `search` tool is the primary path. The CLI still works as a
+    // fallback if the MCP server is down — keep it documented but secondary.
+    `vecgrep (semantic search — find code/docs by meaning, not literal keyword) is available as an ` +
+      `MCP tool: call its \`search\` / \`list_corpora\` / \`get_corpus\` tools directly. Reach for it ` +
+      `when the task is "find where/what mentions X" across indexed corpora. If the MCP server is ` +
+      `unreachable, the CLI is a fallback: \`${VECGREP_BIN} search "<query>"\`. If a corpus you'd ` +
+      `want isn't indexed, say so rather than guessing.`,
     '--- New message ---',
     `${input.userName}: ${input.userMessageText}`,
     '',
