@@ -280,36 +280,51 @@ interface AgyTrajParse {
 // (web_search/read_file/…) were guesses that never matched, which is why the
 // trace fell through to agy's freeform per-call prose ("Searching <topic>") and
 // read as wrong/garbage names (Jeff 2026-06-28).
-const AGY_TOOL_LABELS: Record<string, string> = {
-  run_command: 'Running command',
-  search_web: 'Searching web',
-  view_file: 'Reading file',
-  list_dir: 'Listing files',
-  grep_search: 'Searching code',
-  write_to_file: 'Writing file',
-  manage_task: 'Managing task',
-  call_mcp_tool: 'Tool call',
-  ask_question: 'Asking',
-  list_permissions: 'Checking permissions',
+// agy tool → a Claude-bot-style `Verb(detail)` label. Each entry is the display
+// VERB plus the arg key whose value is the meaningful "detail" (the command, the
+// query, the path). So a run_command renders `Bash(ls -la /tmp)`, a
+// search renders `Search(lupine bloom)`, etc. — the actual content, like the
+// Claude bots' `Bash(…)`, not 30 identical `Running command` rows (Jeff
+// 2026-06-28). Verified arg keys from live trajectories.
+const AGY_TOOL_SPEC: Record<string, { verb: string; argKey?: string; basename?: boolean }> = {
+  run_command:    { verb: 'Bash',   argKey: 'CommandLine' },
+  search_web:     { verb: 'Search', argKey: 'query' },
+  view_file:      { verb: 'Read',   argKey: 'AbsolutePath', basename: true },
+  write_to_file:  { verb: 'Write',  argKey: 'AbsolutePath', basename: true },
+  list_dir:       { verb: 'List',   argKey: 'DirectoryPath', basename: true },
+  grep_search:    { verb: 'Grep',   argKey: 'Query' },
+  call_mcp_tool:  { verb: 'Tool',   argKey: 'ToolName' },
+  manage_task:    { verb: 'Task' },
+  ask_question:   { verb: 'Ask' },
+  list_permissions: { verb: 'Permissions' },
+  list_resources: { verb: 'Resources' },
   // browser tools (only reachable when an MCP browser server is wired — Operator):
-  browser_navigate: 'Browsing',
-  browser_click: 'Clicking',
-  browser_type: 'Typing',
-  browser_snapshot: 'Reading page',
-  browser_take_screenshot: 'Screenshot',
+  browser_navigate:        { verb: 'Browse', argKey: 'url' },
+  browser_click:           { verb: 'Click' },
+  browser_type:            { verb: 'Type' },
+  browser_snapshot:        { verb: 'ReadPage' },
+  browser_take_screenshot: { verb: 'Screenshot' },
 }
 
 function agyToolDisplayName(
   name: string,
-  _args: Record<string, unknown> | undefined
+  args: Record<string, unknown> | undefined
 ): string {
   const bare = (name || '').toLowerCase().replace(/^mcp__[^_]+__/, '')
-  if (AGY_TOOL_LABELS[bare]) return AGY_TOOL_LABELS[bare]
-  // No canonical label → show the ACTUAL tool name (e.g. `search_web`), NOT
-  // agy's freeform `toolAction`/`toolSummary` prose. The prose is query-specific
-  // narration ("Searching lupine lifecycle") that changes every call and reads
-  // as a wrong tool name; the bare name is consistent and correct.
-  return bare || name || 'tool'
+  const spec = AGY_TOOL_SPEC[bare]
+  // Unknown tool → show the raw name (never agy's freeform toolAction prose).
+  if (!spec) return bare || name || 'tool'
+  // Pull the meaningful detail from the named arg, if present.
+  let detail = ''
+  if (spec.argKey && args && typeof args === 'object') {
+    const v = (args as Record<string, unknown>)[spec.argKey]
+    if (typeof v === 'string' && v.trim()) {
+      detail = v.trim().replace(/\s+/g, ' ')
+      if (spec.basename) detail = detail.replace(/\/+$/, '').split('/').pop() || detail
+      if (detail.length > 60) detail = detail.slice(0, 59) + '…'
+    }
+  }
+  return detail ? `${spec.verb}(${detail})` : spec.verb
 }
 
 // Snapshot {trajectory_path -> mtimeMs} under the brain dir BEFORE launching agy,
