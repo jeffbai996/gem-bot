@@ -93,8 +93,23 @@ function buildPrompt(input: AgyChatInput): string {
     .filter((l) => l.trim())
     .join('\n')
 
+  // ROOT-CAUSE fix for the raw-JSON leak (Jeff 2026-06-28): the shared system
+  // prompt mandates a {react,thinking,reply} JSON envelope, but agy is a CODING
+  // agent — it fumbles structured output, emitting prose around the JSON or
+  // malformed JSON, which leaks the raw envelope to Discord. On the agy path we
+  // DON'T need that envelope: the reply is agy's plain stdout, and thinking comes
+  // from the trajectory's own `thinking` field (parsed post-hoc). So strip the
+  // mandatory-JSON block from the system prompt and tell agy to reply in plain
+  // prose. No JSON to parse → no leak, at the root.
+  const sysNoJson = input.systemPrompt
+    .trim()
+    // Drop the "## Response format (mandatory)" section through to the next
+    // header or end-of-string (the block that forces the JSON envelope).
+    .replace(/##\s*Response format \(mandatory\)[\s\S]*?(?=\n##\s|\n*$)/i, '')
+    .trim()
+
   return [
-    input.systemPrompt.trim(),
+    sysNoJson,
     '',
     '--- You are chatting in a Discord conversation. Recent history (oldest first): ---',
     transcript || '(no prior messages)',
@@ -112,12 +127,11 @@ function buildPrompt(input: AgyChatInput): string {
     '--- New message ---',
     `${input.userName}: ${input.userMessageText}`,
     '',
-    // The system prompt already mandates the {"react","thinking","reply"} JSON
-    // envelope (RESPONSE_FORMAT_BASE in gemini.ts); agy returns whatever text
-    // the model emits, and parseResponse() downstream tolerates fences/preamble.
-    // So we just remind it to answer as itself — the format contract is upstream.
-    'Reply as yourself (the persona described above) to that new message, in the ' +
-      'mandatory JSON response format described above.',
+    // PLAIN-TEXT reply (no JSON envelope on the agy path — see sysNoJson above).
+    // agy's stdout IS the reply; thinking is recovered separately from the
+    // trajectory. So just ask for the reply as prose, no wrapper.
+    'Reply as yourself (the persona described above) to that new message. Output ' +
+      'ONLY your reply as plain text — no JSON, no wrapper, no preamble.',
   ]
     .filter(Boolean)
     .join('\n')
@@ -237,6 +251,7 @@ interface AgyTrajStep {
   thinking?: string
   tool_calls?: Array<{ name?: string; args?: Record<string, unknown> }>
   content?: string
+  created_at?: string
 }
 
 // The structured result of parsing a run's trajectory: the model's real
@@ -244,7 +259,11 @@ interface AgyTrajStep {
 // (mapped to display names). Empty/null when nothing was found.
 interface AgyTrajParse {
   thinking: string | null
-  toolNames: string[]
+  // Each tool call with a best-effort duration. agy logs only second-resolution
+  // `created_at` per step (no completed_at), so we derive a call's duration as
+  // the gap to the NEXT step's created_at. 0 when unknown (the trace omits the
+  // [Ns] badge for 0). Real for anything that took ≥1s.
+  tools: Array<{ name: string; durationMs: number }>
 }
 
 // Map an agy tool name (+ args) to a human display name for the 🔧 trace,
@@ -353,7 +372,7 @@ function findAgyTrajectory(before: Map<string, number>): string | null {
 // are skipped (non-MODEL source). Best-effort: any error → empty parse, and the
 // caller falls back to the current behavior.
 function parseAgyTrajectory(path: string): AgyTrajParse {
-  const empty: AgyTrajParse = { thinking: null, toolNames: [] }
+  const empty: AgyTrajParse = { thinking: null, tools: [] }
   let raw: string
   try {
     raw = readFileSync(path, 'utf8')
@@ -381,34 +400,49 @@ function parseAgyTrajectory(path: string): AgyTrajParse {
       s.tool_calls.length > 0
   )
 
+  // Best-effort per-step duration: the gap from this step's created_at to the
+  // NEXT step's created_at (when this step finished ≈ when the next began). agy
+  // logs second-resolution timestamps and no completed_at, so this is coarse but
+  // real — anything ≥1s shows. ms(step i) reads steps[i+1].created_at − steps[i].
+  const stepMs = (i: number): number => {
+    const a = steps[i]?.created_at
+    const b = steps[i + 1]?.created_at
+    if (!a || !b) return 0
+    const ta = Date.parse(a), tb = Date.parse(b)
+    if (!isFinite(ta) || !isFinite(tb) || tb <= ta) return 0
+    return tb - ta
+  }
+
   const thinkingChunks: string[] = []
-  const toolNames: string[] = []
-  for (const s of steps) {
+  const tools: Array<{ name: string; durationMs: number }> = []
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i]
     if (s.source !== 'MODEL') continue // skip USER_INPUT / CONVERSATION_HISTORY / CHECKPOINT
     if (s.type === 'PLANNER_RESPONSE') {
       if (typeof s.thinking === 'string' && s.thinking.trim()) {
         thinkingChunks.push(s.thinking.trim())
       }
+      const dur = stepMs(i)
       for (const tc of s.tool_calls ?? []) {
         if (!tc || typeof tc !== 'object') continue
-        toolNames.push(agyToolDisplayName(tc.name ?? '', tc.args))
+        tools.push({ name: agyToolDisplayName(tc.name ?? '', tc.args), durationMs: dur })
       }
       // s.content on the final planner is the answer text — we DON'T use it here;
-      // the {thinking,reply} JSON from stdout (parse()) is the reply source of
-      // truth. This parse only ADDS the real thinking + tool trace.
+      // the reply is agy's plain stdout (no JSON envelope on this path now). This
+      // parse only ADDS the real thinking + tool trace.
     } else if (!anyPlannerTools) {
       // No planner carried tool_calls in this run → surface standalone MODEL
       // non-planner steps (RUN_COMMAND, or a future browser/MCP step) as tools
       // so the 🔧 trace still fires. (When planners DID carry tool_calls, these
       // are just execution echoes — suppress to avoid duplicates.)
       if (typeof s.type === 'string') {
-        toolNames.push(agyToolDisplayName(s.type, undefined))
+        tools.push({ name: agyToolDisplayName(s.type, undefined), durationMs: stepMs(i) })
       }
     }
   }
   return {
     thinking: thinkingChunks.length ? thinkingChunks.join('\n\n') : null,
-    toolNames,
+    tools,
   }
 }
 
@@ -477,10 +511,10 @@ export async function respondViaAgy(
       // Emit a start/end pair per tool call so the 🔧 trace fires on agy turns,
       // exactly like gemini.ts emits at its dispatch site. (No failure signal in
       // the trajectory — these are completed calls — so failed:false.)
-      for (const name of traj.toolNames) {
+      for (const { name, durationMs } of traj.tools) {
         input.onEvent?.({ type: 'tool_call_start', name })
         input.onEvent?.({ type: 'tool_call_end', name, failed: false })
-        toolCalls.push({ name, args: {}, durationMs: 0, resultPreview: '', failed: false })
+        toolCalls.push({ name, args: {}, durationMs, resultPreview: '', failed: false })
       }
       // Restore the real reasoning. Prefer the trajectory's thinking (the model's
       // actual chain-of-thought across planner steps) over the {thinking} the

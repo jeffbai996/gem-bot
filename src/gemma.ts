@@ -142,9 +142,12 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
   for (const call of toolCalls) {
     const prefix = call.failed ? '- ● ' : '+ ● '
     const tail = call.failed ? ' FAILED' : ''
-    // agy's post-hoc trace has no per-call timing → durationMs is 0; omit the
-    // [Nms] badge in that case rather than printing a useless `[0ms]`.
-    const ms = call.durationMs > 0 ? ` [${call.durationMs}ms]` : ''
+    // Timing badge: omit entirely when 0 (agy's instant/unknown calls — no
+    // useless `[0ms]`). agy timing is second-resolution (derived from trajectory
+    // timestamps), so render ≥1s as `[Ns]`; native sub-second calls keep `[Nms]`.
+    const ms = call.durationMs <= 0 ? ''
+      : call.durationMs >= 1000 ? ` [${Math.round(call.durationMs / 1000)}s]`
+      : ` [${call.durationMs}ms]`
     // Omit the parens entirely when there's no arg digest (agy's post-hoc trace
     // has no per-call args) so the line reads `● Running command` not `● Running command({})`.
     const digest = argDigest(call.args)
