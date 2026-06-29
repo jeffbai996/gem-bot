@@ -745,17 +745,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // FAILED [Nms]` (red) on error. The result preview goes on a plain
     // 2-space-indented `  ⎿` line so the diff highlighter leaves it grey.
     if (flags.showCode && meta.toolCalls.length > 0) {
-      const lines: string[] = []
-      for (const call of meta.toolCalls) {
-        const prefix = call.failed ? '- ● ' : '+ ● '
-        const tail = call.failed ? ' FAILED' : ''
-        lines.push(`${prefix}${shortToolName(call.name)}(${argDigest(call.args)})${tail} [${call.durationMs}ms]`)
-        if (call.resultPreview) {
-          let rp = call.resultPreview.replace(/\n/g, ' ')
-          if (rp.length > 86) rp = rp.slice(0, 86) + '…'
-          lines.push(`  ⎿ ${rp}`)
-        }
-      }
+      // Reuse buildTraceLines (same omit-empty-args + omit-[0ms] logic as the
+      // trace card) so this inline showCode dump renders identically clean —
+      // no `({})` / `[0ms]` on agy's arg-less, timing-less post-hoc calls.
+      const lines = buildTraceLines(meta.toolCalls)
       finalFullReply += '```diff\n' + lines.join('\n') + '\n```\n'
     }
 

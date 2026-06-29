@@ -435,7 +435,23 @@ export async function respondViaAgy(
 
   const prompt = buildPrompt(input)
   const text = await runAgy(prompt, input.onEvent)
-  const parsed = parse(text)
+  let parsed = parse(text)
+
+  // LEAK GUARD (Jeff 2026-06-28): agy is a coding agent, not a structured-output
+  // model — it sometimes emits prose around the {react,thinking,reply} JSON, or
+  // malformed JSON, which makes parseResponse fall through and return the RAW
+  // envelope text as the reply (the `{"react": null, "reply": "..."}` blob
+  // leaking verbatim into Discord). If the reply still looks like a raw envelope,
+  // pull the inner `reply` value out by hand so the user never sees the JSON.
+  if (parsed.reply && /^\s*\{\s*"(?:react|thinking|reply)"\s*:/.test(parsed.reply)) {
+    const m = parsed.reply.match(/"reply"\s*:\s*"([^]*?)(?<!\\)"\s*\}?\s*$/)
+    if (m) {
+      const inner = m[1]
+        .replace(/\\n/g, '\n').replace(/\\r/g, '\r')
+        .replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+      parsed = { ...parsed, reply: inner.trim() || parsed.reply }
+    }
+  }
 
   // POST-HOC trace restore. agy `-p` is a single blocking call; it writes the
   // trajectory DURING the run, so once it returns we read the finished file.
