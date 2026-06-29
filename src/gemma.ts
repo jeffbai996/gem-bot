@@ -125,6 +125,27 @@ function shortToolName(name: string): string {
   return name
 }
 
+// Redact credential-looking runs before a trace hits Discord. A file-edit diff
+// can contain the contents of an env/auth file, so a 32+ char id-shaped token in
+// a diff body could otherwise leak a key. Same SECRET_RE as gpt-bot.
+const SECRET_RE = /[A-Za-z0-9_\-]{32,256}/g
+function redactSecrets(text: string): string { return text.replace(SECRET_RE, '<REDACTED>') }
+
+// Unified diff -> Claude-style: a [+adds, -dels] badge + the changed lines
+// (red '-' / green '+', context plain), minus the git '@@' / file-header noise.
+// Ported from gpt-bot/src/gpt.ts so the trace card can render file-edit diffs.
+function formatDiff(unified: string): { badge: string; body: string[] } {
+  let adds = 0, dels = 0
+  const body: string[] = []
+  for (const l of unified.replace(/\n+$/, '').split('\n')) {
+    if (l.startsWith('@@') || l.startsWith('+++') || l.startsWith('---')) continue
+    if (l.startsWith('+')) adds++
+    else if (l.startsWith('-')) dels++
+    body.push(l)
+  }
+  return { badge: `[+${adds}, -${dels}]`, body }
+}
+
 // --- Dedicated 🔧 Tool-trace card (ported from gpt-bot) ---------------------
 // gpt-bot has a per-channel `/gpt trace off|on|collapse` that posts a standalone
 // `🔧 **Tool trace**` card ABOVE the reply: a ```diff```-fenced list of tool
@@ -139,21 +160,31 @@ const TRACE_MAX_LINES = 50
 
 function buildTraceLines(toolCalls: ToolCall[]): string[] {
   const lines: string[] = []
-  for (const call of toolCalls) {
+  // Edits (with diffs) first: the diff is the payload and must not get starved by
+  // a long list of shell rows below it, which the card's length cap then truncates
+  // to a couple lines (gpt-bot's ordering). Order within each group preserved.
+  const ordered = [...toolCalls.filter(c => c.diff), ...toolCalls.filter(c => !c.diff)]
+  for (const call of ordered) {
     const prefix = call.failed ? '- ● ' : '+ ● '
     const tail = call.failed ? ' FAILED' : ''
-    // Timing badge: omit entirely when 0 (agy's instant/unknown calls — no
-    // useless `[0ms]`). agy timing is second-resolution (derived from trajectory
-    // timestamps), so render ≥1s as `[Ns]`; native sub-second calls keep `[Nms]`.
-    const ms = call.durationMs <= 0 ? ''
-      : call.durationMs >= 1000 ? ` [${Math.round(call.durationMs / 1000)}s]`
-      : ` [${call.durationMs}ms]`
+    // Timing badge: only show when a call is genuinely slow (≥5s) — most agy
+    // calls run 1-2s, so a per-row `[1s]`/`[2s]` was just noise. Under 5s (incl.
+    // 0/unknown, and native sub-second calls) → no badge; ≥5s → `[Ns]`.
+    const ms = call.durationMs >= 5000 ? ` [${Math.round(call.durationMs / 1000)}s]` : ''
     // Omit the parens entirely when there's no arg digest (agy's post-hoc trace
     // has no per-call args) so the line reads `● Running command` not `● Running command({})`.
     const digest = argDigest(call.args)
     const argPart = digest ? `(${digest})` : ''
     lines.push(`${prefix}${shortToolName(call.name)}${argPart}${tail}${ms}`)
-    if (call.resultPreview) {
+    if (call.diff) {
+      // File edit: a `⎿ [+N, -M]` summary line then the changed lines (red '-' /
+      // green '+'), redacted, capped at 24 body lines. The body lines keep their
+      // own +/- markers so Discord's diff highlighter colors them.
+      const { badge, body } = formatDiff(call.diff)
+      lines.push(`  ⎿ ${badge}`)
+      for (const b of body.slice(0, 24)) lines.push(b)
+      if (body.length > 24) lines.push(`... (${body.length - 24} more lines)`)
+    } else if (call.resultPreview) {
       let rp = call.resultPreview.replace(/\n/g, ' ')
       if (rp.length > 86) rp = rp.slice(0, 86) + '…'
       lines.push(`  ⎿ ${rp}`)
@@ -175,7 +206,9 @@ function renderTraceCard(toolCalls: ToolCall[]): string {
   }
   const dropped = all.length - fitted.length
   if (dropped > 0) fitted.push(`... (${dropped} more lines)`)
-  return '🔧 **Tool trace**\n```diff\n' + fitted.join('\n') + '\n```'
+  // Redact credential-looking runs (a file-edit diff body can carry env/auth
+  // contents) before the card hits Discord.
+  return '🔧 **Tool trace**\n```diff\n' + redactSecrets(fitted.join('\n')) + '\n```'
 }
 
 process.on('SIGHUP', async () => {
