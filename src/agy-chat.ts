@@ -207,7 +207,19 @@ function emptyMeta(): RespondMetadata {
 // env var — never interpolated into a command string — so untrusted Discord
 // text can't break out; and we spawn with an argv array (execFile-style), not a
 // shell, so the model name's spaces and parens need no quoting/escaping.
-function runAgy(prompt: string, onEvent?: (e: LifecycleEvent) => void): Promise<string> {
+// Live tool-trace polling (Jeff 2026-06-30): agy -p is a blocking, NON-streaming
+// CLI — so a multi-step tool turn (search → ibkr → browser → …) shows NOTHING in
+// Discord for minutes, reading as "frozen/unresponsive" even though it's working.
+// agy DOES write its trajectory JSONL live during the run, so we tail it while
+// the child runs and fire tool_call_start as each new tool step appears — driving
+// gemma's live 🔧 trace so the user SEES progress. trajBefore + fingerprint let us
+// pin THIS run's trajectory mid-flight (same disambiguation as the post-hoc read).
+function runAgy(
+  prompt: string,
+  onEvent?: (e: LifecycleEvent) => void,
+  trajBefore?: Map<string, number>,
+  fingerprint?: string,
+): Promise<string> {
   const t0 = Date.now()
   // Flags MUST precede the `-p` positional: agy uses Go's flag parser, which
   // stops at the first non-flag arg — anything after `-p "<prompt>"` is ignored
@@ -246,12 +258,40 @@ function runAgy(prompt: string, onEvent?: (e: LifecycleEvent) => void): Promise<
 
     const timer = setTimeout(() => { timedOut = true; killTree() }, TIMEOUT_MS)
 
+    // Live trajectory tail: while agy grinds (no stdout until done), poll its
+    // trajectory file and fire tool_call_start for each new tool step so the
+    // Discord 🔧 trace updates live. Best-effort — any parse error is swallowed;
+    // the post-hoc parse in respondViaAgy still produces the final canonical
+    // trace regardless. Only runs when we have the pre-launch snapshot + onEvent.
+    const emittedTools = new Set<string>()
+    let livePoll: ReturnType<typeof setInterval> | null = null
+    if (onEvent && trajBefore) {
+      livePoll = setInterval(() => {
+        try {
+          const tp = findAgyTrajectory(trajBefore, fingerprint)
+          if (!tp) return
+          const traj = parseAgyTrajectory(tp)
+          for (let i = 0; i < traj.tools.length; i++) {
+            // Key by index+name so re-parsing the growing file doesn't re-emit
+            // already-seen calls (same call always lands at the same index).
+            const key = `${i}:${traj.tools[i].name}`
+            if (emittedTools.has(key)) continue
+            emittedTools.add(key)
+            try { onEvent({ type: 'tool_call_start', name: traj.tools[i].name }) } catch { /* ignore */ }
+          }
+        } catch { /* trajectory not ready / unreadable — try next tick */ }
+      }, 1200)
+    }
+    const stopPoll = () => { if (livePoll) { clearInterval(livePoll); livePoll = null } }
+
     child.on('error', (e) => {
       clearTimeout(timer)
+      stopPoll()
       reject(new AgyChatError(`agy process error: ${e?.message ?? e}`, Date.now() - t0))
     })
     child.on('close', (code) => {
       clearTimeout(timer)
+      stopPoll()
       if (timedOut) {
         return reject(new AgyChatError(`agy timed out after ${Math.round((Date.now() - t0) / 1000)}s`, Date.now() - t0))
       }
@@ -604,7 +644,9 @@ export async function respondViaAgy(
   const trajBefore = snapshotAgyTrajectories()
 
   const prompt = buildPrompt(input)
-  const text = await runAgy(prompt, input.onEvent)
+  // Pass trajBefore + the user message as fingerprint so runAgy can tail THIS
+  // run's trajectory live and stream tool_call_start events as agy works.
+  const text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText)
   let parsed = parse(text)
 
   // LEAK GUARD (Jeff 2026-06-28): agy is a coding agent, not a structured-output
