@@ -1,5 +1,6 @@
 import { Client, GatewayIntentBits, Partials, ActivityType, REST, Routes, type Message } from 'discord.js'
 import path from 'path'
+import { statSync } from 'node:fs'
 import os from 'os'
 import dotenv from 'dotenv'
 import { AccessManager } from './access.ts'
@@ -37,12 +38,50 @@ dotenv.config({ path: path.join(STATE_DIR, '.env') })
 // notification ping, not the header. Sending to message.channel directly drops
 // the reference entirely, matching the Claude bots. Same return contract as
 // message.reply().catch(()=>null) so call sites are a drop-in swap.
-async function sendReply(message: Message, content: string): Promise<Message | null> {
+async function sendReply(message: Message, content: string, files?: string[]): Promise<Message | null> {
   const channel = message.channel as any
-  return channel.send({ content, allowedMentions: { repliedUser: false } }).catch((err: unknown) => {
+  const payload: any = { content, allowedMentions: { repliedUser: false } }
+  if (files && files.length) payload.files = files
+  return channel.send(payload).catch((err: unknown) => {
     console.error('[discord] send failed:', err)
     return null
   }) as Promise<Message | null>
+}
+
+// Files agy wrote this turn that are safe to attach: must still exist (the
+// agent's workspace can be transient), be a plain file, non-empty, and under
+// Discord's ~25MB non-Nitro cap (24MB margin). Capped to 8 so one chatty turn
+// can't spam a message with attachments.
+const MAX_ATTACH_BYTES = 24 * 1024 * 1024
+const MAX_ATTACH_FILES = 8
+function pickAttachableFiles(paths: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const p of paths) {
+    if (!p || seen.has(p)) continue
+    seen.add(p)
+    try {
+      const st = statSync(p)
+      if (st.isFile() && st.size > 0 && st.size <= MAX_ATTACH_BYTES) out.push(p)
+    } catch {
+      // gone/unreadable by the time we check — skip, don't fail the turn over it
+    }
+    if (out.length >= MAX_ATTACH_FILES) break
+  }
+  return out
+}
+
+// agy sometimes writes a file then cites it in prose as a local file:// path or
+// raw filesystem path — useless to a Discord user on another machine. The file
+// itself gets attached via pickAttachableFiles/sendReply instead, so strip the
+// dead link/path rather than leaving it dangling in the reply text.
+function stripFileLinks(t: string): string {
+  return t
+    .replace(/\[([^\]]+)\]\(file:\/\/[^)]*\)/g, '\$1')
+    .replace(/`?file:\/\/\S+`?/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
 
 async function replaceActiveMessage(
@@ -50,13 +89,14 @@ async function replaceActiveMessage(
   activeMessages: Message[],
   index: number,
   content: string,
-  label: string
+  label: string,
+  files?: string[]
 ): Promise<void> {
   const existing = activeMessages[index]
   if (existing) {
-    if (existing.content === content) return
+    if (existing.content === content && !files?.length) return
     try {
-      await existing.edit(content)
+      await existing.edit(files?.length ? { content, files } : content)
       return
     } catch (err) {
       console.error(`[discord] ${label} edit failed for chunk ${index}; sending replacement:`, err)
@@ -64,7 +104,7 @@ async function replaceActiveMessage(
     }
   }
 
-  const msg = await sendReply(message, content)
+  const msg = await sendReply(message, content, files)
   if (msg) activeMessages[index] = msg as Message
 }
 
@@ -1034,7 +1074,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // footer / sources / metadata pattern the model might hallucinate (learned
     // from past turns where the bot stamped footers).
     const replyText = parsed.reply
-      ? headingsToBold(stripBotMetadata(stripDuplicateCodeBlocks(parsed.reply, meta.codeArtifacts)))
+      ? headingsToBold(stripBotMetadata(stripFileLinks(stripDuplicateCodeBlocks(parsed.reply, meta.codeArtifacts))))
       : null
     if (replyText) {
       finalFullReply += replyText
@@ -1157,9 +1197,13 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // trace-collapse strip (operates on the reply's first chunk) and by the
       // thinking-collapse delete (removes the leading thinking messages).
       const replyStart = thinkingPieces.length
+      // Files agy wrote this turn (e.g. a .md report) — attach to the LAST
+      // message of the turn instead of leaving a dead file:// link in the text.
+      const attachFiles = pickAttachableFiles(meta.writtenFiles ?? [])
 
       for (let i = 0; i < pieces.length; i++) {
-        await replaceActiveMessage(message, activeMessages, i, pieces[i], 'final')
+        const isLast = i === pieces.length - 1
+        await replaceActiveMessage(message, activeMessages, i, pieces[i], 'final', isLast ? attachFiles : undefined)
       }
       // Delete excess streaming messages if final has fewer chunks than streaming.
       // Delete failure here is cosmetic (stale chunk, not a duplicate) — log instead

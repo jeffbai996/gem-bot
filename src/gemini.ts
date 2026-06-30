@@ -563,6 +563,10 @@ export interface RespondMetadata {
   nativeThoughts: string | null
   toolCalls: ToolCall[]
   searchEntryPointHtml: string | null
+  // Absolute paths of files agy wrote this turn (agy path only — the native API
+  // engine has no filesystem). gemma.ts attaches these to the Discord reply
+  // instead of letting the model paste a useless local file:// link.
+  writtenFiles?: string[]
 }
 
 export interface RespondResult {
