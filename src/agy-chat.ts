@@ -155,7 +155,9 @@ function buildPrompt(input: AgyChatInput): string {
     'captured not generated), and the core honesty rule is unchanged — never claim you ran something you ' +
     "didn't. If a tool genuinely errors or a server is down, say so; but don't pre-refuse work you can do here. " +
     'For casual chat, greetings, acknowledgments, or "testing" turns, answer directly without opening browser, ' +
-    'MCP, shell, filesystem, or search tools.'
+    'MCP, shell, filesystem, or search tools. When you write a file the user should see (a report, a doc, code), ' +
+    'just describe it in your reply by name/purpose — never paste a `file://` link or any local filesystem path; ' +
+    'the file is attached to your Discord reply automatically, so a raw path is dead weight to the user.'
 
   // TOOL-ECONOMY directive (Jeff 2026-06-29 "thinking too much"). agy's planner
   // tends to explore exhaustively — re-reading the same file, running git diffs
@@ -232,6 +234,7 @@ function emptyMeta(): RespondMetadata {
     nativeThoughts: null,
     toolCalls: [],
     searchEntryPointHtml: null,
+    writtenFiles: [],
   }
 }
 
@@ -410,6 +413,10 @@ interface AgyTrajParse {
   // respondViaAgy prefers it over the raw stdout wall. Null on a 0/1-step turn
   // (then stdout IS the clean answer and we keep using it).
   answer: string | null
+  // Absolute paths written via write_to_file this turn — collected so
+  // respondViaAgy can hand them to gemma.ts for direct Discord attachment
+  // instead of leaving a dead local file:// path in the reply text.
+  writtenFiles: string[]
 }
 
 // Map an agy tool name (+ args) to a human display name for the 🔧 trace,
@@ -569,7 +576,7 @@ function findAgyTrajectory(before: Map<string, number>, fingerprint?: string): s
 // are skipped (non-MODEL source). Best-effort: any error → empty parse, and the
 // caller falls back to the current behavior.
 function parseAgyTrajectory(path: string): AgyTrajParse {
-  const empty: AgyTrajParse = { thinking: null, tools: [], answer: null }
+  const empty: AgyTrajParse = { thinking: null, tools: [], answer: null, writtenFiles: [] }
   let raw: string
   try {
     raw = readFileSync(path, 'utf8')
@@ -621,6 +628,7 @@ function parseAgyTrajectory(path: string): AgyTrajParse {
 
   const thinkingChunks: string[] = []
   const tools: Array<{ name: string; durationMs: number; diff?: string }> = []
+  const writtenFiles: string[] = []
   let answer: string | null = null
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i]
@@ -647,6 +655,10 @@ function parseAgyTrajectory(path: string): AgyTrajParse {
         // write_to_file → attach a synthesized all-additions diff so the trace
         // card renders the edit content (not just a `Write(file)` row).
         const diff = (tc.name === 'write_to_file') ? agyWriteDiff(tc.args) : null
+        if (tc.name === 'write_to_file' && tc.args && typeof tc.args === 'object') {
+          const abs = (tc.args as Record<string, unknown>).AbsolutePath
+          if (typeof abs === 'string' && abs.trim()) writtenFiles.push(abs.trim())
+        }
         tools.push({
           name: agyToolDisplayName(tc.name ?? '', tc.args),
           durationMs: dur,
@@ -674,7 +686,7 @@ function parseAgyTrajectory(path: string): AgyTrajParse {
   const thinking = thinkingChunks.length
     ? thinkingChunks.map(normalizeAgyThinkingChunk).join('\n\n').trim()
     : null
-  return { thinking, tools, answer }
+  return { thinking, tools, answer, writtenFiles }
 }
 
 // Fire a trivial agy -p to prime the long-lived server process so the first
@@ -810,6 +822,7 @@ export async function respondViaAgy(
   // entry carries empty args, durationMs:0 (the card omits the [Nms] badge when
   // <=0), no resultPreview, failed:false (no failure signal in the trajectory).
   const toolCalls: ToolCall[] = []
+  let writtenFiles: string[] = []
   try {
     const trajPath = findAgyTrajectory(trajBefore, input.userMessageText)
     if (trajPath) {
@@ -822,6 +835,7 @@ export async function respondViaAgy(
         input.onEvent?.({ type: 'tool_call_end', name, failed: false })
         toolCalls.push({ name, args: {}, durationMs, resultPreview: '', failed: false, ...(diff ? { diff } : {}) })
       }
+      writtenFiles = traj.writtenFiles
       // Restore the real reasoning. Prefer the trajectory's thinking (the model's
       // actual chain-of-thought across planner steps) over the {thinking} the
       // JSON envelope may carry — that envelope field is a persona scratchpad,
@@ -856,5 +870,5 @@ export async function respondViaAgy(
   }
 
   if (AGY_EFFORT) parsed.effort = AGY_EFFORT
-  return { parsed, meta: { ...emptyMeta(), toolCalls } }
+  return { parsed, meta: { ...emptyMeta(), toolCalls, writtenFiles } }
 }
