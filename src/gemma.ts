@@ -38,7 +38,48 @@ dotenv.config({ path: path.join(STATE_DIR, '.env') })
 // message.reply().catch(()=>null) so call sites are a drop-in swap.
 async function sendReply(message: Message, content: string): Promise<Message | null> {
   const channel = message.channel as any
-  return channel.send({ content, allowedMentions: { repliedUser: false } }).catch(() => null) as Promise<Message | null>
+  return channel.send({ content, allowedMentions: { repliedUser: false } }).catch((err: unknown) => {
+    console.error('[discord] send failed:', err)
+    return null
+  }) as Promise<Message | null>
+}
+
+async function replaceActiveMessage(
+  message: Message,
+  activeMessages: Message[],
+  index: number,
+  content: string,
+  label: string
+): Promise<void> {
+  const existing = activeMessages[index]
+  if (existing) {
+    if (existing.content === content) return
+    try {
+      await existing.edit(content)
+      return
+    } catch (err) {
+      console.error(`[discord] ${label} edit failed for chunk ${index}; sending replacement:`, err)
+      await existing.delete().catch(() => {})
+    }
+  }
+
+  const msg = await sendReply(message, content)
+  if (msg) activeMessages[index] = msg as Message
+}
+
+function headingsToBold(t: string): string {
+  const lines = t.split('\n')
+  const out: string[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$/)
+    if (m) {
+      out.push(`**${m[1]}**`)
+      while (i + 1 < lines.length && lines[i + 1].trim() === '') i++
+    } else {
+      out.push(lines[i])
+    }
+  }
+  return out.join('\n')
 }
 
 const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-3-flash-preview'
@@ -110,7 +151,7 @@ const _ARG_DIGEST_PREFERENCE = [
 ]
 
 // Single-line, ID-shaped arg digest, <= maxLen chars. Mirrors _arg_digest.
-function argDigest(args: Record<string, unknown>, maxLen = 85): string {
+function argDigest(args: Record<string, unknown>, maxLen = 81): string {
   if (!args || typeof args !== 'object') return ''
   // Empty args (e.g. agy's post-hoc trace carries no per-call args) → '' so the
   // caller can omit the parens entirely instead of printing a useless `({})`.
@@ -119,14 +160,20 @@ function argDigest(args: Record<string, unknown>, maxLen = 85): string {
     const v = (args as Record<string, unknown>)[key]
     if (typeof v === 'string') {
       let s = v.trim().replace(/\n/g, ' ')
-      if (s.length > maxLen) s = s.slice(0, maxLen - 1) + '…'
+      if (s.length > maxLen) {
+        if (maxLen <= 1) return maxLen > 0 ? '…' : ''
+        s = s.slice(0, maxLen - 1) + '…'
+      }
       return s
     }
   }
   let s: string
   try { s = JSON.stringify(args) } catch { s = String(args) }
   s = s.replace(/\n/g, ' ')
-  if (s.length > maxLen) s = s.slice(0, maxLen - 1) + '…'
+  if (s.length > maxLen) {
+    if (maxLen <= 1) return maxLen > 0 ? '…' : ''
+    s = s.slice(0, maxLen - 1) + '…'
+  }
   return s
 }
 
@@ -192,22 +239,38 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
       : d < 1000 ? ` [${d}ms]`
       : d < 5000 ? ''
       : ` [${Math.round(d / 1000)}s]`
-    // Omit the parens entirely when there's no arg digest (agy's post-hoc trace
-    // has no per-call args) so the line reads `● Running command` not `● Running command({})`.
-    const digest = argDigest(call.args)
-    const argPart = digest ? `(${digest})` : ''
-    lines.push(`${prefix}${shortToolName(call.name)}${argPart}${tail}${ms}`)
+    const tailStr = tail + ms
+    const name = shortToolName(call.name)
+
+    const hasArgs = call.args && typeof call.args === 'object' && Object.keys(call.args).length > 0
+    let argPart = ''
+    if (hasArgs) {
+      // HEADER_LINE_MAX is 79.
+      // prefix is 4 chars. tailStr is tailStr.length. name is name.length.
+      // () is 2 chars.
+      // So max length for digest is 79 - 4 - name.length - 2 - tailStr.length.
+      const budget = 79 - 4 - name.length - 2 - tailStr.length
+      const digest = argDigest(call.args, budget)
+      argPart = digest ? `(${digest})` : ''
+    }
+
+    lines.push(`${prefix}${name}${argPart}${tailStr}`)
     if (call.diff) {
       // File edit: a `⎿ [+N, -M]` summary line then the changed lines (red '-' /
       // green '+'), redacted, capped at 24 body lines. The body lines keep their
       // own +/- markers so Discord's diff highlighter colors them.
       const { badge, body } = formatDiff(call.diff)
       lines.push(`  ⎿ ${badge}`)
-      for (const b of body.slice(0, 24)) lines.push(b)
+      for (const b of body.slice(0, 24)) {
+        let line = b
+        if (line.length > 84) line = line.slice(0, 83) + '…'
+        lines.push(line)
+      }
       if (body.length > 24) lines.push(`... (${body.length - 24} more lines)`)
     } else if (call.resultPreview) {
       let rp = call.resultPreview.replace(/\n/g, ' ')
-      if (rp.length > 86) rp = rp.slice(0, 86) + '…'
+      // Output line limit is 84. Prefix "  ⎿ " is 4 chars. Max rp is 80.
+      if (rp.length > 80) rp = rp.slice(0, 79) + '…'
       lines.push(`  ⎿ ${rp}`)
     }
   }
@@ -231,7 +294,9 @@ interface TraceExtras {
 function searchTraceLines(queries: string[]): string[] {
   return queries.map(q => {
     let d = q.replace(/\n/g, ' ').trim()
-    if (d.length > 80) d = d.slice(0, 79) + '…'
+    // Total line budget 79. Prefix "+ ● Web search(" is 15. Closing ")" is 1. Total 16.
+    // So max length of query is 79 - 16 = 63.
+    if (d.length > 63) d = d.slice(0, 62) + '…'
     return `+ ● Web search(${d})`
   })
 }
@@ -247,7 +312,8 @@ function codeTraceLines(arts: CodeExecArtifact[]): string[] {
     lines.push(`${failed ? '- ● ' : '+ ● '}Code(${a.language})${failed ? ' FAILED' : ''}`)
     if (a.output) {
       let out = a.output.replace(/\n/g, ' ').trim()
-      if (out.length > 86) out = out.slice(0, 86) + '…'
+      // Output line limit is 84. Prefix "  ⎿ " is 4 chars. Max out is 80.
+      if (out.length > 80) out = out.slice(0, 79) + '…'
       if (out) lines.push(`  ⎿ ${out}`)
     }
   }
@@ -596,20 +662,19 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         let fullReply = ''
         const showThinking = flags.thinking !== 'off' && !!latestParsed.thinking
         if (showThinking && latestParsed.thinking) {
-          const quotedThinking = latestParsed.thinking.split('\n').map(line => `>   ${line}`).join('\n')
-          fullReply += `💭 **Thinking:**\n${quotedThinking}\n\n`
+          fullReply += `💭 **Thinking:**\n${latestParsed.thinking}\n\n`
         }
         const showLiveTools = flags.trace !== 'off' && liveToolCalls.length > 0
         if (showLiveTools) {
           const lines = liveToolCalls.map(c => {
-            const prefix = c.running ? '● ' : (c.failed ? '- ● ' : '+ ● ')
+            const prefix = c.failed ? '- ● ' : '+ ● '
             const suffix = c.running ? '...' : (c.failed ? ' FAILED' : '')
             return `${prefix}${shortToolName(c.name)}${suffix}`
           })
           fullReply += '🔧 **Tool trace**\n```diff\n' + lines.join('\n') + '\n```\n\n'
         }
         if (latestParsed.reply) {
-          fullReply += latestParsed.reply
+          fullReply += headingsToBold(latestParsed.reply)
         }
 
         // No real content yet. During the deferred-placeholder window there's
@@ -634,15 +699,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         const pieces = chunk(fullReply, 2000, 'newline')
         
         for (let i = 0; i < pieces.length; i++) {
-          const piece = pieces[i]
-          if (i < activeMessages.length) {
-            if (activeMessages[i].content !== piece) {
-              await activeMessages[i].edit(piece).catch(() => {})
-            }
-          } else {
-            const msg = await sendReply(message, piece)
-            if (msg) activeMessages.push(msg as Message)
-          }
+          await replaceActiveMessage(message, activeMessages, i, pieces[i], 'stream')
         }
       } finally {
         isFlushing = false
@@ -869,14 +926,12 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // indents under the header without doubling up the indent on the title.
     // Goes into thinkingMessage (the separate thought-message), NOT the reply.
     if (flags.thinking !== 'off' && meta.nativeThoughts) {
-      const quoted = meta.nativeThoughts.split('\n').map(line => `>   ${line}`).join('\n')
-      thinkingMessage += `🧠 **Reasoning:**\n${quoted}\n\n`
+      thinkingMessage += `🧠 **Reasoning:**\n${meta.nativeThoughts}\n\n`
     }
 
     const showThinkingFinal = flags.thinking !== 'off' && !!parsed.thinking
     if (showThinkingFinal && parsed.thinking) {
-      const quotedThinking = parsed.thinking.split('\n').map(line => `>   ${line}`).join('\n')
-      thinkingMessage += `💭 **Thinking:**\n${quotedThinking}\n\n`
+      thinkingMessage += `💭 **Thinking:**\n${parsed.thinking}\n\n`
     }
     thinkingMessage = thinkingMessage.replace(/\s+$/, '')
 
@@ -896,7 +951,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // footer / sources / metadata pattern the model might hallucinate (learned
     // from past turns where the bot stamped footers).
     const replyText = parsed.reply
-      ? stripBotMetadata(stripDuplicateCodeBlocks(parsed.reply, meta.codeArtifacts))
+      ? headingsToBold(stripBotMetadata(stripDuplicateCodeBlocks(parsed.reply, meta.codeArtifacts)))
       : null
     if (replyText) {
       finalFullReply += replyText
@@ -1012,8 +1067,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // and any excess streaming messages are deleted at the end. Splitting into
       // two separate send loops would have re-introduced the duplicate-on-failed-
       // delete bug that the edit-in-place approach exists to prevent.
-      const thinkingPieces = thinkingMessage ? chunk(thinkingMessage, 2000, 'newline') : []
-      const replyPieces = chunk(finalFullReply, 2000, 'newline')
+      const thinkingPieces = thinkingMessage ? chunk(thinkingMessage, 2000, 'newline').filter(p => p.trim() !== '') : []
+      const replyPieces = finalFullReply ? chunk(finalFullReply, 2000, 'newline').filter(p => p.trim() !== '') : []
       const pieces = [...thinkingPieces, ...replyPieces]
       // Index in activeMessages where the reply (vs thinking) begins. Used by the
       // trace-collapse strip (operates on the reply's first chunk) and by the
@@ -1021,17 +1076,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       const replyStart = thinkingPieces.length
 
       for (let i = 0; i < pieces.length; i++) {
-        const piece = pieces[i]
-        if (i < activeMessages.length) {
-          if (activeMessages[i].content !== piece) {
-            await activeMessages[i].edit(piece).catch(err => {
-              console.error(`final edit failed for chunk ${i}:`, err)
-            })
-          }
-        } else {
-          const msg = await sendReply(message, piece)
-          if (msg) activeMessages.push(msg as Message)
-        }
+        await replaceActiveMessage(message, activeMessages, i, pieces[i], 'final')
       }
       // Delete excess streaming messages if final has fewer chunks than streaming.
       // Delete failure here is cosmetic (stale chunk, not a duplicate) — log instead
@@ -1083,7 +1128,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         // Calculate the collapsed reply pieces eagerly so we don't have to deal
         // with partial/split trace cards in individual chunks later.
         const collapsedReply = finalFullReply.replace(/🔧 \*\*Tool trace\*\*\n```diff\n[\s\S]*?\n```\n*/, '').replace(/^\s+/, '')
-        const collapsedPieces = chunk(collapsedReply, 2000, 'newline')
+        const collapsedPieces = chunk(collapsedReply, 2000, 'newline').filter(p => p.trim() !== '')
         const traceIdx = replyStart - thinkingSpliced
         
         setTimeout(async () => {
@@ -1122,17 +1167,9 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // so the thought survives as its own grayed message even with no answer
       // below it. (Previously thinking lived inside finalFullReply, so this case
       // never hit the empty branch; now it can, so we handle it explicitly.)
-      const thinkingPieces = chunk(thinkingMessage, 2000, 'newline')
+      const thinkingPieces = chunk(thinkingMessage, 2000, 'newline').filter(p => p.trim() !== '')
       for (let i = 0; i < thinkingPieces.length; i++) {
-        const piece = thinkingPieces[i]
-        if (i < activeMessages.length) {
-          if (activeMessages[i].content !== piece) {
-            await activeMessages[i].edit(piece).catch(() => {})
-          }
-        } else {
-          const msg = await sendReply(message, piece)
-          if (msg) activeMessages.push(msg as Message)
-        }
+        await replaceActiveMessage(message, activeMessages, i, thinkingPieces[i], 'thinking-final')
       }
       if (thinkingPieces.length < activeMessages.length) {
         const excess = activeMessages.splice(thinkingPieces.length)

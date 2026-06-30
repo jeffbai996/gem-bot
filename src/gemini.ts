@@ -976,7 +976,7 @@ export class GeminiClient {
     // emit a graceful "search exhausted" reply instead of throwing — the
     // throw was raising a Discord-visible exception trace; the user wants
     // a polite "couldn't find that" message.
-    const MAX_TOOL_ITERATIONS = 5
+    const MAX_TOOL_ITERATIONS = 8
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
       // Bail between tool iterations too — a barge-in during a multi-turn tool
       // loop should stop the whole thing, not just the current API call.
