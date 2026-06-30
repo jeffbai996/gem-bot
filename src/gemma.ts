@@ -1388,6 +1388,21 @@ async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<
 }
 
 client.on('messageCreate', async (message: Message) => {
+  if (!message.author.bot && access.isAllowedAndEnabled(message.author.id, message.channelId)) {
+    // Lone ❌ message: kill the in-flight turn, post 🛑 + 🔁, swallow the message.
+    if (message.content.trim().replace(/️/g, '') === '❌') {
+      message.delete().catch(() => {})
+      const killed = activeTurns.stop(message.channelId)
+      if (killed) {
+        const ch = message.channel as any
+        const m = await ch.send?.('🛑  Stopped. React 🔁 on my last message to retry.')
+          .catch(() => null)
+        if (m) m.react?.('🔁').catch(() => {})
+      }
+      return
+    }
+  }
+
   // Pending-edit check from ✏️ flow: if a bot message is marked as
   // edit-target for this channel, edit it with the user's next reply
   // instead of producing a brand-new reply.
