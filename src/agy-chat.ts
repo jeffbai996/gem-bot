@@ -34,10 +34,9 @@ const AGY_BIN = process.env.GEMMA_AGY_BIN || '/home/jbai/.local/bin/agy'
 // `agy models` (e.g. "Gemini 3.5 Flash (Medium)"), not an API model id. Default
 // is a sensible Flash tier; when unset we still pass an explicit Flash model so
 // behavior is deterministic rather than riding agy's own default-of-the-day.
-// Default to Low thinking effort — Medium/High over-thinks for Discord chat
-// turns, causing 50+ tool call loops (Jeff 2026-06-29). Override with
-// GEMMA_AGY_MODEL=... for tasks that genuinely need deep reasoning.
-const AGY_MODEL = process.env.GEMMA_AGY_MODEL || 'Gemini 3.5 Flash (Low)'
+// Default to Medium. The .env overrides this anyway (GEMMA_AGY_MODEL=Gemini 3.5 Flash (Medium))
+// — this code default only matters when the .env doesn't set it, e.g. in tests.
+const AGY_MODEL = process.env.GEMMA_AGY_MODEL || 'Gemini 3.5 Flash (Medium)'
 
 // Chat-scale agy wait. `agy -p` is a blocking CLI call with no streaming event
 // channel; if it stalls, Discord just shows the thinking placeholder until this
