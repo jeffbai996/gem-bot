@@ -670,10 +670,12 @@ export function warmAgy(): void {
   if (process.env.GEMMA_AGY_CHAT !== '1') return
   const child = spawn(AGY_BIN, ['--model', AGY_MODEL, '--print-timeout', '20s', '-p', 'ok'], {
     env: { ...process.env, SQUAD_STORE_URL },
-    stdio: 'ignore',
+    stdio: ['ignore', 'pipe', 'pipe'],
   })
+  let errOut = ''
+  child.stderr?.on('data', (d: Buffer) => { errOut += d.toString() })
   child.on('close', (code) => {
-    if (code !== 0) console.error(`[agy] warm-up exited ${code} — first turn may still fall back`)
+    if (code !== 0) console.error(`[agy] warm-up exited ${code}: ${errOut.trim().slice(0, 200) || '(no stderr)'}`)
     else console.error('[agy] warm-up ok')
   })
 }
