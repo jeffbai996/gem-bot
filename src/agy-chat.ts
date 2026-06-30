@@ -695,7 +695,21 @@ export async function respondViaAgy(
   const prompt = buildPrompt(input)
   // Pass trajBefore + the user message as fingerprint so runAgy can tail THIS
   // run's trajectory live and stream tool_call_start events as agy works.
-  const text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText)
+  // Retry once on fast exits (code 1, no stderr) — root cause is agy's OAuth
+  // token expiry race: the long-lived server process loses auth briefly during
+  // token refresh, exits immediately with code 1 and no stderr. A 3s pause is
+  // usually enough for the server to re-authenticate before we retry.
+  let text: string
+  try {
+    text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText)
+  } catch (firstErr: any) {
+    const isAuthRace = firstErr instanceof AgyChatError &&
+      firstErr.afterMs < 5000 &&
+      firstErr.message.includes('(no stderr)')
+    if (!isAuthRace) throw firstErr
+    await new Promise(r => setTimeout(r, 3000))
+    text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText)
+  }
   let parsed = parse(text)
 
   // LEAK GUARD (Jeff 2026-06-28): agy is a coding agent, not a structured-output
