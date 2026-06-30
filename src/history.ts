@@ -94,10 +94,11 @@ export function stripBotMetadata(text: string): string {
       // Continuation lines of a metadata block are blockquoted (`> ...`) or
       // quoted blank separators (`>`). End only on a real unquoted blank line,
       // which is how the renderer separates a metadata card from the reply.
-      if (line.trim() === '') {
+      if (!line.startsWith('>') && line.trim() !== '') {
         inMetadataBlock = false
+      } else {
+        continue
       }
-      continue
     }
     out.push(line)
   }

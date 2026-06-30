@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { formatHistory, type HistoryMessage } from '../src/history.ts'
+import { formatHistory, stripBotMetadata, type HistoryMessage } from '../src/history.ts'
 
 // Narrow a parts entry to the text variant so .text access typechecks.
 // formatHistory always emits exactly one text part as parts[0]; the fileData
@@ -78,6 +78,38 @@ describe('formatHistory', () => {
     assert.equal(
       textOf(result[0].parts[0]),
       'Alice: screenshots [previous image: a.png] [previous image: b.png]'
+    )
+  })
+})
+
+describe('stripBotMetadata', () => {
+  test('strips reasoning block with blockquoted paragraphs', () => {
+    const input = `🧠 **Reasoning:**
+> Analyzing bot response behavior
+>
+> I'm thinking that the code path could lead to it appearing dead.
+
+Formulating a response
+Since the user asked "why is that," I want to provide a thoughtful answer.`
+
+    assert.equal(
+      stripBotMetadata(input),
+      `Formulating a response
+Since the user asked "why is that," I want to provide a thoughtful answer.`,
+    )
+  })
+
+  test('strips thinking block with unquoted blank lines between blockquoted paragraphs', () => {
+    const input = `💭 ✓ **Thought for 12s**
+> paragraph 1
+
+> paragraph 2
+
+Here is the actual reply.`
+
+    assert.equal(
+      stripBotMetadata(input),
+      'Here is the actual reply.',
     )
   })
 })

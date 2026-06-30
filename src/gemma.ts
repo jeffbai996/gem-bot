@@ -92,7 +92,7 @@ function quoteBlock(t: string): string {
   return t
     .replace(/\s+$/, '')
     .split('\n')
-    .map(line => line.trim() === '' ? '>' : `> ${line}`)
+    .map(line => line.trim() === '' ? '' : `> ${line}`)
     .join('\n')
 }
 
