@@ -309,7 +309,14 @@ function runAgy(
     // Discord 🔧 trace updates live. Best-effort — any parse error is swallowed;
     // the post-hoc parse in respondViaAgy still produces the final canonical
     // trace regardless. Only runs when we have the pre-launch snapshot + onEvent.
+    //
+    // Also fires `agy_thinking` with the latest known full thinking text whenever
+    // it changes — operator_agent.py's live poll does the exact same thing (reads
+    // `thinking` off each PLANNER_RESPONSE step in the same trajectory file) to
+    // show live reasoning; gem-bot already polled this file for tool names only,
+    // discarding the thinking field. (Jeff 2026-06-30: "wire it up.")
     const emittedTools = new Set<string>()
+    let lastEmittedThinking = ''
     let livePoll: ReturnType<typeof setInterval> | null = null
     if (onEvent && trajBefore) {
       livePoll = setInterval(() => {
@@ -324,6 +331,10 @@ function runAgy(
             if (emittedTools.has(key)) continue
             emittedTools.add(key)
             try { onEvent({ type: 'tool_call_start', name: traj.tools[i].name }) } catch { /* ignore */ }
+          }
+          if (traj.thinking && traj.thinking !== lastEmittedThinking) {
+            lastEmittedThinking = traj.thinking
+            try { onEvent({ type: 'agy_thinking', text: traj.thinking }) } catch { /* ignore */ }
           }
         } catch { /* trajectory not ready / unreadable — try next tick */ }
       }, 1200)

@@ -8,7 +8,7 @@ import { PersonaLoader } from './persona.ts'
 import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
 import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources, parseResponse, formatSystemPrompt, type ParsedResponse } from './gemini.ts'
-import { respondViaAgy, warmAgy } from './agy-chat.ts'
+import { respondViaAgy, warmAgy, normalizeAgyThinkingChunk } from './agy-chat.ts'
 import { chunk } from './chunk.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
 import { addVoiceGroup, executeVoiceCommand } from './voice-commands.ts'
@@ -609,6 +609,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // message gets permanently stuck showing stale "Thinking…" text forever,
   // since nothing ever re-checks or re-writes it (Jeff 2026-06-30).
   let spinnerEditPromise: Promise<unknown> | null = null
+  // Latest live thinking text from agy's trajectory poll (agy_thinking lifecycle
+  // event) — the spinner tick renders a trailing snippet of this so the agy
+  // engine shows real reasoning while it runs, not just a generic animated
+  // label. Empty for the API engine (no agy_thinking events on that path).
+  let liveAgyThinking = ''
   const stopThinkingAnim = async () => {
     if (thinkingAnim) { clearInterval(thinkingAnim); thinkingAnim = null }
     if (spinnerEditPromise) { await spinnerEditPromise; spinnerEditPromise = null }
@@ -715,6 +720,20 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // existing bot message, so there are no typing dots to show first.
     const PLACEHOLDER_DELAY_MS = parseInt(process.env.GEMMA_PLACEHOLDER_DELAY_MS ?? '2500', 10)
 
+    // Trailing snippet of live agy thinking text for the spinner — last ~300
+    // chars (most recent reasoning is the most relevant "what's it doing right
+    // now" signal), normalized + blockquoted to match the final thinking block's
+    // styling. Empty string when there's no live thinking yet (API engine, or
+    // agy hasn't written a thinking step to the trajectory file yet).
+    const liveThinkingSnippet = (): string => {
+      if (!liveAgyThinking) return ''
+      const tail = liveAgyThinking.length > 300
+        ? '…' + liveAgyThinking.slice(-300)
+        : liveAgyThinking
+      const clean = normalizeAgyThinkingChunk(tail).trim()
+      return clean ? `\n${quoteBlock(clean)}` : ''
+    }
+
     const startSpinner = () => {
       if (thinkingAnim) return
       const GLYPHS = ['✻', '✢', '✱', '✶', '✷', '✸']
@@ -726,7 +745,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         const sp = GLYPHS[fi % GLYPHS.length]
         const d = dots[fi % dots.length]
         fi++
-        spinnerEditPromise = target.edit(`💭 ${sp} **${thinkingLabel}${d}**`).catch(() => {})
+        spinnerEditPromise = target.edit(`💭 ${sp} **${thinkingLabel}${d}**${liveThinkingSnippet()}`).catch(() => {})
       }, 1500)
     }
 
@@ -833,6 +852,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           call.failed = e.failed
         }
         flushStream().catch(() => {})
+      } else if (e.type === 'agy_thinking') {
+        // Picked up by the next spinner tick (runs every 1.5s independently) —
+        // no need to force an edit here, just keep the latest text current.
+        liveAgyThinking = e.text
       }
     }
     // Speak-mode FULL BARGE-IN. If this message is being spoken to a vc and a
