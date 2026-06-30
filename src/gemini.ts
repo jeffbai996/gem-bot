@@ -71,6 +71,8 @@ export interface ParsedResponse {
   react: string | null
   thinking: string | null
   reply: string | null
+  // Optional label shown in the 💭 Thought header (e.g. "medium" from the agy model name).
+  effort?: string
 }
 
 function normalize(v: unknown): string | null {

@@ -6,7 +6,7 @@ import { AccessManager } from './access.ts'
 import { PersonaLoader } from './persona.ts'
 import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
-import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources, parseResponse, formatSystemPrompt } from './gemini.ts'
+import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources, parseResponse, formatSystemPrompt, type ParsedResponse } from './gemini.ts'
 import { respondViaAgy } from './agy-chat.ts'
 import { chunk } from './chunk.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
@@ -80,6 +80,19 @@ function headingsToBold(t: string): string {
     }
   }
   return out.join('\n')
+}
+
+function quoteBlock(t: string): string {
+  return t
+    .replace(/\s+$/, '')
+    .split('\n')
+    .map(line => line.trim() === '' ? '>' : `> ${line}`)
+    .join('\n')
+}
+
+function renderThoughtBlock(header: string, body: string): string {
+  const trimmed = body.trim()
+  return trimmed ? `${header}\n${quoteBlock(trimmed)}` : ''
 }
 
 const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-3-flash-preview'
@@ -340,7 +353,7 @@ function renderTraceCard(toolCalls: ToolCall[], extras: TraceExtras = {}): strin
   if (dropped > 0) fitted.push(`... (${dropped} more lines)`)
   // Redact credential-looking runs (a file-edit diff body can carry env/auth
   // contents) before the card hits Discord.
-  return '🔧 **Tool trace**\n```diff\n' + redactSecrets(fitted.join('\n')) + '\n```'
+  return quoteBlock('🔧 **Tool trace**\n```diff\n' + redactSecrets(fitted.join('\n')) + '\n```')
 }
 
 process.on('SIGHUP', async () => {
@@ -599,7 +612,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     const flags = access.channelFlags(message.channelId)
 
-    let latestParsed = { react: null as string | null, thinking: null as string | null, reply: null as string | null }
+    let latestParsed: ParsedResponse = { react: null, thinking: null, reply: null }
     let lastFlushedFullReply = ''
 
     // Lifecycle: 🤔 — we're about to call the model. Cleans up the prior 👀.
@@ -660,10 +673,6 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       isFlushing = true
       try {
         let fullReply = ''
-        const showThinking = flags.thinking !== 'off' && !!latestParsed.thinking
-        if (showThinking && latestParsed.thinking) {
-          fullReply += `💭 **Thinking:**\n${latestParsed.thinking}\n\n`
-        }
         const showLiveTools = flags.trace !== 'off' && liveToolCalls.length > 0
         if (showLiveTools) {
           const lines = liveToolCalls.map(c => {
@@ -671,7 +680,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
             const suffix = c.running ? '...' : (c.failed ? ' FAILED' : '')
             return `${prefix}${shortToolName(c.name)}${suffix}`
           })
-          fullReply += '🔧 **Tool trace**\n```diff\n' + lines.join('\n') + '\n```\n\n'
+          fullReply += quoteBlock('🔧 **Tool trace**\n```diff\n' + lines.join('\n') + '\n```') + '\n\n'
         }
         if (latestParsed.reply) {
           fullReply += headingsToBold(latestParsed.reply)
@@ -926,12 +935,14 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // indents under the header without doubling up the indent on the title.
     // Goes into thinkingMessage (the separate thought-message), NOT the reply.
     if (flags.thinking !== 'off' && meta.nativeThoughts) {
-      thinkingMessage += `🧠 **Reasoning:**\n${meta.nativeThoughts}\n\n`
+      thinkingMessage += renderThoughtBlock('🧠 **Reasoning:**', meta.nativeThoughts) + '\n\n'
     }
 
     const showThinkingFinal = flags.thinking !== 'off' && !!parsed.thinking
     if (showThinkingFinal && parsed.thinking) {
-      thinkingMessage += `💭 **Thinking:**\n${parsed.thinking}\n\n`
+      const thoughtSecs = Math.round(respondElapsedMs / 1000)
+      const effortTag = parsed.effort ? ` (${parsed.effort})` : ''
+      thinkingMessage += renderThoughtBlock(`💭 **Thought for ${thoughtSecs}s${effortTag}:**`, parsed.thinking) + '\n\n'
     }
     thinkingMessage = thinkingMessage.replace(/\s+$/, '')
 
@@ -1127,7 +1138,9 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       if (collapsingTrace) {
         // Calculate the collapsed reply pieces eagerly so we don't have to deal
         // with partial/split trace cards in individual chunks later.
-        const collapsedReply = finalFullReply.replace(/🔧 \*\*Tool trace\*\*\n```diff\n[\s\S]*?\n```\n*/, '').replace(/^\s+/, '')
+        const collapsedReply = finalFullReply
+          .replace(/(?:> )?🔧 \*\*Tool trace\*\*\n(?:> )?```diff\n[\s\S]*?\n(?:> )?```\n*/, '')
+          .replace(/^\s+/, '')
         const collapsedPieces = chunk(collapsedReply, 2000, 'newline').filter(p => p.trim() !== '')
         const traceIdx = replyStart - thinkingSpliced
         
