@@ -672,7 +672,7 @@ export function warmAgy(): void {
     '--sandbox', '--add-dir', SQUAD_STORE_DIR,
     '--model', AGY_MODEL,
     '--print-timeout', '20s',
-    '-p', 'ok',
+    '-p', 'Reply with just the word READY and nothing else. Do not use any tools.',
   ], {
     env: { ...process.env, SQUAD_STORE_URL },
     stdio: ['ignore', 'pipe', 'pipe'],
