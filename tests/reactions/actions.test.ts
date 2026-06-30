@@ -28,6 +28,10 @@ function makeAccess() {
   const calls: any[] = []
   return {
     calls,
+    // mute/unmute guard on this being truthy (Jeff 2026-06-30 — matches
+    // gpt/llm-bot: "never been configured; nothing to mute") before calling
+    // setChannel, so the mock must return a config for this channel.
+    channelConfig: () => ({ enabled: true, requireMention: false }),
     channelFlags: () => ({ thinking: 'off' }),
     setChannel: async (channelId: string, enabled: boolean, requireMention: boolean, flags: any) => {
       calls.push({ channelId, enabled, requireMention, flags })
@@ -75,6 +79,14 @@ describe('mute', () => {
     assert.equal(access.calls[0].requireMention, true)
     assert.deepEqual(message.reactionsAdded, ['🤐'])
   })
+
+  test('no-ops on a never-configured channel (matches gpt/llm-bot)', async () => {
+    const access = { ...makeAccess(), channelConfig: () => undefined }
+    const message = makeMessage()
+    await mute({ message, access } as any)
+    assert.equal(access.calls.length, 0)
+    assert.deepEqual(message.reactionsAdded, [])
+  })
 })
 
 describe('unmute', () => {
@@ -85,6 +97,14 @@ describe('unmute', () => {
     assert.equal(access.calls.length, 1)
     assert.equal(access.calls[0].requireMention, false)
     assert.deepEqual(message.reactionsAdded, ['🗣️'])
+  })
+
+  test('no-ops on a never-configured channel (matches gpt/llm-bot)', async () => {
+    const access = { ...makeAccess(), channelConfig: () => undefined }
+    const message = makeMessage()
+    await unmute({ message, access } as any)
+    assert.equal(access.calls.length, 0)
+    assert.deepEqual(message.reactionsAdded, [])
   })
 })
 

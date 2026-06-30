@@ -587,6 +587,10 @@ export type LifecycleEvent =
   | { type: 'native_thinking' }
   | { type: 'tool_call_start', name: string }
   | { type: 'tool_call_end', name: string, failed: boolean }
+  // agy's trajectory file carries real `thinking` text per planning step (same
+  // field operator_agent.py's live poll surfaces) — fired with the latest known
+  // full thinking text whenever the agy live trajectory poll sees it change.
+  | { type: 'agy_thinking', text: string }
 
 export interface BuildRequestArgs {
   systemPrompt: string
