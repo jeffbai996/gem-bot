@@ -640,6 +640,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       return id
     }
     const modelFriendly = getFriendlyModelName()
+    const effort = (modelFriendly.match(/\(([^)]+)\)/)?.[1] ?? '').toLowerCase()
+    const thinkingLabel = effort ? `Thinking with [${effort}] effort` : `Thinking with ${modelFriendly}`
 
     let latestParsed: ParsedResponse = { react: null, thinking: null, reply: null }
     let lastFlushedFullReply = ''
@@ -672,7 +674,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         const sp = GLYPHS[fi % GLYPHS.length]
         const d = dots[fi % dots.length]
         fi++
-        target.edit(`💭 ${sp} *Thinking with ${modelFriendly}${d}*`).catch(() => {})
+        target.edit(`💭 ${sp} *${thinkingLabel}${d}*`).catch(() => {})
       }, 1500)
     }
 
@@ -681,7 +683,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     const postPlaceholder = async () => {
       if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
       if (activeMessages.length > 0) { startSpinner(); return }
-      const initialMsg = await sendReply(message, `💭 *Thinking with ${modelFriendly}…*`)
+      const initialMsg = await sendReply(message, `💭 *${thinkingLabel}…*`)
       if (initialMsg) activeMessages.push(initialMsg as Message)
       startSpinner()
     }
@@ -689,7 +691,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     if (opts.editTarget) {
       // Regenerate: reuse the existing bot message immediately, spinner on.
       activeMessages.push(opts.editTarget)
-      await opts.editTarget.edit(`💭 *Thinking with ${modelFriendly}…*`).catch(() => {})
+      await opts.editTarget.edit(`💭 *${thinkingLabel}…*`).catch(() => {})
       startSpinner()
     } else if (flags.thinking === 'collapse') {
       // Collapse mode: post placeholder immediately so we see the spinner and "Thinking with..."
