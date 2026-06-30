@@ -67,27 +67,33 @@ function describeAttachment(att: HistoryAttachment): string {
 // alongside the real footer that gemma.ts adds, producing duplicates.
 //
 // Discord's `-# ` directive is reserved for our metadata in this bot, so any
-// line starting with that prefix is safe to drop. Also drop the `🧠 Reasoning`
-// and `🔍 Web search` blocks since those are renderer output, not the model's
-// authored content. The "💭 Thinking:" block IS authored (parsed.thinking) so
-// we keep it.
+// line starting with that prefix is safe to drop. Also drop trace/thought
+// blocks since those are renderer output, not conversational content.
 export function stripBotMetadata(text: string): string {
   if (!text) return text
   const lines = text.split('\n')
   const out: string[] = []
   let inMetadataBlock = false
   for (const line of lines) {
+    const bareLine = line.replace(/^>\s?/, '')
     if (line.startsWith('-# ')) {
       inMetadataBlock = false
       continue  // drop small-text directive lines (footer, sources, warnings)
     }
-    if (line.startsWith('🧠 **Reasoning:**') || line.startsWith('🔍 **Web search**')) {
+    if (
+      bareLine.startsWith('🧠 **Reasoning:**') ||
+      bareLine.startsWith('💭 **Thinking:**') ||
+      /^💭 (?:✓ )?\*\*Thought for [^*]+(?::)?\*\*/.test(bareLine) ||
+      bareLine.startsWith('🔧 **Tool trace**') ||
+      bareLine.startsWith('🔍 **Web search**')
+    ) {
       inMetadataBlock = true
       continue
     }
     if (inMetadataBlock) {
       // Continuation lines of a metadata block are blockquoted (`> ...`) or
-      // indented bullets (`> · ...`). End the block on the first blank line.
+      // quoted blank separators (`>`). End only on a real unquoted blank line,
+      // which is how the renderer separates a metadata card from the reply.
       if (line.trim() === '') {
         inMetadataBlock = false
       }
