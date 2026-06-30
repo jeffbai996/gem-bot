@@ -17,6 +17,7 @@ import { shouldEmbed } from './embed-throttle.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
 import { PendingEditsStore } from './reactions/pending-edits.ts'
 import { applyLifecycle } from './reactions/lifecycle.ts'
+import { activeTurns } from './active-turns.ts'
 import type { LifecycleEvent, ToolCall, CodeExecArtifact } from './gemini.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
 import { handleReaction } from './reactions/handler.ts'
@@ -641,7 +642,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     }
     const modelFriendly = getFriendlyModelName()
     const effort = (modelFriendly.match(/\(([^)]+)\)/)?.[1] ?? '').toLowerCase()
-    const thinkingLabel = effort ? `Thinking with [${effort}] effort` : `Thinking with ${modelFriendly}`
+    const thinkingLabel = effort ? `Thinking with ${effort} effort` : `Thinking with ${modelFriendly}`
 
     let latestParsed: ParsedResponse = { react: null, thinking: null, reply: null }
     let lastFlushedFullReply = ''
@@ -674,7 +675,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         const sp = GLYPHS[fi % GLYPHS.length]
         const d = dots[fi % dots.length]
         fi++
-        target.edit(`💭 ${sp} ${thinkingLabel}${d}`).catch(() => {})
+        target.edit(`💭 ${sp} **${thinkingLabel}${d}**`).catch(() => {})
       }, 1500)
     }
 
@@ -683,7 +684,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     const postPlaceholder = async () => {
       if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
       if (activeMessages.length > 0) { startSpinner(); return }
-      const initialMsg = await sendReply(message, `💭 ${thinkingLabel}…`)
+      const initialMsg = await sendReply(message, `💭 **${thinkingLabel}…**`)
       if (initialMsg) activeMessages.push(initialMsg as Message)
       startSpinner()
     }
@@ -691,7 +692,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     if (opts.editTarget) {
       // Regenerate: reuse the existing bot message immediately, spinner on.
       activeMessages.push(opts.editTarget)
-      await opts.editTarget.edit(`💭 ${thinkingLabel}…`).catch(() => {})
+      await opts.editTarget.edit(`💭 **${thinkingLabel}…**`).catch(() => {})
       startSpinner()
     } else if (flags.thinking === 'collapse') {
       // Collapse mode: post placeholder immediately so we see the spinner and "Thinking with..."
@@ -810,6 +811,23 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // envelope) — built once so the agy path feeds the model the SAME contract.
     const fullSystemPrompt = formatSystemPrompt(systemPrompt, flags.thinking)
 
+    // Register a killer so /gemini stop can abort this turn mid-stream.
+    // For the API path we abort the AbortController; for agy the process gets
+    // SIGTERM via the existing agy-chat abort path when we abort the controller
+    // that's wired into respondViaAgy's outer promise.
+    const stopController = new AbortController()
+    activeTurns.register(message.channelId, () => stopController.abort())
+
+    // Combine speak-mode barge-in signal with the /gemini stop signal.
+    const combinedSignal = (() => {
+      if (!turnSignal) return stopController.signal
+      const ac = new AbortController()
+      const abort = () => ac.abort()
+      turnSignal.addEventListener('abort', abort, { once: true })
+      stopController.signal.addEventListener('abort', abort, { once: true })
+      return ac.signal
+    })()
+
     const apiRespond = () => gemini.respond({
       systemPrompt,
       history,
@@ -823,7 +841,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       cacheTtlSec: flags.cacheTtlSec ?? undefined,
     }, (partial) => {
       latestParsed = partial
-    }, onLifecycleEvent, turnSignal)
+    }, onLifecycleEvent, combinedSignal)
 
     // OPTIONAL agy chat engine: route text turns through the Antigravity CLI
     // (flat Google sub) instead of the metered Gemini API. Mirrors gpt-bot's
@@ -844,6 +862,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // Surfaced as a footer badge below so the degrade isn't invisible (Jeff
     // 2026-06-29).
     let agyFellBack = false
+
     if (useAgy) {
       try {
         ({ parsed, meta } = await respondViaAgy({
@@ -1297,6 +1316,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       }
     } catch { /* nothing to do */ }
   } finally {
+    activeTurns.done(message.channelId)
     stopThinkingAnim()
     if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
     if (typingInterval) clearInterval(typingInterval)
@@ -1342,7 +1362,9 @@ async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<
   st.running = true
   try {
     await handleUserMessage(message, opts)
+    if (activeTurns.consumeStopped(cid)) { st.queue.length = 0 }
     while (st.queue.length) {
+      if (activeTurns.consumeStopped(cid)) { st.queue.length = 0; break }
       const batch = st.queue.splice(0, st.queue.length)
       // Carrier = the message whose attachments get processed. Default to the
       // LAST message, but if an EARLIER batched message carried attachments

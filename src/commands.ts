@@ -7,6 +7,7 @@ import { GeminiClient } from './gemini.ts'
 import { GeminiCacheManager } from './cache.ts'
 import { insertMessage } from './db.ts'
 import { rewriteEnvVar, scheduleSelfRestart } from './restart.ts'
+import { activeTurns } from './active-turns.ts'
 
 // Valid agy `--model` display strings (from `agy models`). The /gemini model
 // `agy_model` choice list is built from this, and the handler re-validates
@@ -255,6 +256,11 @@ export const geminiCommand = new SlashCommandBuilder()
         )
       )
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
+  )
+  .addSubcommand(subcommand =>
+    subcommand
+      .setName('stop')
+      .setDescription('Abort the in-flight turn for this channel (kills agy/API generation mid-stream)')
   )
 
 // Compact "Xs / Xm Ys / Xh Ym" rendering for the cache info card. Avoids
@@ -740,6 +746,14 @@ interface ExtraDeps {
       } catch (e: any) {
         return interaction.followUp({ content: `❌ Backfill failed: ${e.message}`, ephemeral: true })
       }
+    }
+
+    if (subcommand === 'stop') {
+      const killed = activeTurns.stop(interaction.channelId)
+      return interaction.reply({
+        content: killed ? '🛑 Turn aborted.' : '✅ No turn in progress.',
+        ephemeral: true,
+      })
     }
   } catch (error: any) {
     console.error('/gemini command error:', error)
