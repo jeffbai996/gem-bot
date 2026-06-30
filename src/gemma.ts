@@ -674,7 +674,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         const sp = GLYPHS[fi % GLYPHS.length]
         const d = dots[fi % dots.length]
         fi++
-        target.edit(`💭 ${sp} *${thinkingLabel}${d}*`).catch(() => {})
+        target.edit(`💭 ${sp} ${thinkingLabel}${d}`).catch(() => {})
       }, 1500)
     }
 
@@ -683,7 +683,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     const postPlaceholder = async () => {
       if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
       if (activeMessages.length > 0) { startSpinner(); return }
-      const initialMsg = await sendReply(message, `💭 *${thinkingLabel}…*`)
+      const initialMsg = await sendReply(message, `💭 ${thinkingLabel}…`)
       if (initialMsg) activeMessages.push(initialMsg as Message)
       startSpinner()
     }
@@ -691,7 +691,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     if (opts.editTarget) {
       // Regenerate: reuse the existing bot message immediately, spinner on.
       activeMessages.push(opts.editTarget)
-      await opts.editTarget.edit(`💭 *${thinkingLabel}…*`).catch(() => {})
+      await opts.editTarget.edit(`💭 ${thinkingLabel}…`).catch(() => {})
       startSpinner()
     } else if (flags.thinking === 'collapse') {
       // Collapse mode: post placeholder immediately so we see the spinner and "Thinking with..."
