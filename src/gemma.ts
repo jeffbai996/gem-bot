@@ -642,7 +642,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     }
     const modelFriendly = getFriendlyModelName()
     const effort = (modelFriendly.match(/\(([^)]+)\)/)?.[1] ?? '').toLowerCase()
-    const thinkingLabel = effort ? `Thinking with ${effort} effort` : `Thinking with ${modelFriendly}`
+    const thinkingLabel = effort ? `Thinking with [${effort}] effort` : `Thinking with ${modelFriendly}`
 
     let latestParsed: ParsedResponse = { react: null, thinking: null, reply: null }
     let lastFlushedFullReply = ''
@@ -994,7 +994,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     const showThinkingFinal = flags.thinking === 'collapse' || (flags.thinking === 'on' && !!parsed.thinking)
     if (showThinkingFinal) {
       const thoughtSecs = Math.round(respondElapsedMs / 1000)
-      const header = `💭 ✓ **Thought for ${thoughtSecs}s**`
+      const effortPrefix = effort ? `💭 **Thinking with [${effort}] effort…**\n` : ''
+      const header = `${effortPrefix}💭 **Thought for ${thoughtSecs}s:**`
       if (parsed.thinking) {
         thinkingMessage += renderThoughtBlock(header, parsed.thinking) + '\n\n'
       } else {
