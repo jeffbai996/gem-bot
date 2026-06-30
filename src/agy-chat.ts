@@ -252,13 +252,16 @@ function runAgy(
   // Flags MUST precede the `-p` positional: agy uses Go's flag parser, which
   // stops at the first non-flag arg — anything after `-p "<prompt>"` is ignored
   // (verified: trailing --sandbox silently dropped). --sandbox enables terminal
-  // restrictions; we deliberately do NOT pass --dangerously-skip-permissions
-  // since the prompt carries untrusted Discord text. --add-dir grants the
-  // squad-store bin dir so agy can run the recall CLI without leaning on the
-  // sandbox's auto-bypass-for-outside-binaries behavior.
+  // restrictions (filesystem scope, no dangerous shell cmds) — that's the
+  // security boundary. --dangerously-skip-permissions auto-approves tool calls
+  // within that already-sandboxed scope; without it agy blocks in -p mode
+  // waiting for human confirmation that never comes (toolPermission=request-review
+  // is the default, and -p has no human to respond). --add-dir grants the
+  // squad-store bin dir so agy can run the recall CLI.
   const printTimeout = `${Math.max(1, Math.ceil(PRINT_TIMEOUT_MS / 1000))}s`
   const args = [
     '--sandbox',
+    '--dangerously-skip-permissions',
     '--add-dir', SQUAD_STORE_DIR,
     '--model', AGY_MODEL,
     '--print-timeout', printTimeout,
