@@ -668,7 +668,12 @@ function parseAgyTrajectory(path: string): AgyTrajParse {
 // real Discord turn doesn't hit the cold-start auth race (exit code 1).
 export function warmAgy(): void {
   if (process.env.GEMMA_AGY_CHAT !== '1') return
-  const child = spawn(AGY_BIN, ['--model', AGY_MODEL, '--print-timeout', '20s', '-p', 'ok'], {
+  const child = spawn(AGY_BIN, [
+    '--sandbox', '--add-dir', SQUAD_STORE_DIR,
+    '--model', AGY_MODEL,
+    '--print-timeout', '20s',
+    '-p', 'ok',
+  ], {
     env: { ...process.env, SQUAD_STORE_URL },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
