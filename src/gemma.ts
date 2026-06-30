@@ -942,8 +942,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     const showThinkingFinal = flags.thinking !== 'off' && !!parsed.thinking
     if (showThinkingFinal && parsed.thinking) {
       const thoughtSecs = Math.round(respondElapsedMs / 1000)
-      const effortTag = parsed.effort ? ` (${parsed.effort})` : ''
-      thinkingMessage += renderThoughtBlock(`💭 **Thought for ${thoughtSecs}s${effortTag}:**`, parsed.thinking) + '\n\n'
+      const effortHeader = parsed.effort ? `💭 **Thinking with [${parsed.effort}] effort…**\n` : ''
+      thinkingMessage += renderThoughtBlock(`${effortHeader}💭 **Thought for ${thoughtSecs}s:**`, parsed.thinking) + '\n\n'
     }
     thinkingMessage = thinkingMessage.replace(/\s+$/, '')
 
