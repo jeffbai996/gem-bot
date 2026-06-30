@@ -255,6 +255,10 @@ export class AccessManager {
     return this.data.channels[channelId]
   }
 
+  channelConfig(channelId: string): ChannelConfig | undefined {
+    return this.data.channels[channelId]
+  }
+
   // Per-channel rendering flags. Returns defaults for unknown channels and
   // for old configs that don't have these fields yet.
   channelFlags(channelId: string): ChannelFlags {
