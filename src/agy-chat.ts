@@ -657,9 +657,18 @@ function parseAgyTrajectory(path: string): AgyTrajParse {
   //     fusing all blocks into one wall — not what Jeff wanted).
   // So: squeeze each chunk internally first, THEN join chunks with '\n\n'.
   const thinking = thinkingChunks.length
-    ? thinkingChunks.map(c => c.replace(/\n{2,}/g, '\n').trim()).join('\n\n').trim()
+    ? thinkingChunks.map(normalizeAgyThinkingChunk).join('\n\n').trim()
     : null
   return { thinking, tools, answer }
+}
+
+export function normalizeAgyThinkingChunk(text: string): string {
+  return text
+    .split('\n')
+    .map(line => line.replace(/^\s*>\s?/, '').trimEnd())
+    .join('\n')
+    .replace(/\n{2,}/g, '\n')
+    .trim()
 }
 
 // Run a chat turn through the Antigravity CLI (`agy`) instead of the Gemini
