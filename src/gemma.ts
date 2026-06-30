@@ -1070,9 +1070,14 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     const showThinkingFinal = flags.thinking === 'collapse' || (flags.thinking === 'on' && !!parsed.thinking)
     if (showThinkingFinal) {
+      // Single line, no trailing colon (Jeff 2026-06-30). Was two stacked 💭
+      // lines — a leftover "Thinking with X effort…" line ABOVE "Thought for
+      // Ns:" — which read as the spinner placeholder never clearing, even
+      // though it's actually the final header building in both pieces. Effort
+      // folds into the same line instead of its own line.
       const thoughtSecs = Math.round(respondElapsedMs / 1000)
-      const effortPrefix = effort ? `💭 **Thinking with ${effort} effort…**\n` : ''
-      const header = `${effortPrefix}💭 **Thought for ${thoughtSecs}s:**`
+      const effortSuffix = effort ? ` (${effort} effort)` : ''
+      const header = `💭 **Thought for ${thoughtSecs}s${effortSuffix}**`
       if (parsed.thinking) {
         thinkingMessage += renderThoughtBlock(header, parsed.thinking) + '\n\n'
       } else {
