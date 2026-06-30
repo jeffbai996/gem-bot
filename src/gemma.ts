@@ -561,7 +561,18 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // the try so catch/finally can clear it (mirrors gpt/llm-bot's stopThinkingAnim
   // guard) — a dangling interval would keep editing a deleted message.
   let thinkingAnim: ReturnType<typeof setInterval> | null = null
-  const stopThinkingAnim = () => { if (thinkingAnim) { clearInterval(thinkingAnim); thinkingAnim = null } }
+  // Tracks the spinner's most recent in-flight edit() so stopThinkingAnim can
+  // await it. Without this, a spinner tick that fires just before the final
+  // content write can have its HTTP PATCH land on Discord AFTER the real
+  // content's PATCH (network race, not a JS scheduling issue — clearInterval
+  // only stops FUTURE ticks, it can't recall one already in flight) — the
+  // message gets permanently stuck showing stale "Thinking…" text forever,
+  // since nothing ever re-checks or re-writes it (Jeff 2026-06-30).
+  let spinnerEditPromise: Promise<unknown> | null = null
+  const stopThinkingAnim = async () => {
+    if (thinkingAnim) { clearInterval(thinkingAnim); thinkingAnim = null }
+    if (spinnerEditPromise) { await spinnerEditPromise; spinnerEditPromise = null }
+  }
   // Deferred-placeholder timer (option 3): posts the 💭 bubble only if the turn
   // is still working after a delay. Hoisted so catch/finally can cancel a
   // pending one — else a timer that fires after an error/return would post an
@@ -675,7 +686,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         const sp = GLYPHS[fi % GLYPHS.length]
         const d = dots[fi % dots.length]
         fi++
-        target.edit(`💭 ${sp} **${thinkingLabel}${d}**`).catch(() => {})
+        spinnerEditPromise = target.edit(`💭 ${sp} **${thinkingLabel}${d}**`).catch(() => {})
       }, 1500)
     }
 
@@ -736,7 +747,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         // so it can't overwrite streamed text on its next 1.5s tick.
         if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
         if (flags.thinking !== 'collapse') {
-          stopThinkingAnim()
+          await stopThinkingAnim()
         }
 
         if (fullReply === lastFlushedFullReply) return
@@ -893,7 +904,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // Kill the spinner before final rendering so it can't edit a message we're
     // about to overwrite/delete (flushStream stops it on first content, but a
     // silent/empty turn may never have streamed any — stop it unconditionally).
-    stopThinkingAnim()
+    // AWAITED: if a spinner tick's edit() is still in flight, its PATCH could
+    // otherwise land on Discord after the final content write below, leaving
+    // the message permanently stuck on stale "Thinking…" text.
+    await stopThinkingAnim()
     // One last flush to ensure we haven't missed anything before final rendering
     await flushStream()
 
@@ -1272,13 +1286,13 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // the newer turn owns the channel now. No error message, no say().
     if (e?.name === 'AbortError') {
       console.log(`[voice] turn superseded by barge-in (channel=${message.channelId})`)
-      stopThinkingAnim()
+      await stopThinkingAnim()
       applyLifecycle(message, 'silenced').catch(() => {})
       for (const m of activeMessages) await m.delete().catch(() => {})
       activeMessages = []
       return
     }
-    stopThinkingAnim()
+    await stopThinkingAnim()
     console.error('message handler error:', e)
     // Match explicit rate-limit language only. The naive /rate/i matched
     // "generateContent" in every Gemini URL, causing unrelated 400s to look
@@ -1318,7 +1332,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     } catch { /* nothing to do */ }
   } finally {
     activeTurns.done(message.channelId)
-    stopThinkingAnim()
+    await stopThinkingAnim()
     if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
     if (typingInterval) clearInterval(typingInterval)
     if (streamInterval) clearInterval(streamInterval)
