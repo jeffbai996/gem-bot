@@ -44,11 +44,16 @@ const AGY_EFFORT = (AGY_MODEL.match(/\(([^)]+)\)/)?.[1] ?? '').toLowerCase() || 
 // channel; if it stalls, Discord just shows the thinking placeholder until this
 // trips and the caller falls back to the API. Keep the default short enough that
 // a broken agent path cannot hold the channel hostage.
-const PRINT_TIMEOUT_MS = Number(process.env.GEMMA_AGY_PRINT_TIMEOUT_MS) || 30_000
+// Generous so a LONG agentic task (many tool calls — search, browse, ibkr, file
+// ops) runs to completion instead of getting SIGKILL'd mid-task and falling back
+// to the tool-less API engine, which then claims it "can't do the task" (Jeff
+// 2026-06-30: unshackle agy — a deep agentic task with Pro can run ~30min, not 30s). The
+// backstop only exists to reap a genuinely WEDGED process, not to bound real work.
+const PRINT_TIMEOUT_MS = Number(process.env.GEMMA_AGY_PRINT_TIMEOUT_MS) || 1_800_000
 // Outer runaway-process backstop. This should fire after agy's own
 // --print-timeout; it exists to kill the whole process group if the CLI ignores
 // or wedges past its own timer.
-const TIMEOUT_MS = Number(process.env.GEMMA_AGY_CHAT_TIMEOUT_MS) || (PRINT_TIMEOUT_MS + 10_000)
+const TIMEOUT_MS = Number(process.env.GEMMA_AGY_CHAT_TIMEOUT_MS) || (PRINT_TIMEOUT_MS + 60_000)
 
 // Squad-memory on the agy path: like codex-chat.ts, we don't wire an MCP
 // server — agy can run the squad-store CLI directly through its own agentic
@@ -335,7 +340,12 @@ function runAgy(
       }
       if (code !== 0) {
         const why = signal ? `signal ${signal}` : `code ${code}`
-        return reject(new AgyChatError(`agy exited ${why}: ${err.trim().slice(0, 300) || '(no stderr)'}`, Date.now() - t0))
+        // agy often exits non-zero with EMPTY stderr but writes the real error to
+        // STDOUT (its CLI prints failures to stdout). Surface both so "(no stderr)"
+        // stops hiding the cause (Jeff 2026-06-30: agy dying mid-flight, code 1, no
+        // stderr — undiagnosable). Prefer stderr, fall back to the stdout tail.
+        const detail = err.trim().slice(0, 300) || out.trim().slice(-400) || '(no output)'
+        return reject(new AgyChatError(`agy exited ${why}: ${detail}`, Date.now() - t0))
       }
       const text = out.trim()
       if (!text) {
@@ -729,10 +739,20 @@ export async function respondViaAgy(
   try {
     text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText)
   } catch (firstErr: any) {
-    const isAuthRace = firstErr instanceof AgyChatError &&
-      firstErr.afterMs < 5000 &&
-      firstErr.message.includes('(no stderr)')
-    if (!isAuthRace) throw firstErr
+    // Retry once on a transient agy failure before giving up to the tool-less API
+    // engine (Jeff 2026-06-30: agy keeps dying mid-flight with exit code 1, which
+    // then silently degrades the turn to the API path that can't run tools). The
+    // original guard only caught the <5s auth-race; broaden it to ANY clean exit-1
+    // / empty-output / spawn blip — those are overwhelmingly transient (token
+    // refresh, a flaky MCP init, a backend hiccup) and a single retry recovers
+    // them. A genuine hard error reproduces on the retry and still falls through.
+    const retriable = firstErr instanceof AgyChatError && (
+      firstErr.message.includes('(no stderr)') ||
+      firstErr.message.includes('(no output)') ||
+      firstErr.message.includes('exited code 1') ||
+      firstErr.message.includes('spawn'))
+    if (!retriable) throw firstErr
+    console.error(`[agy] transient failure, retrying once: ${firstErr.message.slice(0, 200)}`)
     await new Promise(r => setTimeout(r, 3000))
     text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText)
   }

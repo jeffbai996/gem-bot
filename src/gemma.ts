@@ -76,10 +76,16 @@ function headingsToBold(t: string): string {
       out.push(`**${m[1]}**`)
       while (i + 1 < lines.length && lines[i + 1].trim() === '') i++
     } else {
-      out.push(lines[i])
+      // strip a stray leading '>' caret that gem sometimes leaks onto a fresh
+      // output line (it bleeds the quote syntax into plain prose). Only a caret
+      // that's clearly spurious — a line that is JUST '>' or '> text' with no
+      // intentional blockquote context here (the reply is never a quote).
+      out.push(lines[i].replace(/^[ \t]*>[ \t]?/, ''))
     }
   }
-  return out.join('\n')
+  // enforce single-blank-line spacing: collapse any run of 2+ blank lines to ONE
+  // (Jeff 2026-06-30 — headers/paragraphs were drifting apart by multiple lines).
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
 function quoteBlock(t: string): string {
@@ -164,7 +170,7 @@ const _ARG_DIGEST_PREFERENCE = [
 ]
 
 // Single-line, ID-shaped arg digest, <= maxLen chars. Mirrors _arg_digest.
-function argDigest(args: Record<string, unknown>, maxLen = 81): string {
+function argDigest(args: Record<string, unknown>, maxLen = 84): string {
   if (!args || typeof args !== 'object') return ''
   // Empty args (e.g. agy's post-hoc trace carries no per-call args) → '' so the
   // caller can omit the parens entirely instead of printing a useless `({})`.
@@ -229,7 +235,7 @@ function formatDiff(unified: string): { badge: string; body: string[] } {
 // folded in here 2026-06-29). Reuses gem's argDigest/shortToolName.
 // gem's ToolCall has no diff/resultLines fields (simpler than gpt's), so this is
 // the trimmed assembler: header row + optional `⎿ resultPreview` line per call.
-const TRACE_BODY_CHAR_BUDGET = 1800
+const TRACE_BODY_CHAR_BUDGET = 1900
 const TRACE_MAX_LINES = 50
 
 function buildTraceLines(toolCalls: ToolCall[]): string[] {
@@ -258,11 +264,11 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
     const hasArgs = call.args && typeof call.args === 'object' && Object.keys(call.args).length > 0
     let argPart = ''
     if (hasArgs) {
-      // HEADER_LINE_MAX is 79.
-      // prefix is 4 chars. tailStr is tailStr.length. name is name.length.
-      // () is 2 chars.
-      // So max length for digest is 79 - 4 - name.length - 2 - tailStr.length.
-      const budget = 79 - 4 - name.length - 2 - tailStr.length
+      // HEADER_LINE_MAX 84 (Jeff 2026-06-30): cap lines at ~84 so a long row never
+      // wraps/overflows the Discord trace card. Raised from the old 79 to expose a
+      // bit more command/arg, but kept tight — 84 is the practical max before wrap.
+      // prefix 4 + name + () 2 + tailStr → digest gets the rest of 84.
+      const budget = 84 - 4 - name.length - 2 - tailStr.length
       const digest = argDigest(call.args, budget)
       argPart = digest ? `(${digest})` : ''
     }
@@ -282,8 +288,8 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
       if (body.length > 24) lines.push(`... (${body.length - 24} more lines)`)
     } else if (call.resultPreview) {
       let rp = call.resultPreview.replace(/\n/g, ' ')
-      // Output line limit is 84. Prefix "  ⎿ " is 4 chars. Max rp is 80.
-      if (rp.length > 80) rp = rp.slice(0, 79) + '…'
+      // result preview capped at 84 to match the header budget (no card overflow).
+      if (rp.length > 84) rp = rp.slice(0, 83) + '…'
       lines.push(`  ⎿ ${rp}`)
     }
   }
@@ -353,7 +359,11 @@ function renderTraceCard(toolCalls: ToolCall[], extras: TraceExtras = {}): strin
   if (dropped > 0) fitted.push(`... (${dropped} more lines)`)
   // Redact credential-looking runs (a file-edit diff body can carry env/auth
   // contents) before the card hits Discord.
-  return quoteBlock('🔧 **Tool trace**\n```diff\n' + redactSecrets(fitted.join('\n')) + '\n```')
+  // NOT quote-blocked (Jeff 2026-06-30): the trace is its own labeled ```diff```
+  // card and reads cleaner standing alone — wrapping it in a > quote nested the
+  // code fence inside a gray quote bar, which looked broken. Only the 💭 thinking
+  // block stays quote-wrapped.
+  return '🔧 **Tool trace**\n```diff\n' + redactSecrets(fitted.join('\n')) + '\n```'
 }
 
 process.on('SIGHUP', async () => {
@@ -613,6 +623,24 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     const flags = access.channelFlags(message.channelId)
 
+    const envDefaultEngine = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
+    const resolvedEngine = flags.engine ?? envDefaultEngine
+    // Media ALWAYS forces the native API — agy -p can't consume image/audio.
+    const useAgy = resolvedEngine === 'agy' && allParts.length === 0
+
+    const getFriendlyModelName = () => {
+      if (useAgy) {
+        return process.env.GEMMA_AGY_MODEL || 'Gemini 3.5 Flash (Medium)'
+      }
+      const id = process.env.GEMINI_MODEL || 'gemini-3-flash-preview'
+      if (id === 'gemini-3-pro-preview') return 'Gemini 3 Pro'
+      if (id === 'gemini-3.5-flash') return 'Gemini 3.5 Flash'
+      if (id === 'gemini-3-flash-preview') return 'Gemini 3 Flash'
+      if (id === 'gemini-3.1-flash-lite-preview') return 'Gemini 3.1 Flash Lite'
+      return id
+    }
+    const modelFriendly = getFriendlyModelName()
+
     let latestParsed: ParsedResponse = { react: null, thinking: null, reply: null }
     let lastFlushedFullReply = ''
 
@@ -644,7 +672,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         const sp = GLYPHS[fi % GLYPHS.length]
         const d = dots[fi % dots.length]
         fi++
-        target.edit(`💭 ${sp} **Thinking${d}**`).catch(() => {})
+        target.edit(`💭 ${sp} *Thinking with ${modelFriendly}${d}*`).catch(() => {})
       }, 1500)
     }
 
@@ -653,7 +681,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     const postPlaceholder = async () => {
       if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
       if (activeMessages.length > 0) { startSpinner(); return }
-      const initialMsg = await sendReply(message, '💭 **Thinking…**')
+      const initialMsg = await sendReply(message, `💭 *Thinking with ${modelFriendly}…*`)
       if (initialMsg) activeMessages.push(initialMsg as Message)
       startSpinner()
     }
@@ -661,8 +689,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     if (opts.editTarget) {
       // Regenerate: reuse the existing bot message immediately, spinner on.
       activeMessages.push(opts.editTarget)
-      await opts.editTarget.edit('💭 **Thinking…**').catch(() => {})
+      await opts.editTarget.edit(`💭 *Thinking with ${modelFriendly}…*`).catch(() => {})
       startSpinner()
+    } else if (flags.thinking === 'collapse') {
+      // Collapse mode: post placeholder immediately so we see the spinner and "Thinking with..."
+      await postPlaceholder()
     } else {
       // Normal turn: dots now, placeholder only if still working after the delay.
       placeholderTimer = setTimeout(() => { postPlaceholder().catch(() => {}) }, PLACEHOLDER_DELAY_MS)
@@ -681,7 +712,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
             const suffix = c.running ? '...' : (c.failed ? ' FAILED' : '')
             return `${prefix}${shortToolName(c.name)}${suffix}`
           })
-          fullReply += quoteBlock('🔧 **Tool trace**\n```diff\n' + lines.join('\n') + '\n```') + '\n\n'
+          fullReply += '🔧 **Tool trace**\n```diff\n' + lines.join('\n') + '\n```' + '\n\n'
         }
         if (latestParsed.reply) {
           fullReply += headingsToBold(latestParsed.reply)
@@ -701,15 +732,18 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         // turn beat the delay → no transient bubble) and kill any running spinner
         // so it can't overwrite streamed text on its next 1.5s tick.
         if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
-        stopThinkingAnim()
+        if (flags.thinking !== 'collapse') {
+          stopThinkingAnim()
+        }
 
         if (fullReply === lastFlushedFullReply) return
         lastFlushedFullReply = fullReply
 
         const pieces = chunk(fullReply, 2000, 'newline')
+        const offset = flags.thinking === 'collapse' ? 1 : 0
         
         for (let i = 0; i < pieces.length; i++) {
-          await replaceActiveMessage(message, activeMessages, i, pieces[i], 'stream')
+          await replaceActiveMessage(message, activeMessages, i + offset, pieces[i], 'stream')
         }
       } finally {
         isFlushing = false
@@ -801,10 +835,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // for channels that never picked.
     let parsed: typeof latestParsed
     let meta: Awaited<ReturnType<typeof gemini.respond>>['meta']
-    const envDefaultEngine = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
-    const resolvedEngine = flags.engine ?? envDefaultEngine
-    // Media ALWAYS forces the native API — agy -p can't consume image/audio.
-    const useAgy = resolvedEngine === 'agy' && allParts.length === 0
+    // useAgy is resolved earlier
     // Set when an intended agy turn silently degraded to the metered API engine
     // (timeout/empty/exec error). The two engines aren't interchangeable — the
     // API path has NO shell/filesystem — so a fallback changes what gemma can do.
@@ -939,11 +970,15 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       thinkingMessage += renderThoughtBlock('🧠 **Reasoning:**', meta.nativeThoughts) + '\n\n'
     }
 
-    const showThinkingFinal = flags.thinking !== 'off' && !!parsed.thinking
-    if (showThinkingFinal && parsed.thinking) {
+    const showThinkingFinal = flags.thinking === 'collapse' || (flags.thinking === 'on' && !!parsed.thinking)
+    if (showThinkingFinal) {
       const thoughtSecs = Math.round(respondElapsedMs / 1000)
-      const effortHeader = parsed.effort ? `💭 **Thinking with [${parsed.effort}] effort…**\n` : ''
-      thinkingMessage += renderThoughtBlock(`${effortHeader}💭 **Thought for ${thoughtSecs}s:**`, parsed.thinking) + '\n\n'
+      const header = `💭 ✓ **Thought for ${thoughtSecs}s**`
+      if (parsed.thinking) {
+        thinkingMessage += renderThoughtBlock(header, parsed.thinking) + '\n\n'
+      } else {
+        thinkingMessage += header + '\n\n'
+      }
     }
     thinkingMessage = thinkingMessage.replace(/\s+$/, '')
 
@@ -1113,7 +1148,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // can't make the deferred callback hit the wrong message.
       const collapsingThinking = flags.thinking === 'collapse' && replyStart > 0
       const collapsingTrace = flags.trace === 'collapse' && showTrace
-      const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000
+      const lingerMs = flags.thinking === 'collapse' ? 30_000 : (Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000)
       let thinkingSpliced = 0   // how many leading thinking msgs we removed (for traceIdx)
 
       if (collapsingThinking) {
@@ -1193,7 +1228,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // linger, same as the main path.
       if (flags.thinking === 'collapse') {
         const thoughtMsgs = activeMessages.splice(0)
-        const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000
+        const lingerMs = flags.thinking === 'collapse' ? 30_000 : (Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000)
         setTimeout(() => { for (const m of thoughtMsgs) m.delete().catch(() => {}) }, lingerMs)
       }
     } else {
