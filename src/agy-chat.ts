@@ -34,14 +34,20 @@ const AGY_BIN = process.env.GEMMA_AGY_BIN || '/home/jbai/.local/bin/agy'
 // `agy models` (e.g. "Gemini 3.5 Flash (Medium)"), not an API model id. Default
 // is a sensible Flash tier; when unset we still pass an explicit Flash model so
 // behavior is deterministic rather than riding agy's own default-of-the-day.
-const AGY_MODEL = process.env.GEMMA_AGY_MODEL || 'Gemini 3.5 Flash (Medium)'
+// Default to Low thinking effort — Medium/High over-thinks for Discord chat
+// turns, causing 50+ tool call loops (Jeff 2026-06-29). Override with
+// GEMMA_AGY_MODEL=... for tasks that genuinely need deep reasoning.
+const AGY_MODEL = process.env.GEMMA_AGY_MODEL || 'Gemini 3.5 Flash (Low)'
 
-// Runaway-process BACKSTOP, not a turn timer. agy's own `--print-timeout`
-// (default 5m) bounds the model call; this is the outer guard so a genuinely
-// wedged child can't live forever. Generous (minutes) on purpose — a real
-// grounded answer can take a while. On fire we SIGKILL the group and THROW so
-// the caller falls back to the API.
-const TIMEOUT_MS = Number(process.env.GEMMA_AGY_CHAT_TIMEOUT_MS) || 600_000
+// Chat-scale agy wait. `agy -p` is a blocking CLI call with no streaming event
+// channel; if it stalls, Discord just shows the thinking placeholder until this
+// trips and the caller falls back to the API. Keep the default short enough that
+// a broken agent path cannot hold the channel hostage.
+const PRINT_TIMEOUT_MS = Number(process.env.GEMMA_AGY_PRINT_TIMEOUT_MS) || 30_000
+// Outer runaway-process backstop. This should fire after agy's own
+// --print-timeout; it exists to kill the whole process group if the CLI ignores
+// or wedges past its own timer.
+const TIMEOUT_MS = Number(process.env.GEMMA_AGY_CHAT_TIMEOUT_MS) || (PRINT_TIMEOUT_MS + 10_000)
 
 // Squad-memory on the agy path: like codex-chat.ts, we don't wire an MCP
 // server — agy can run the squad-store CLI directly through its own agentic
@@ -141,12 +147,33 @@ function buildPrompt(input: AgyChatInput): string {
     "Use them when the task needs them — actually call the tool, don't claim you can't. Two things still " +
     'hold: you remain TEXT-only (no image/audio/video GENERATION — browser screenshots are fine, they\'re ' +
     'captured not generated), and the core honesty rule is unchanged — never claim you ran something you ' +
-    "didn't. If a tool genuinely errors or a server is down, say so; but don't pre-refuse work you can do here."
+    "didn't. If a tool genuinely errors or a server is down, say so; but don't pre-refuse work you can do here. " +
+    'For casual chat, greetings, acknowledgments, or "testing" turns, answer directly without opening browser, ' +
+    'MCP, shell, filesystem, or search tools.'
+
+  // TOOL-ECONOMY directive (Jeff 2026-06-29 "thinking too much"). agy's planner
+  // tends to explore exhaustively — re-reading the same file, running git diffs
+  // multiple times, looping on stash operations — before answering. For a Discord
+  // chat bot that's pure overhead: the user is waiting, and 50+ tool calls for a
+  // simple task is a shitshow. Hard rule: plan first, then act in ≤10 targeted
+  // steps. Read a file ONCE. Run a command ONCE. Don't verify what you just did.
+  const toolEconomy =
+    '## Tool discipline — read before using any tool\n' +
+    'You are running in a Discord chat. PLAN before acting, then execute in as FEW tool calls as possible — target ≤10. Hard rules:\n' +
+    '- Read a file ONCE. Never re-read what you just read.\n' +
+    '- Run a shell command ONCE per operation. Never re-run to "verify" it worked.\n' +
+    '- Do NOT loop on git operations (stash/apply/diff). Do what is needed, once.\n' +
+    '- If the task is simple (explain, answer, summarize), do NOT open any tools at all — just reply.\n' +
+    '- After ≤3 tool calls, stop, synthesize what you found, and write your reply.\n' +
+    '- Prefer the MCP tools (vecgrep, ibkr) over shelling out when they apply — they are one call, not a shell loop.\n' +
+    'Violating this rule means the user waits 5+ minutes for a simple answer. Be fast and decisive.'
 
   return [
     sysNoJson,
     '',
     agyCapabilities,
+    '',
+    toolEconomy,
     '',
     '--- You are chatting in a Discord conversation. Recent history (oldest first): ---',
     transcript || '(no prior messages)',
@@ -228,7 +255,14 @@ function runAgy(
   // since the prompt carries untrusted Discord text. --add-dir grants the
   // squad-store bin dir so agy can run the recall CLI without leaning on the
   // sandbox's auto-bypass-for-outside-binaries behavior.
-  const args = ['--sandbox', '--add-dir', SQUAD_STORE_DIR, '--model', AGY_MODEL, '-p', prompt]
+  const printTimeout = `${Math.max(1, Math.ceil(PRINT_TIMEOUT_MS / 1000))}s`
+  const args = [
+    '--sandbox',
+    '--add-dir', SQUAD_STORE_DIR,
+    '--model', AGY_MODEL,
+    '--print-timeout', printTimeout,
+    '-p', prompt,
+  ]
 
   return new Promise<string>((resolve, reject) => {
     let child
@@ -289,14 +323,15 @@ function runAgy(
       stopPoll()
       reject(new AgyChatError(`agy process error: ${e?.message ?? e}`, Date.now() - t0))
     })
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       clearTimeout(timer)
       stopPoll()
       if (timedOut) {
         return reject(new AgyChatError(`agy timed out after ${Math.round((Date.now() - t0) / 1000)}s`, Date.now() - t0))
       }
       if (code !== 0) {
-        return reject(new AgyChatError(`agy exited ${code}: ${err.trim().slice(0, 300) || '(no stderr)'}`, Date.now() - t0))
+        const why = signal ? `signal ${signal}` : `code ${code}`
+        return reject(new AgyChatError(`agy exited ${why}: ${err.trim().slice(0, 300) || '(no stderr)'}`, Date.now() - t0))
       }
       const text = out.trim()
       if (!text) {
@@ -418,7 +453,13 @@ function agyToolDisplayName(
     if (typeof v === 'string' && v.trim()) {
       detail = v.trim().replace(/\s+/g, ' ')
       if (spec.basename) detail = detail.replace(/\/+$/, '').split('/').pop() || detail
-      if (detail.length > 85) detail = detail.slice(0, 84) + '…'
+      // Total line limit is 83. Prefix "+ ● " is 4. Assume max tail is 8.
+      // Verb(detail) has spec.verb.length + 2 + detail.length.
+      // So detail.length <= 83 - 4 - 8 - spec.verb.length - 2 = 69 - spec.verb.length.
+      const maxDetailLen = 69 - spec.verb.length
+      if (detail.length > maxDetailLen) {
+        detail = detail.slice(0, Math.max(0, maxDetailLen - 1)) + '…'
+      }
     }
   }
   return detail ? `${spec.verb}(${detail})` : spec.verb
