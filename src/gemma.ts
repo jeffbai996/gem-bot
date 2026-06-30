@@ -7,7 +7,7 @@ import { PersonaLoader } from './persona.ts'
 import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
 import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources, parseResponse, formatSystemPrompt, type ParsedResponse } from './gemini.ts'
-import { respondViaAgy } from './agy-chat.ts'
+import { respondViaAgy, warmAgy } from './agy-chat.ts'
 import { chunk } from './chunk.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
 import { addVoiceGroup, executeVoiceCommand } from './voice-commands.ts'
@@ -403,6 +403,7 @@ const speakTurnControllers = new Map<string, AbortController>()
 
 client.once('ready', async () => {
   console.error(`Gem online as ${client.user?.tag} (${client.user?.id})`)
+  warmAgy()
   client.user?.setPresence({
     status: 'online',
     activities: [{ name: '🗄️ indexing the rubble', type: ActivityType.Custom, state: '🗄️ indexing the rubble' }]

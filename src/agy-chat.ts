@@ -664,6 +664,20 @@ function parseAgyTrajectory(path: string): AgyTrajParse {
   return { thinking, tools, answer }
 }
 
+// Fire a trivial agy -p to prime the long-lived server process so the first
+// real Discord turn doesn't hit the cold-start auth race (exit code 1).
+export function warmAgy(): void {
+  if (process.env.GEMMA_AGY_CHAT !== '1') return
+  const child = spawn(AGY_BIN, ['--model', AGY_MODEL, '--print-timeout', '20s', '-p', 'ok'], {
+    env: { ...process.env, SQUAD_STORE_URL },
+    stdio: 'ignore',
+  })
+  child.on('close', (code) => {
+    if (code !== 0) console.error(`[agy] warm-up exited ${code} — first turn may still fall back`)
+    else console.error('[agy] warm-up ok')
+  })
+}
+
 export function normalizeAgyThinkingChunk(text: string): string {
   return text
     .split('\n')
