@@ -37,6 +37,8 @@ const AGY_BIN = process.env.GEMMA_AGY_BIN || '/home/jbai/.local/bin/agy'
 // Default to Medium. The .env overrides this anyway (GEMMA_AGY_MODEL=Gemini 3.5 Flash (Medium))
 // — this code default only matters when the .env doesn't set it, e.g. in tests.
 const AGY_MODEL = process.env.GEMMA_AGY_MODEL || 'Gemini 3.5 Flash (Medium)'
+// Extract the effort label from the model name, e.g. "Gemini 3.5 Flash (Medium)" → "medium"
+const AGY_EFFORT = (AGY_MODEL.match(/\(([^)]+)\)/)?.[1] ?? '').toLowerCase() || undefined
 
 // Chat-scale agy wait. `agy -p` is a blocking CLI call with no streaming event
 // channel; if it stalls, Discord just shows the thinking placeholder until this
@@ -809,5 +811,6 @@ export async function respondViaAgy(
     throw new AgyChatError('agy returned an unparseable / empty reply', 0)
   }
 
+  if (AGY_EFFORT) parsed.effort = AGY_EFFORT
   return { parsed, meta: { ...emptyMeta(), toolCalls } }
 }
