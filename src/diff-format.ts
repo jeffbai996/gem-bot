@@ -45,20 +45,30 @@ export function renderClaudeStyleDiff(diffText: string): string {
     else { rows.push({ marker: ' ', num: newLn, content: ln.startsWith(' ') ? ln.slice(1) : ln }); oldLn++; newLn++ }
   }
   if (!rows.length) return diffText // not a diff we understood — leave untouched
-  // Line NUMBER first in a fixed-width right-justified column, THEN the marker,
-  // THEN content — so the numbers line up on the left for EVERY row (context and
-  // changed alike), exactly like the Claude bots. Jeff 2026-07-01: "even for the
-  // lines that aren't edited, line up the numbers correctly on the left."
+  // Byte-for-byte the Claude bots' tool-trace diff (tool_watcher.py _diff_block +
+  // _tool_message_content). Jeff 2026-07-01: "just like the claude bots ones. Byte
+  // by byte, even the [+, -], all of it." So:
+  //   • MARKER FIRST at column 0 so Discord's ```diff highlighter colors the row
+  //     (+ green, - red); then the right-justified line number; then content.
+  //     "+ 5 content" / "- 5 content" / context "  5 content".
+  //   • a `⎿ [+N, -M]` badge line above the body (the counts).
+  // Context lines get ONE extra leading space so their content column lines up
+  // with the marker rows (matches _tool_message_content's 1-cell pad).
+  const added = rows.filter(r => r.marker === '+').length
+  const removed = rows.filter(r => r.marker === '-').length
   const width = Math.max(1, ...rows.filter(r => r.num !== null).map(r => String(r.num).length))
-  const contentMax = Math.max(8, TRACE_ROW_MAX - width - 3)
+  const contentMax = Math.max(8, TRACE_ROW_MAX - 3 - width)
   const body = rows.map(({ marker, num, content }) => {
     const capped = content.length <= DIFF_MEGA_LINE_MAX ? content : content.slice(0, DIFF_MEGA_LINE_MAX - 1) + '…'
     const clipped = capped.length <= contentMax ? capped : capped.slice(0, contentMax - 1) + '…'
     const numStr = String(num).padStart(width)
-    return `${numStr} ${marker} ${clipped}`
+    // Marker at col 0 for the colorizer; context uses a leading space so its
+    // content aligns one cell in, matching the +/- rows' "marker + space".
+    return marker === ' ' ? `  ${numStr} ${clipped}` : `${marker} ${numStr} ${clipped}`
   })
+  const badge = `⎿ [+${added}, -${removed}]`
   const headerBlock = header.length ? header.join('\n') + '\n' : ''
-  return '```diff\n' + headerBlock + body.join('\n') + '\n```'
+  return '```diff\n' + headerBlock + badge + '\n' + body.join('\n') + '\n```'
 }
 
 /** Find unified-diff blocks anywhere in reply text and Claude-ify them. Handles a
