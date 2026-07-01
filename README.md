@@ -174,7 +174,8 @@ Manage everything from inside Discord — no terminal-side JSON edits required. 
 | `/gemini thinking always\|auto\|collapse\|never [#channel]` | When/how to render the 💭 thinking block. `auto` = Gemma decides (default); `always` = force every reply; `collapse` = show it then strip after the linger; `never` = off |
 | `/gemini set <flag> <value> [#channel]` | Per-channel flags. `flag`: `show_code` (`true\|false`), `verbose` (`true\|false`), `require_mention` (`true\|false` — flip the @-mention gate without re-running `/gemini channel`) |
 | `/gemini engine agy\|api\|default [#channel]` | Per-channel chat engine. `agy` = Antigravity CLI / flat sub (no tool-trace); `api` = metered Gemini API (full tools + grounding + trace); `default` = clear the pick, use the `GEMMA_AGY_CHAT` env default. Media turns always use `api` |
-| `/gemini model <name>` | Switch the global Gemini model and auto-restart the bot. Choices include `gemini-3-flash-preview` (default), `gemini-3-pro-preview`, `gemini-3.5-flash`, `gemini-3.1-flash-lite-preview` |
+| `/gemini model api [id]` | Switch the metered Gemini API model (`GEMINI_MODEL`) and auto-restart the bot. Omit `id` to show the current one. Choices: `gemini-3-flash-preview` (default), `gemini-3-pro-preview`, `gemini-3.5-flash`, `gemini-3.1-flash-lite-preview` |
+| `/gemini model agy [agy_model]` | Switch the Antigravity CLI flat-sub model (`GEMMA_AGY_MODEL`) and auto-restart the bot. Omit `agy_model` to show the current one. Independent of `/gemini model api` — each only touches its own setting |
 | `/gemini cache on\|off [#channel]` | Toggle server-side context caching |
 | `/gemini cache info` | Live cache details — size, hits, age, TTL, hash |
 | `/gemini cache ttl <seconds> [#channel]` | Per-channel TTL override (60–86400; `0` resets to default) |

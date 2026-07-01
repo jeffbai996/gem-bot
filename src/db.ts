@@ -36,7 +36,36 @@ db.exec(`
     last_summarized_message_id TEXT NOT NULL,
     updated_at DATETIME NOT NULL
   );
+
+  -- One row per channel currently mid-turn, pointing at the Discord message
+  -- being live-edited (the "💭 Thinking..." placeholder / streaming reply).
+  -- Written when that message first exists, cleared in the turn's finally
+  -- block on any normal exit (success, handled error, barge-in abort). A row
+  -- left behind at startup means the PREVIOUS process died mid-turn (crash,
+  -- OOM, manual restart) before its own finally block could run — the
+  -- startup sweep in client.once('ready') uses this to find and settle those
+  -- orphaned messages instead of leaving them frozen forever. (Jeff
+  -- 2026-06-30 — mirrors the Claude bots' narrate.py "✗ Interrupted" pattern,
+  -- which needs a persisted marker for the same reason: the process that
+  -- would fix it up in-place is the one that's gone.)
+  CREATE TABLE IF NOT EXISTS in_flight_turns (
+    channel_id TEXT PRIMARY KEY,
+    message_id TEXT NOT NULL,
+    updated_at DATETIME NOT NULL
+  );
 `)
+
+// Lightweight migration guard: CREATE TABLE IF NOT EXISTS above is a no-op
+// once the table already exists, so a column added after first deploy (like
+// user_message_id, added 2026-06-30) needs an explicit ALTER TABLE or every
+// box that already created the old 3-column table crashes on boot with
+// "no column named user_message_id". Idempotent — checks before adding.
+{
+  const cols = db.prepare(`PRAGMA table_info(in_flight_turns)`).all() as Array<{ name: string }>
+  if (!cols.some(c => c.name === 'user_message_id')) {
+    db.exec(`ALTER TABLE in_flight_turns ADD COLUMN user_message_id TEXT`)
+  }
+}
 
 // Prepare statements for efficiency
 const insertMsgStmt = db.prepare(`
@@ -148,4 +177,39 @@ export function upsertSummary(channelId: string, summary: string, lastMessageId:
 
 export function getSummary(channelId: string): SummaryRow | null {
   return (getSummaryStmt.get(channelId) as SummaryRow | undefined) ?? null
+}
+
+const recordInFlightTurnStmt = db.prepare(`
+  INSERT INTO in_flight_turns (channel_id, message_id, user_message_id, updated_at)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT(channel_id) DO UPDATE SET
+    message_id = excluded.message_id,
+    user_message_id = excluded.user_message_id,
+    updated_at = excluded.updated_at
+`)
+
+const clearInFlightTurnStmt = db.prepare(`
+  DELETE FROM in_flight_turns WHERE channel_id = ?
+`)
+
+const getAllInFlightTurnsStmt = db.prepare(`
+  SELECT channel_id, message_id, user_message_id FROM in_flight_turns
+`)
+
+export interface InFlightTurnRow {
+  channel_id: string
+  message_id: string
+  user_message_id: string | null
+}
+
+export function recordInFlightTurn(channelId: string, messageId: string, userMessageId?: string): void {
+  recordInFlightTurnStmt.run(channelId, messageId, userMessageId ?? null, new Date().toISOString())
+}
+
+export function clearInFlightTurn(channelId: string): void {
+  clearInFlightTurnStmt.run(channelId)
+}
+
+export function getAllInFlightTurns(): InFlightTurnRow[] {
+  return getAllInFlightTurnsStmt.all() as InFlightTurnRow[]
 }
