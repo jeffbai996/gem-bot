@@ -753,17 +753,26 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // existing bot message, so there are no typing dots to show first.
     const PLACEHOLDER_DELAY_MS = parseInt(process.env.GEMMA_PLACEHOLDER_DELAY_MS ?? '2500', 10)
 
-    // Trailing snippet of live agy thinking text for the spinner — last ~300
-    // chars (most recent reasoning is the most relevant "what's it doing right
-    // now" signal), normalized + blockquoted to match the final thinking block's
-    // styling. Empty string when there's no live thinking yet (API engine, or
-    // agy hasn't written a thinking step to the trajectory file yet).
+    // Live agy thinking snippet for the spinner. Show the LEADING ~300 chars of
+    // the latest thinking (Gemma narrates top-down — the start reads as "what
+    // it's about to do", which is what we want live). Trim on a WORD boundary and
+    // append a trailing … if clipped. Was last-300 with a *leading* … — that
+    // sliced mid-word and rendered as "…w actively focusing on…", the stray
+    // leading ellipsis Jeff flagged 2026-07-01. Normalized + blockquoted to match
+    // the final block's styling. Empty when there's no live thinking yet (API
+    // engine, or agy hasn't written a thinking step to the trajectory yet).
+    const SNIPPET_MAX = 300
     const liveThinkingSnippet = (): string => {
       if (!liveAgyThinking) return ''
-      const tail = liveAgyThinking.length > 300
-        ? '…' + liveAgyThinking.slice(-300)
-        : liveAgyThinking
-      const clean = normalizeAgyThinkingChunk(tail).trim()
+      let head = liveAgyThinking
+      if (head.length > SNIPPET_MAX) {
+        // Cut at the last word boundary at/under the cap so we never clip a
+        // token mid-way, then a single trailing ellipsis.
+        const slice = head.slice(0, SNIPPET_MAX)
+        const lastSpace = slice.lastIndexOf(' ')
+        head = (lastSpace > SNIPPET_MAX * 0.6 ? slice.slice(0, lastSpace) : slice).trimEnd() + '…'
+      }
+      const clean = normalizeAgyThinkingChunk(head).trim()
       return clean ? `\n${quoteBlock(clean)}` : ''
     }
 
