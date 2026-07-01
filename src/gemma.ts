@@ -1535,6 +1535,20 @@ client.on('messageCreate', async (message: Message) => {
       }
       return
     }
+
+    // Barge-in (Jeff 2026-07-01): a new message cuts off the in-flight turn and takes
+    // over — but only when safe (canBarge: past the grace window; gem's tools are
+    // sandboxed so there's no destructive-tool case). Kill WITHOUT clearing the queue,
+    // then unshift to the FRONT so the running runChannelTurn's drain loop picks it up
+    // first as it unwinds. If not safe, fall through to the normal path (which queues +
+    // coalesces as before — no regression).
+    const st = channelTurns.get(message.channelId)
+    if (st?.running && activeTurns.canBarge(message.channelId)) {
+      activeTurns.stopFor(message.channelId, { clearQueue: false })
+      st.queue.unshift(message)
+      void message.react('\u{23ED}\u{FE0F}').catch(() => {})  // ⏭️ "barging — cutting in"
+      return
+    }
   }
 
   // Pending-edit check from ✏️ flow: if a bot message is marked as
