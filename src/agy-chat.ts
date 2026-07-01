@@ -87,6 +87,12 @@ export interface AgyChatInput {
   userName: string
   channelId?: string
   onEvent?: (event: LifecycleEvent) => void
+  // Abort signal from /gemini stop (via gemma.ts's stopController). When it
+  // fires we SIGKILL the agy process group so a user stop actually kills an
+  // in-flight agy turn — without this the agy child ran to completion and only
+  // the timeout backstop could kill it (Jeff 2026-07-01: "/gemini stop kept
+  // going"). The API path already honored this signal; the agy path didn't.
+  signal?: AbortSignal
 }
 
 // agy -p is single-shot with no conversation memory, so we bridge the whole
@@ -255,6 +261,7 @@ function runAgy(
   onEvent?: (e: LifecycleEvent) => void,
   trajBefore?: Map<string, number>,
   fingerprint?: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   const t0 = Date.now()
   // Flags MUST precede the `-p` positional: agy uses Go's flag parser, which
@@ -299,10 +306,21 @@ function runAgy(
     let out = ''
     let err = ''
     let timedOut = false
+    let stoppedByUser = false
     child.stdout!.on('data', (d) => { out += d.toString() })
     child.stderr!.on('data', (d) => { err += d.toString() })
 
     const timer = setTimeout(() => { timedOut = true; killTree() }, TIMEOUT_MS)
+
+    // /gemini stop → the AbortSignal fires → SIGKILL the agy process group so a
+    // user stop actually ends an in-flight agy turn (Jeff 2026-07-01). If the
+    // signal already aborted before spawn returned, kill immediately.
+    const onAbort = () => { stoppedByUser = true; killTree() }
+    if (signal) {
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }
+    const clearAbort = () => { if (signal) signal.removeEventListener('abort', onAbort) }
 
     // Live trajectory tail: while agy grinds (no stdout until done), poll its
     // trajectory file and fire tool_call_start for each new tool step so the
@@ -343,17 +361,25 @@ function runAgy(
 
     child.on('error', (e) => {
       clearTimeout(timer)
+      clearAbort()
       stopPoll()
       reject(new AgyChatError(`agy process error: ${e?.message ?? e}`, Date.now() - t0))
     })
-    child.on('close', (code, signal) => {
+    child.on('close', (code, closeSignal) => {
       clearTimeout(timer)
+      clearAbort()
       stopPoll()
+      if (stoppedByUser) {
+        // User /gemini stop killed it — a distinct error so the caller does NOT
+        // fall back to the API engine (which would answer anyway, defeating the
+        // stop). gemma.ts recognizes this via the AbortSignal being aborted.
+        return reject(new AgyChatError('agy stopped by user', Date.now() - t0))
+      }
       if (timedOut) {
         return reject(new AgyChatError(`agy timed out after ${Math.round((Date.now() - t0) / 1000)}s`, Date.now() - t0))
       }
       if (code !== 0) {
-        const why = signal ? `signal ${signal}` : `code ${code}`
+        const why = closeSignal ? `signal ${closeSignal}` : `code ${code}`
         // agy often exits non-zero with EMPTY stderr but writes the real error to
         // STDOUT (its CLI prints failures to stdout). Surface both so "(no stderr)"
         // stops hiding the cause (Jeff 2026-06-30: agy dying mid-flight, code 1, no
@@ -760,7 +786,7 @@ export async function respondViaAgy(
   // usually enough for the server to re-authenticate before we retry.
   let text: string
   try {
-    text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText)
+    text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText, input.signal)
   } catch (firstErr: any) {
     // Retry once on a transient agy failure before giving up to the tool-less API
     // engine (Jeff 2026-06-30: agy keeps dying mid-flight with exit code 1, which
@@ -769,6 +795,9 @@ export async function respondViaAgy(
     // / empty-output / spawn blip — those are overwhelmingly transient (token
     // refresh, a flaky MCP init, a backend hiccup) and a single retry recovers
     // them. A genuine hard error reproduces on the retry and still falls through.
+    // Never retry a user stop — the abort was intentional; re-running would
+    // resurrect the turn the user just killed (Jeff 2026-07-01).
+    if (input.signal?.aborted || firstErr.message?.includes('stopped by user')) throw firstErr
     const retriable = firstErr instanceof AgyChatError && (
       firstErr.message.includes('(no stderr)') ||
       firstErr.message.includes('(no output)') ||
@@ -777,7 +806,7 @@ export async function respondViaAgy(
     if (!retriable) throw firstErr
     console.error(`[agy] transient failure, retrying once: ${firstErr.message.slice(0, 200)}`)
     await new Promise(r => setTimeout(r, 3000))
-    text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText)
+    text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText, input.signal)
   }
   let parsed = parse(text)
 
