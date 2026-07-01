@@ -16,48 +16,46 @@ const RAW = `--- persona.md.bak.20260701\t2026-07-01 10:00:33
 test('renderClaudeStyleDiff: drops the ---/+++ timestamp headers', () => {
   const out = renderClaudeStyleDiff(RAW)
   assert.ok(!out.includes('2026-07-01 10:00:33'), 'timestamp gone')
-  assert.ok(!out.includes('.bak.20260701'), 'backup filename header gone')
-  assert.ok(!out.includes('persona.md'), 'file path header gone')
+  // File headers are KEPT (path only, no timestamp) — Jeff 2026-07-01.
+  assert.ok(out.includes('--- persona.md.bak.20260701'), 'kept --- header path')
+  assert.ok(out.includes('+++ persona.md'), 'kept +++ header path')
 })
 
 test('renderClaudeStyleDiff: drops the @@ hunk line but keeps its line numbers', () => {
   const out = renderClaudeStyleDiff(RAW)
   assert.ok(!out.includes('@@'), 'no @@ hunk header')
-  // hunk starts at line 3; the two context lines before the change are 3 and 4,
-  // then the -/+ change lands on line 5 (new side).
-  assert.match(out, /- +5 \*\*Humor: funny gallows/)
-  assert.match(out, /\+ +5 \*\*Humor: dry, deadpan wit/)
+  // hunk starts at line 3; context lines 3 and 4, then the -/+ change on line 5.
+  // Format is "<num> <marker> <content>" — number first.
+  assert.match(out, /^5 - \*\*Humor: funny gallows/m)
+  assert.match(out, /^5 \+ \*\*Humor: dry, deadpan wit/m)
 })
 
-test('renderClaudeStyleDiff: marker at column 0 inside a ```diff fence', () => {
+test('renderClaudeStyleDiff: line numbers align in a left column for ALL rows', () => {
   const out = renderClaudeStyleDiff(RAW)
   assert.ok(out.startsWith('```diff\n'), 'opens a diff fence')
   assert.ok(out.trimEnd().endsWith('```'), 'closes the fence')
-  // Every +/- body row must have its marker at col 0 so Discord colorizes it.
-  for (const ln of out.split('\n')) {
-    if (ln === '```diff' || ln === '```') continue
-    if (ln.startsWith('+') || ln.startsWith('-')) {
-      assert.match(ln, /^[+-] +\d+ /, `marker+lineno gutter: ${JSON.stringify(ln)}`)
-    }
-  }
+  // Number FIRST, then marker (space for context, +/- for changes), then content.
+  // The number column is what must line up — context and changed rows alike.
+  assert.match(out, /^3 {3}\*\*Tone\*\*/m, 'context row: num then 3 spaces (space-marker + 2 sep)')
+  assert.match(out, /^5 - /m, 'removed row: num then - marker')
+  assert.match(out, /^5 \+ /m, 'added row: num then + marker')
 })
 
-test('renderClaudeStyleDiff: line-number gutter is right-justified / aligned', () => {
-  // A hunk crossing a 9→10 boundary must pad the single-digit numbers so the
-  // content column stays aligned.
+test('renderClaudeStyleDiff: line-number column right-justifies across a 9→10 boundary', () => {
   const raw = `--- a\t2026-01-01
 +++ b\t2026-01-01
-@@ -9,3 +9,3 @@
+@@ -8,4 +8,4 @@
+ ctx eight
  ctx nine
 -old ten
 +new ten`
   const out = renderClaudeStyleDiff(raw)
-  // width=2 (max lineno is 10), so "9" is padded to " 9". Context line: leading
-  // space + " 9" → "  9 ctx". Change lines: "- 10 old" / "+ 10 new". Content
-  // column stays aligned across the single/double-digit boundary.
-  assert.match(out, /^  9 ctx nine$/m, `single-digit padded: ${JSON.stringify(out)}`)
-  assert.match(out, /^- 10 old ten$/m, `double-digit removed: ${JSON.stringify(out)}`)
-  assert.match(out, /^\+ 10 new ten$/m, `double-digit added: ${JSON.stringify(out)}`)
+  // width=2 (max lineno is 10), so "8"/"9" pad to " 8"/" 9" and all numbers end
+  // in the same column: " 8 ", " 9 ", "10 ", "10 ".
+  assert.match(out, /^ 8 {3}ctx eight$/m, `pad 8: ${JSON.stringify(out)}`)
+  assert.match(out, /^ 9 {3}ctx nine$/m, 'pad 9')
+  assert.match(out, /^10 - old ten$/m, 'ten removed')
+  assert.match(out, /^10 \+ new ten$/m, 'ten added')
 })
 
 test('reformatUnifiedDiffs: rewrites a bare (unfenced) diff in prose', () => {
@@ -71,7 +69,8 @@ test('reformatUnifiedDiffs: rewrites a bare (unfenced) diff in prose', () => {
 test('reformatUnifiedDiffs: rewrites a diff already inside a ``` fence', () => {
   const reply = 'Change:\n```\n' + RAW + '\n```'
   const out = reformatUnifiedDiffs(reply)
-  assert.ok(!out.includes('.bak.20260701'), 'header stripped inside fenced diff')
+  assert.ok(!out.includes('2026-07-01 10:00:33'), 'timestamp stripped inside fenced diff')
+  assert.ok(out.includes('--- persona.md.bak.20260701'), 'header path kept')
   assert.match(out, /```diff/)
 })
 
