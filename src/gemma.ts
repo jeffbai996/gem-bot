@@ -24,7 +24,7 @@ import { PinnedFactsStore } from './pinned-facts.ts'
 import { handleReaction } from './reactions/handler.ts'
 import { SummaryStore } from './summarization/store.ts'
 import { SummarizationScheduler } from './summarization/scheduler.ts'
-import { fetchMessagesSince } from './db.ts'
+import { fetchMessagesSince, recordInFlightTurn, clearInFlightTurn, getAllInFlightTurns } from './db.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
@@ -105,7 +105,10 @@ async function replaceActiveMessage(
   }
 
   const msg = await sendReply(message, content, files)
-  if (msg) activeMessages[index] = msg as Message
+  if (msg) {
+    activeMessages[index] = msg as Message
+    if (index === 0) recordInFlightTurn(message.channelId, msg.id, message.id)
+  }
 }
 
 function headingsToBold(t: string): string {
@@ -460,6 +463,36 @@ client.once('ready', async () => {
     activities: [{ name: '🗄️ indexing the rubble', type: ActivityType.Custom, state: '🗄️ indexing the rubble' }]
   })
 
+  // Sweep turns left in-flight by the PREVIOUS process (crash, OOM, manual
+  // restart mid-turn) — anything still in this table means that process died
+  // before reaching its own finally block, so the "Thinking..." placeholder
+  // for it is frozen forever with nothing coming back to finish it. Matches
+  // gpt-bot/llm-bot's pending-placeholders.ts pattern exactly: bare
+  // "✗ **Interrupted**" (no emoji prefix, no extra copy — narrate.py and the
+  // other bots don't duplicate the notice either), plus a ❌ react on the
+  // user's original message so the interruption is visible even after
+  // scrolling past the placeholder. (Jeff 2026-06-30, after a restart killed
+  // a live turn mid-tool-call — "match the pattern of the other bots.")
+  for (const turn of getAllInFlightTurns()) {
+    try {
+      const channel = await client.channels.fetch(turn.channel_id)
+      if (channel?.isTextBased() && 'messages' in channel) {
+        const stuck = await channel.messages.fetch(turn.message_id)
+        await stuck.edit('✗ **Interrupted**')
+        if (turn.user_message_id) {
+          try {
+            const userMsg = await channel.messages.fetch(turn.user_message_id)
+            await userMsg.react('❌')
+          } catch { /* original message gone */ }
+        }
+      }
+    } catch (e) {
+      console.error(`[startup] failed to settle orphaned turn (channel=${turn.channel_id} message=${turn.message_id}):`, e)
+    } finally {
+      clearInFlightTurn(turn.channel_id)
+    }
+  }
+
   try {
     const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN)
     await rest.put(
@@ -755,13 +788,17 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
       if (activeMessages.length > 0) { startSpinner(); return }
       const initialMsg = await sendReply(message, `💭 **${thinkingLabel}…**`)
-      if (initialMsg) activeMessages.push(initialMsg as Message)
+      if (initialMsg) {
+        activeMessages.push(initialMsg as Message)
+        recordInFlightTurn(message.channelId, initialMsg.id, message.id)
+      }
       startSpinner()
     }
 
     if (opts.editTarget) {
       // Regenerate: reuse the existing bot message immediately, spinner on.
       activeMessages.push(opts.editTarget)
+      recordInFlightTurn(message.channelId, opts.editTarget.id, message.id)
       await opts.editTarget.edit(`💭 **${thinkingLabel}…**`).catch(() => {})
       startSpinner()
     } else if (flags.thinking === 'collapse') {
@@ -958,6 +995,15 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     } else {
       ({ parsed, meta } = await apiRespond())
     }
+    // Keep flushStream's view in sync with the real result. apiRespond's
+    // streaming callback already does this incrementally (line ~917), but the
+    // agy path never touches latestParsed at all — it only returns `parsed`
+    // once, on completion. Without this, the "one last flush" call below
+    // reads a still-null latestParsed.reply, falls into the empty-fallback
+    // branch, and briefly overwrites the just-finished reply with a bare
+    // "💭 Thinking…" before the real final render corrects it a moment later
+    // (Jeff 2026-06-30 — the "Thinking… flash after the reply" bug report).
+    latestParsed = parsed
     const respondElapsedMs = Date.now() - respondT0
 
     if (streamInterval) {
@@ -1073,11 +1119,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // Single line, no trailing colon (Jeff 2026-06-30). Was two stacked 💭
       // lines — a leftover "Thinking with X effort…" line ABOVE "Thought for
       // Ns:" — which read as the spinner placeholder never clearing, even
-      // though it's actually the final header building in both pieces. Effort
-      // folds into the same line instead of its own line.
+      // though it's actually the final header building in both pieces.
+      // Effort suffix dropped entirely (Jeff 2026-06-30) — always just
+      // "Thought for Ns" regardless of effort/model choice.
       const thoughtSecs = Math.round(respondElapsedMs / 1000)
-      const effortSuffix = effort ? ` (${effort} effort)` : ''
-      const header = `💭 **Thought for ${thoughtSecs}s${effortSuffix}**`
+      const header = `💭 **Thought for ${thoughtSecs}s**`
       if (parsed.thinking) {
         thinkingMessage += renderThoughtBlock(header, parsed.thinking) + '\n\n'
       } else {
@@ -1404,6 +1450,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     } catch { /* nothing to do */ }
   } finally {
     activeTurns.done(message.channelId)
+    clearInFlightTurn(message.channelId)
     await stopThinkingAnim()
     if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
     if (typingInterval) clearInterval(typingInterval)
