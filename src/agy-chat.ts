@@ -177,6 +177,10 @@ function buildPrompt(input: AgyChatInput): string {
     '- Read a file ONCE. Never re-read what you just read.\n' +
     '- Run a shell command ONCE per operation. Never re-run to "verify" it worked.\n' +
     '- Do NOT loop on git operations (stash/apply/diff). Do what is needed, once.\n' +
+    '- To CHANGE a file, use the write_to_file tool — NOT a shell `sed`/redirect/`patch`, and do NOT ' +
+    "run `diff` and paste its output into your reply. write_to_file's edit is surfaced automatically as a " +
+    "clean line-numbered diff card above your reply (like the Claude bots), so the user always SEES the change; " +
+    'a shelled diff or pasted patch is redundant and ugly. Just make the edit with write_to_file and describe it in prose.\n' +
     '- If the task is simple (explain, answer, summarize), do NOT open any tools at all — just reply.\n' +
     '- After ≤3 tool calls, stop, synthesize what you found, and write your reply.\n' +
     '- Prefer the MCP tools (vecgrep, ibkr) over shelling out when they apply — they are one call, not a shell loop.\n' +
