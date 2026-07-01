@@ -21,11 +21,20 @@ const DIFF_MEGA_LINE_MAX = 300
  *  block. Returns the input unchanged if it doesn't parse as a diff. */
 export function renderClaudeStyleDiff(diffText: string): string {
   const lines = diffText.split('\n')
+  // Keep the file-header lines but STRIP the trailing timestamp `diff -u` appends
+  // (path and timestamp are tab- or run-of-spaces-separated). Jeff 2026-07-01:
+  // "file headers are fine, just no need for the timestamp".
+  const header: string[] = []
   let oldLn = 0, newLn = 0
   const rows: Array<{ marker: string; num: number | null; content: string }> = []
   let sawHunk = false
   for (const ln of lines) {
-    if (ln.startsWith('--- ') || ln.startsWith('+++ ')) continue // file headers (+ timestamps)
+    if (ln.startsWith('--- ') || ln.startsWith('+++ ')) {
+      // Drop the timestamp: everything after the first tab, or after 2+ spaces.
+      const path = ln.replace(/[\t ]{1,}\d{4}-\d\d-\d\d[ \t].*$/, '').replace(/\t.*$/, '').trimEnd()
+      header.push(path)
+      continue
+    }
     if (ln.startsWith('diff ') || ln.startsWith('index ')) continue // git preamble, if present
     const m = ln.match(_HUNK_RE)
     if (m) { oldLn = parseInt(m[1], 10); newLn = parseInt(m[2], 10); sawHunk = true; continue }
@@ -36,17 +45,20 @@ export function renderClaudeStyleDiff(diffText: string): string {
     else { rows.push({ marker: ' ', num: newLn, content: ln.startsWith(' ') ? ln.slice(1) : ln }); oldLn++; newLn++ }
   }
   if (!rows.length) return diffText // not a diff we understood — leave untouched
+  // Line NUMBER first in a fixed-width right-justified column, THEN the marker,
+  // THEN content — so the numbers line up on the left for EVERY row (context and
+  // changed alike), exactly like the Claude bots. Jeff 2026-07-01: "even for the
+  // lines that aren't edited, line up the numbers correctly on the left."
   const width = Math.max(1, ...rows.filter(r => r.num !== null).map(r => String(r.num).length))
-  const contentMax = Math.max(8, TRACE_ROW_MAX - 3 - width)
+  const contentMax = Math.max(8, TRACE_ROW_MAX - width - 3)
   const body = rows.map(({ marker, num, content }) => {
     const capped = content.length <= DIFF_MEGA_LINE_MAX ? content : content.slice(0, DIFF_MEGA_LINE_MAX - 1) + '…'
     const clipped = capped.length <= contentMax ? capped : capped.slice(0, contentMax - 1) + '…'
     const numStr = String(num).padStart(width)
-    // Context lines get a leading space so their content column lines up with the
-    // marker (+/-) lines — matches tool_watcher's pad compensation.
-    return marker === ' ' ? ` ${numStr} ${clipped}` : `${marker} ${numStr} ${clipped}`
+    return `${numStr} ${marker} ${clipped}`
   })
-  return '```diff\n' + body.join('\n') + '\n```'
+  const headerBlock = header.length ? header.join('\n') + '\n' : ''
+  return '```diff\n' + headerBlock + body.join('\n') + '\n```'
 }
 
 /** Find unified-diff blocks anywhere in reply text and Claude-ify them. Handles a
