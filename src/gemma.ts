@@ -9,6 +9,7 @@ import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
 import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources, parseResponse, formatSystemPrompt, type ParsedResponse } from './gemini.ts'
 import { respondViaAgy, warmAgy, normalizeAgyThinkingChunk } from './agy-chat.ts'
+import { reformatUnifiedDiffs } from './diff-format.ts'
 import { chunk } from './chunk.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
 import { addVoiceGroup, executeVoiceCommand } from './voice-commands.ts'
@@ -1167,7 +1168,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // footer / sources / metadata pattern the model might hallucinate (learned
     // from past turns where the bot stamped footers).
     const replyText = parsed.reply
-      ? headingsToBold(stripBotMetadata(stripFileLinks(stripDuplicateCodeBlocks(parsed.reply, meta.codeArtifacts))))
+      ? reformatUnifiedDiffs(headingsToBold(stripBotMetadata(stripFileLinks(stripDuplicateCodeBlocks(parsed.reply, meta.codeArtifacts)))))
       : null
     if (replyText) {
       finalFullReply += replyText
