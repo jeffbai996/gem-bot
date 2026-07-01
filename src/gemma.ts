@@ -992,8 +992,18 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           userName: message.author.username,
           channelId: message.channelId,
           onEvent: onLifecycleEvent,
+          signal: combinedSignal,  // /gemini stop → SIGKILLs the agy process group
         }, parseResponse))
       } catch (e) {
+        // /gemini stop killed the agy turn — do NOT fall back to the API (that
+        // would answer anyway, defeating the stop). Re-throw as an AbortError so
+        // it hits the clean-exit handler below (deletes the placeholder, silences
+        // the turn) exactly like the API-path abort (Jeff 2026-07-01).
+        if (combinedSignal.aborted) {
+          const abortErr = new Error('agy turn stopped by user')
+          abortErr.name = 'AbortError'
+          throw abortErr
+        }
         // agy failed (timeout / empty / exec error) — fall back to the metered
         // API so the user still gets an answer, but FLAG it: the API path can't
         // shell/read files, so this turn quietly lost those capabilities.
