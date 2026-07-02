@@ -304,9 +304,22 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
       : d < 5000 ? ''
       : ` [${Math.round(d / 1000)}s]`
     const tailStr = tail + ms
-    const name = shortToolName(call.name)
+    let name = shortToolName(call.name)
+    let displayArgs = call.args
 
-    const hasArgs = call.args && typeof call.args === 'object' && Object.keys(call.args).length > 0
+    if (call.name === 'call_mcp_tool' && call.args && typeof call.args === 'object') {
+      const toolName = String(call.args.ToolName || '')
+      name = shortToolName(toolName)
+      let innerArgs = call.args.Arguments && typeof call.args.Arguments === 'object'
+        ? (call.args.Arguments as Record<string, unknown>)
+        : {}
+      if (innerArgs.params && typeof innerArgs.params === 'object') {
+        innerArgs = innerArgs.params as Record<string, unknown>
+      }
+      displayArgs = innerArgs
+    }
+
+    const hasArgs = displayArgs && typeof displayArgs === 'object' && Object.keys(displayArgs).length > 0
     let argPart = ''
     if (hasArgs) {
       // HEADER_LINE_MAX 84 (Jeff 2026-06-30): cap lines at ~84 so a long row never
@@ -314,7 +327,7 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
       // bit more command/arg, but kept tight — 84 is the practical max before wrap.
       // prefix 4 + name + () 2 + tailStr → digest gets the rest of 84.
       const budget = 84 - 4 - name.length - 2 - tailStr.length
-      const digest = argDigest(call.args, budget)
+      const digest = argDigest(displayArgs, budget)
       argPart = digest ? `(${digest})` : ''
     }
 
