@@ -762,7 +762,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // leading ellipsis Jeff flagged 2026-07-01. Normalized + blockquoted to match
     // the final block's styling. Empty when there's no live thinking yet (API
     // engine, or agy hasn't written a thinking step to the trajectory yet).
-    const SNIPPET_MAX = 300
+    // Bumped 300 → 1200 (Jeff 2026-07-02): show much more of the live thinking
+    // tail in the spinner instead of the full rolling-segment port (that's the
+    // real narrate.py parity, deferred as low value-to-risk). 1200 leaves ~800
+    // char headroom under Discord's 2000 cap for the header + blockquote markup.
+    const SNIPPET_MAX = 1200
     const liveThinkingSnippet = (): string => {
       if (!liveAgyThinking) return ''
       let head = liveAgyThinking
