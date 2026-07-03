@@ -9,6 +9,7 @@ import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
 import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources, parseResponse, formatSystemPrompt, type ParsedResponse } from './gemini.ts'
 import { respondViaAgy, warmAgy, normalizeAgyThinkingChunk } from './agy-chat.ts'
+import { reformatUnifiedDiffs } from './diff-format.ts'
 import { chunk } from './chunk.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
 import { addVoiceGroup, executeVoiceCommand } from './voice-commands.ts'
@@ -24,7 +25,7 @@ import { PinnedFactsStore } from './pinned-facts.ts'
 import { handleReaction } from './reactions/handler.ts'
 import { SummaryStore } from './summarization/store.ts'
 import { SummarizationScheduler } from './summarization/scheduler.ts'
-import { fetchMessagesSince } from './db.ts'
+import { fetchMessagesSince, recordInFlightTurn, clearInFlightTurn, getAllInFlightTurns } from './db.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
@@ -105,7 +106,10 @@ async function replaceActiveMessage(
   }
 
   const msg = await sendReply(message, content, files)
-  if (msg) activeMessages[index] = msg as Message
+  if (msg) {
+    activeMessages[index] = msg as Message
+    if (index === 0) recordInFlightTurn(message.channelId, msg.id, message.id)
+  }
 }
 
 function headingsToBold(t: string): string {
@@ -300,9 +304,22 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
       : d < 5000 ? ''
       : ` [${Math.round(d / 1000)}s]`
     const tailStr = tail + ms
-    const name = shortToolName(call.name)
+    let name = shortToolName(call.name)
+    let displayArgs = call.args
 
-    const hasArgs = call.args && typeof call.args === 'object' && Object.keys(call.args).length > 0
+    if (call.name === 'call_mcp_tool' && call.args && typeof call.args === 'object') {
+      const toolName = String(call.args.ToolName || '')
+      name = shortToolName(toolName)
+      let innerArgs = call.args.Arguments && typeof call.args.Arguments === 'object'
+        ? (call.args.Arguments as Record<string, unknown>)
+        : {}
+      if (innerArgs.params && typeof innerArgs.params === 'object') {
+        innerArgs = innerArgs.params as Record<string, unknown>
+      }
+      displayArgs = innerArgs
+    }
+
+    const hasArgs = displayArgs && typeof displayArgs === 'object' && Object.keys(displayArgs).length > 0
     let argPart = ''
     if (hasArgs) {
       // HEADER_LINE_MAX 84 (Jeff 2026-06-30): cap lines at ~84 so a long row never
@@ -310,7 +327,7 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
       // bit more command/arg, but kept tight — 84 is the practical max before wrap.
       // prefix 4 + name + () 2 + tailStr → digest gets the rest of 84.
       const budget = 84 - 4 - name.length - 2 - tailStr.length
-      const digest = argDigest(call.args, budget)
+      const digest = argDigest(displayArgs, budget)
       argPart = digest ? `(${digest})` : ''
     }
 
@@ -459,6 +476,36 @@ client.once('ready', async () => {
     status: 'online',
     activities: [{ name: '🗄️ indexing the rubble', type: ActivityType.Custom, state: '🗄️ indexing the rubble' }]
   })
+
+  // Sweep turns left in-flight by the PREVIOUS process (crash, OOM, manual
+  // restart mid-turn) — anything still in this table means that process died
+  // before reaching its own finally block, so the "Thinking..." placeholder
+  // for it is frozen forever with nothing coming back to finish it. Matches
+  // gpt-bot/llm-bot's pending-placeholders.ts pattern exactly: bare
+  // "✗ **Interrupted**" (no emoji prefix, no extra copy — narrate.py and the
+  // other bots don't duplicate the notice either), plus a ❌ react on the
+  // user's original message so the interruption is visible even after
+  // scrolling past the placeholder. (Jeff 2026-06-30, after a restart killed
+  // a live turn mid-tool-call — "match the pattern of the other bots.")
+  for (const turn of getAllInFlightTurns()) {
+    try {
+      const channel = await client.channels.fetch(turn.channel_id)
+      if (channel?.isTextBased() && 'messages' in channel) {
+        const stuck = await channel.messages.fetch(turn.message_id)
+        await stuck.edit('✗ **Interrupted**')
+        if (turn.user_message_id) {
+          try {
+            const userMsg = await channel.messages.fetch(turn.user_message_id)
+            await userMsg.react('❌')
+          } catch { /* original message gone */ }
+        }
+      }
+    } catch (e) {
+      console.error(`[startup] failed to settle orphaned turn (channel=${turn.channel_id} message=${turn.message_id}):`, e)
+    } finally {
+      clearInFlightTurn(turn.channel_id)
+    }
+  }
 
   try {
     const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN)
@@ -720,17 +767,30 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // existing bot message, so there are no typing dots to show first.
     const PLACEHOLDER_DELAY_MS = parseInt(process.env.GEMMA_PLACEHOLDER_DELAY_MS ?? '2500', 10)
 
-    // Trailing snippet of live agy thinking text for the spinner — last ~300
-    // chars (most recent reasoning is the most relevant "what's it doing right
-    // now" signal), normalized + blockquoted to match the final thinking block's
-    // styling. Empty string when there's no live thinking yet (API engine, or
-    // agy hasn't written a thinking step to the trajectory file yet).
+    // Live agy thinking snippet for the spinner. Show the LEADING ~300 chars of
+    // the latest thinking (Gemma narrates top-down — the start reads as "what
+    // it's about to do", which is what we want live). Trim on a WORD boundary and
+    // append a trailing … if clipped. Was last-300 with a *leading* … — that
+    // sliced mid-word and rendered as "…w actively focusing on…", the stray
+    // leading ellipsis Jeff flagged 2026-07-01. Normalized + blockquoted to match
+    // the final block's styling. Empty when there's no live thinking yet (API
+    // engine, or agy hasn't written a thinking step to the trajectory yet).
+    // Bumped 300 → 1200 (Jeff 2026-07-02): show much more of the live thinking
+    // tail in the spinner instead of the full rolling-segment port (that's the
+    // real narrate.py parity, deferred as low value-to-risk). 1200 leaves ~800
+    // char headroom under Discord's 2000 cap for the header + blockquote markup.
+    const SNIPPET_MAX = 1200
     const liveThinkingSnippet = (): string => {
       if (!liveAgyThinking) return ''
-      const tail = liveAgyThinking.length > 300
-        ? '…' + liveAgyThinking.slice(-300)
-        : liveAgyThinking
-      const clean = normalizeAgyThinkingChunk(tail).trim()
+      let head = liveAgyThinking
+      if (head.length > SNIPPET_MAX) {
+        // Cut at the last word boundary at/under the cap so we never clip a
+        // token mid-way, then a single trailing ellipsis.
+        const slice = head.slice(0, SNIPPET_MAX)
+        const lastSpace = slice.lastIndexOf(' ')
+        head = (lastSpace > SNIPPET_MAX * 0.6 ? slice.slice(0, lastSpace) : slice).trimEnd() + '…'
+      }
+      const clean = normalizeAgyThinkingChunk(head).trim()
       return clean ? `\n${quoteBlock(clean)}` : ''
     }
 
@@ -755,13 +815,17 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
       if (activeMessages.length > 0) { startSpinner(); return }
       const initialMsg = await sendReply(message, `💭 **${thinkingLabel}…**`)
-      if (initialMsg) activeMessages.push(initialMsg as Message)
+      if (initialMsg) {
+        activeMessages.push(initialMsg as Message)
+        recordInFlightTurn(message.channelId, initialMsg.id, message.id)
+      }
       startSpinner()
     }
 
     if (opts.editTarget) {
       // Regenerate: reuse the existing bot message immediately, spinner on.
       activeMessages.push(opts.editTarget)
+      recordInFlightTurn(message.channelId, opts.editTarget.id, message.id)
       await opts.editTarget.edit(`💭 **${thinkingLabel}…**`).catch(() => {})
       startSpinner()
     } else if (flags.thinking === 'collapse') {
@@ -946,8 +1010,18 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           userName: message.author.username,
           channelId: message.channelId,
           onEvent: onLifecycleEvent,
+          signal: combinedSignal,  // /gemini stop → SIGKILLs the agy process group
         }, parseResponse))
       } catch (e) {
+        // /gemini stop killed the agy turn — do NOT fall back to the API (that
+        // would answer anyway, defeating the stop). Re-throw as an AbortError so
+        // it hits the clean-exit handler below (deletes the placeholder, silences
+        // the turn) exactly like the API-path abort (Jeff 2026-07-01).
+        if (combinedSignal.aborted) {
+          const abortErr = new Error('agy turn stopped by user')
+          abortErr.name = 'AbortError'
+          throw abortErr
+        }
         // agy failed (timeout / empty / exec error) — fall back to the metered
         // API so the user still gets an answer, but FLAG it: the API path can't
         // shell/read files, so this turn quietly lost those capabilities.
@@ -958,6 +1032,15 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     } else {
       ({ parsed, meta } = await apiRespond())
     }
+    // Keep flushStream's view in sync with the real result. apiRespond's
+    // streaming callback already does this incrementally (line ~917), but the
+    // agy path never touches latestParsed at all — it only returns `parsed`
+    // once, on completion. Without this, the "one last flush" call below
+    // reads a still-null latestParsed.reply, falls into the empty-fallback
+    // branch, and briefly overwrites the just-finished reply with a bare
+    // "💭 Thinking…" before the real final render corrects it a moment later
+    // (Jeff 2026-06-30 — the "Thinking… flash after the reply" bug report).
+    latestParsed = parsed
     const respondElapsedMs = Date.now() - respondT0
 
     if (streamInterval) {
@@ -1073,11 +1156,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // Single line, no trailing colon (Jeff 2026-06-30). Was two stacked 💭
       // lines — a leftover "Thinking with X effort…" line ABOVE "Thought for
       // Ns:" — which read as the spinner placeholder never clearing, even
-      // though it's actually the final header building in both pieces. Effort
-      // folds into the same line instead of its own line.
+      // though it's actually the final header building in both pieces.
+      // Effort suffix dropped entirely (Jeff 2026-06-30) — always just
+      // "Thought for Ns" regardless of effort/model choice.
       const thoughtSecs = Math.round(respondElapsedMs / 1000)
-      const effortSuffix = effort ? ` (${effort} effort)` : ''
-      const header = `💭 **Thought for ${thoughtSecs}s${effortSuffix}**`
+      const header = `💭 **Thought for ${thoughtSecs}s**`
       if (parsed.thinking) {
         thinkingMessage += renderThoughtBlock(header, parsed.thinking) + '\n\n'
       } else {
@@ -1102,7 +1185,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // footer / sources / metadata pattern the model might hallucinate (learned
     // from past turns where the bot stamped footers).
     const replyText = parsed.reply
-      ? headingsToBold(stripBotMetadata(stripFileLinks(stripDuplicateCodeBlocks(parsed.reply, meta.codeArtifacts))))
+      ? reformatUnifiedDiffs(headingsToBold(stripBotMetadata(stripFileLinks(stripDuplicateCodeBlocks(parsed.reply, meta.codeArtifacts)))))
       : null
     if (replyText) {
       finalFullReply += replyText
@@ -1404,6 +1487,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     } catch { /* nothing to do */ }
   } finally {
     activeTurns.done(message.channelId)
+    clearInFlightTurn(message.channelId)
     await stopThinkingAnim()
     if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
     if (typingInterval) clearInterval(typingInterval)
@@ -1486,6 +1570,20 @@ client.on('messageCreate', async (message: Message) => {
           .catch(() => null)
         if (m) m.react?.('🔁').catch(() => {})
       }
+      return
+    }
+
+    // Barge-in (Jeff 2026-07-01): a new message cuts off the in-flight turn and takes
+    // over — but only when safe (canBarge: past the grace window; gem's tools are
+    // sandboxed so there's no destructive-tool case). Kill WITHOUT clearing the queue,
+    // then unshift to the FRONT so the running runChannelTurn's drain loop picks it up
+    // first as it unwinds. If not safe, fall through to the normal path (which queues +
+    // coalesces as before — no regression).
+    const st = channelTurns.get(message.channelId)
+    if (st?.running && activeTurns.canBarge(message.channelId)) {
+      activeTurns.stopFor(message.channelId, { clearQueue: false })
+      st.queue.unshift(message)
+      void message.react('\u{23ED}\u{FE0F}').catch(() => {})  // ⏭️ "barging — cutting in"
       return
     }
   }

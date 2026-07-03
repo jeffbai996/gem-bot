@@ -87,6 +87,12 @@ export interface AgyChatInput {
   userName: string
   channelId?: string
   onEvent?: (event: LifecycleEvent) => void
+  // Abort signal from /gemini stop (via gemma.ts's stopController). When it
+  // fires we SIGKILL the agy process group so a user stop actually kills an
+  // in-flight agy turn — without this the agy child ran to completion and only
+  // the timeout backstop could kill it (Jeff 2026-07-01: "/gemini stop kept
+  // going"). The API path already honored this signal; the agy path didn't.
+  signal?: AbortSignal
 }
 
 // agy -p is single-shot with no conversation memory, so we bridge the whole
@@ -171,7 +177,11 @@ function buildPrompt(input: AgyChatInput): string {
     '- Read a file ONCE. Never re-read what you just read.\n' +
     '- Run a shell command ONCE per operation. Never re-run to "verify" it worked.\n' +
     '- Do NOT loop on git operations (stash/apply/diff). Do what is needed, once.\n' +
-    '- If the task is simple (explain, answer, summarize), do NOT open any tools at all — just reply.\n' +
+    '- To CHANGE a file, use the write_to_file tool — NOT a shell `sed`/redirect/`patch`, and do NOT ' +
+    "run `diff` and paste its output into your reply. write_to_file's edit is surfaced automatically as a " +
+    "clean line-numbered diff card above your reply (like the Claude bots), so the user always SEES the change; " +
+    'a shelled diff or pasted patch is redundant and ugly. Just make the edit with write_to_file and describe it in prose.\n' +
+    '- If the task is simple (explain, answer, summarize, general knowledge, or conversational chat), do NOT open any tools at all — just reply directly from your training data or context. "here" refers to the user\'s real-world location (British Columbia/Pacific Northwest), NOT the codebase or system workspace. Do NOT grep the codebase for conversational/real-world words (like "invasives" or "beans").\n' +
     '- After ≤3 tool calls, stop, synthesize what you found, and write your reply.\n' +
     '- Prefer the MCP tools (vecgrep, ibkr) over shelling out when they apply — they are one call, not a shell loop.\n' +
     'Violating this rule means the user waits 5+ minutes for a simple answer. Be fast and decisive.'
@@ -255,6 +265,7 @@ function runAgy(
   onEvent?: (e: LifecycleEvent) => void,
   trajBefore?: Map<string, number>,
   fingerprint?: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   const t0 = Date.now()
   // Flags MUST precede the `-p` positional: agy uses Go's flag parser, which
@@ -299,10 +310,21 @@ function runAgy(
     let out = ''
     let err = ''
     let timedOut = false
+    let stoppedByUser = false
     child.stdout!.on('data', (d) => { out += d.toString() })
     child.stderr!.on('data', (d) => { err += d.toString() })
 
     const timer = setTimeout(() => { timedOut = true; killTree() }, TIMEOUT_MS)
+
+    // /gemini stop → the AbortSignal fires → SIGKILL the agy process group so a
+    // user stop actually ends an in-flight agy turn (Jeff 2026-07-01). If the
+    // signal already aborted before spawn returned, kill immediately.
+    const onAbort = () => { stoppedByUser = true; killTree() }
+    if (signal) {
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }
+    const clearAbort = () => { if (signal) signal.removeEventListener('abort', onAbort) }
 
     // Live trajectory tail: while agy grinds (no stdout until done), poll its
     // trajectory file and fire tool_call_start for each new tool step so the
@@ -343,17 +365,25 @@ function runAgy(
 
     child.on('error', (e) => {
       clearTimeout(timer)
+      clearAbort()
       stopPoll()
       reject(new AgyChatError(`agy process error: ${e?.message ?? e}`, Date.now() - t0))
     })
-    child.on('close', (code, signal) => {
+    child.on('close', (code, closeSignal) => {
       clearTimeout(timer)
+      clearAbort()
       stopPoll()
+      if (stoppedByUser) {
+        // User /gemini stop killed it — a distinct error so the caller does NOT
+        // fall back to the API engine (which would answer anyway, defeating the
+        // stop). gemma.ts recognizes this via the AbortSignal being aborted.
+        return reject(new AgyChatError('agy stopped by user', Date.now() - t0))
+      }
       if (timedOut) {
         return reject(new AgyChatError(`agy timed out after ${Math.round((Date.now() - t0) / 1000)}s`, Date.now() - t0))
       }
       if (code !== 0) {
-        const why = signal ? `signal ${signal}` : `code ${code}`
+        const why = closeSignal ? `signal ${closeSignal}` : `code ${code}`
         // agy often exits non-zero with EMPTY stderr but writes the real error to
         // STDOUT (its CLI prints failures to stdout). Surface both so "(no stderr)"
         // stops hiding the cause (Jeff 2026-06-30: agy dying mid-flight, code 1, no
@@ -475,6 +505,68 @@ function agyToolDisplayName(
   args: Record<string, unknown> | undefined
 ): string {
   const bare = (name || '').toLowerCase().replace(/^mcp__[^_]+__/, '')
+
+  if ((bare === 'call_mcp_tool' || name === 'call_mcp_tool') && args && typeof args === 'object') {
+    const toolName = String(args.ToolName || '')
+    const subArgs = args.Arguments && typeof args.Arguments === 'object' ? (args.Arguments as Record<string, unknown>) : null
+
+    let innerSpec = AGY_TOOL_SPEC[toolName]
+    if (!innerSpec) {
+      if (toolName === 'search') {
+        innerSpec = { verb: 'Search', argKey: 'query' }
+      } else if (toolName === 'ibkr_quote' || toolName === 'ibkr_get_quote') {
+        innerSpec = { verb: 'Quote', argKey: 'symbols' }
+      } else if (toolName === 'ibkr_get_positions') {
+        innerSpec = { verb: 'Positions' }
+      } else if (toolName === 'ibkr_margin') {
+        innerSpec = { verb: 'Margin' }
+      } else if (toolName.startsWith('ibkr_')) {
+        innerSpec = { verb: toolName.replace(/^ibkr_/, '') }
+      }
+    }
+
+    if (innerSpec) {
+      const verb = innerSpec.verb
+      let detail = ''
+      if (subArgs) {
+        const params = subArgs.params && typeof subArgs.params === 'object'
+          ? (subArgs.params as Record<string, unknown>)
+          : subArgs
+
+        if (innerSpec.argKey && params[innerSpec.argKey] !== undefined) {
+          const v = params[innerSpec.argKey]
+          if (typeof v === 'string') {
+            detail = v.trim()
+          } else if (typeof v === 'number' || typeof v === 'boolean') {
+            detail = String(v)
+          }
+        } else {
+          for (const key of ['query', 'Query', 'pattern', 'symbol', 'symbols', 'ticker', 'command', 'CommandLine', 'path', 'AbsolutePath', 'url']) {
+            if (params[key] !== undefined) {
+              const v = params[key]
+              if (typeof v === 'string') {
+                detail = v.trim()
+                break
+              }
+            }
+          }
+        }
+      }
+
+      if (detail) {
+        detail = detail.replace(/\s+/g, ' ')
+        if (innerSpec.basename) detail = detail.replace(/\/+$/, '').split('/').pop() || detail
+        const maxDetailLen = 69 - verb.length
+        if (detail.length > maxDetailLen) {
+          detail = detail.slice(0, Math.max(0, maxDetailLen - 1)) + '…'
+        }
+        return `${verb}(${detail})`
+      }
+      return verb
+    }
+    return toolName || 'tool'
+  }
+
   const spec = AGY_TOOL_SPEC[bare]
   // Unknown tool → show the raw name (never agy's freeform toolAction prose).
   if (!spec) return bare || name || 'tool'
@@ -760,7 +852,7 @@ export async function respondViaAgy(
   // usually enough for the server to re-authenticate before we retry.
   let text: string
   try {
-    text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText)
+    text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText, input.signal)
   } catch (firstErr: any) {
     // Retry once on a transient agy failure before giving up to the tool-less API
     // engine (Jeff 2026-06-30: agy keeps dying mid-flight with exit code 1, which
@@ -769,6 +861,9 @@ export async function respondViaAgy(
     // / empty-output / spawn blip — those are overwhelmingly transient (token
     // refresh, a flaky MCP init, a backend hiccup) and a single retry recovers
     // them. A genuine hard error reproduces on the retry and still falls through.
+    // Never retry a user stop — the abort was intentional; re-running would
+    // resurrect the turn the user just killed (Jeff 2026-07-01).
+    if (input.signal?.aborted || firstErr.message?.includes('stopped by user')) throw firstErr
     const retriable = firstErr instanceof AgyChatError && (
       firstErr.message.includes('(no stderr)') ||
       firstErr.message.includes('(no output)') ||
@@ -777,7 +872,7 @@ export async function respondViaAgy(
     if (!retriable) throw firstErr
     console.error(`[agy] transient failure, retrying once: ${firstErr.message.slice(0, 200)}`)
     await new Promise(r => setTimeout(r, 3000))
-    text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText)
+    text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText, input.signal)
   }
   let parsed = parse(text)
 

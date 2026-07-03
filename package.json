@@ -4,6 +4,9 @@
   "description": "Gemini-backed Discord bot",
   "main": "src/gemma.ts",
   "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "start": "tsx src/gemma.ts",
     "test": "DISCORD_STATE_DIR=.test-state node --test --import tsx tests/*.test.ts tests/*/*.test.ts"
