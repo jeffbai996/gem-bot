@@ -1339,7 +1339,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // can't make the deferred callback hit the wrong message.
       const collapsingThinking = flags.thinking === 'collapse' && replyStart > 0
       const collapsingTrace = flags.trace === 'collapse' && showTrace
-      const lingerMs = flags.thinking === 'collapse' ? 30_000 : (Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000)
+      const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000
       let thinkingSpliced = 0   // how many leading thinking msgs we removed (for traceIdx)
 
       if (collapsingThinking) {
@@ -1419,7 +1419,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // linger, same as the main path.
       if (flags.thinking === 'collapse') {
         const thoughtMsgs = activeMessages.splice(0)
-        const lingerMs = flags.thinking === 'collapse' ? 30_000 : (Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000)
+        const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000
         setTimeout(() => { for (const m of thoughtMsgs) m.delete().catch(() => {}) }, lingerMs)
       }
     } else {
