@@ -15,7 +15,7 @@ type Killer = () => void
 type BusyTool = 'shell' | 'edit' | null
 
 // Grace period (ms): a turn younger than this is never barged.
-export const BARGE_GRACE_MS = 4000
+export const BARGE_GRACE_MS = 2000
 
 class ActiveTurns {
   private killers = new Map<string, Killer>()
