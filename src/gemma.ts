@@ -466,6 +466,35 @@ const client = new Client({
 const voiceManager = new VoiceManager(client)
 voiceManager.attach()
 
+let shuttingDown = false
+function installGracefulShutdown(): void {
+  const timeoutMs = Number(process.env.GEMMA_GRACEFUL_SHUTDOWN_MS) || 30 * 60_000
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    console.error(`[shutdown] ${signal} received; waiting for active turns to finish`)
+    const timer = new Promise<'timeout'>(resolve => {
+      const t = setTimeout(() => resolve('timeout'), timeoutMs)
+      t.unref?.()
+    })
+    const idle = activeTurns.waitForIdle().then(() => 'idle' as const)
+    Promise.race([idle, timer])
+      .then(reason => {
+        console.error(`[shutdown] exiting after ${reason}`)
+        client.destroy()
+        process.exit(0)
+      })
+      .catch(err => {
+        console.error('[shutdown] graceful shutdown failed:', err)
+        process.exit(1)
+      })
+  }
+  process.once('SIGTERM', () => shutdown('SIGTERM'))
+  process.once('SIGINT', () => shutdown('SIGINT'))
+}
+
+installGracefulShutdown()
+
 // Attach `/gemini voice <call|speak|leave|type>` onto the /gemini command
 // builder. Voice used to be a standalone /voice — moved under /gemini to
 // de-collide with other bots' /voice in shared guilds (Jeff). Must run before
@@ -535,6 +564,10 @@ client.once('ready', async () => {
 
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return
+  if (shuttingDown) {
+    await interaction.reply({ content: '⚠️ restarting after the current turn finishes', ephemeral: true }).catch(() => {})
+    return
+  }
 
   if (interaction.commandName !== 'gemini') return
 
@@ -1574,6 +1607,7 @@ async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<
 }
 
 client.on('messageCreate', async (message: Message) => {
+  if (shuttingDown) return
   if (!message.author.bot && access.isAllowedAndEnabled(message.author.id, message.channelId)) {
     // Lone ❌ / X message: hard-kill the in-flight turn and swallow the message.
     // This must run before barge/queue handling, otherwise "X" becomes just
