@@ -5,6 +5,8 @@ import { PinnedFactsStore } from './pinned-facts.ts'
 import type { SummaryStore } from './summarization/store.ts'
 
 const DEFAULT_PERSONA = `You are Gemma, a Discord bot backed by Google's Gemini model. Be helpful, concise, and match the channel's tone. You can respond with text, an emoji reaction, or both.`
+const DEFAULT_PERSONA_FILE = 'GEMINI.md'
+const LEGACY_PERSONA_FILE = 'persona.md'
 
 function stateDir(): string {
   return process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
@@ -12,7 +14,7 @@ function stateDir(): string {
 
 export class PersonaLoader {
   private persona: string = DEFAULT_PERSONA
-  private activePersonaFile: string = 'persona.md'
+  private activePersonaFile: string = DEFAULT_PERSONA_FILE
   private guildPersonas: Map<string, string> = new Map()
   private pinnedFacts: PinnedFactsStore | null = null
   private summaryStore: SummaryStore | null = null
@@ -47,14 +49,21 @@ export class PersonaLoader {
   }
 
   private async readPersona(filename: string): Promise<string> {
-    const file = path.join(stateDir(), filename)
-    try {
-      const text = (await fs.readFile(file, 'utf8')).trim()
-      return text || DEFAULT_PERSONA
-    } catch (e: any) {
-      if (e.code === 'ENOENT') return DEFAULT_PERSONA
-      throw e
+    const filenames = filename === DEFAULT_PERSONA_FILE
+      ? [DEFAULT_PERSONA_FILE, LEGACY_PERSONA_FILE]
+      : [filename]
+
+    for (const candidate of filenames) {
+      const file = path.join(stateDir(), candidate)
+      try {
+        const text = (await fs.readFile(file, 'utf8')).trim()
+        return text || DEFAULT_PERSONA
+      } catch (e: any) {
+        if (e.code === 'ENOENT') continue
+        throw e
+      }
     }
+    return DEFAULT_PERSONA
   }
 
   buildSystemPrompt(channelId: string, guildId?: string | null): string {

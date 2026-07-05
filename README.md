@@ -137,12 +137,12 @@ Set per channel with `/gemini engine agy|api|default` (`default` clears the per-
 
 The system prompt is composed at runtime from:
 
-1. The active persona file (`persona.md` by default) in the state dir.
+1. The active persona file (`GEMINI.md` by default, falling back to legacy `persona.md`) in the state dir.
 2. Pinned facts from `pinned-facts.md`.
 3. Per-channel conversation summary from `SummaryStore` (refreshed by the background scheduler).
 4. A response-format JSON contract — instructs the model to emit `{react, thinking, reply}` since `responseSchema` is incompatible with Gemini's built-in tools.
 
-**Per-guild persona overrides.** Drop a `persona.<guildId>.md` file in the state dir and Gem loads that persona when running in that guild, falling back to the default `persona.md` everywhere else. Hot-swappable at runtime via `/gemini persona <filename>` for the current guild — no restart, no global flag flip.
+**Per-guild persona overrides.** Drop a `persona.<guildId>.md` file in the state dir and Gem loads that persona when running in that guild, falling back to the default `GEMINI.md` everywhere else. Hot-swappable at runtime via `/gemini persona <filename>` for the current guild — no restart, no global flag flip.
 
 Gem's persona file establishes the core rule: **never pretend you did something you couldn't do.** She has `googleSearch`, `codeExecution`, multimodal perception, Discord history, and YouTube transcript ingestion — but no shell, no file write, no IBKR account state, no ability to grant her own access. Hallucinating action is the single biggest failure mode and the persona makes that explicit.
 
@@ -159,7 +159,7 @@ IPC is NDJSON over `$XDG_RUNTIME_DIR/gem-voice.sock` (override with `GEM_VOICE_S
 
 Owner gate: `CC_OWNER_DISCORD_USER_ID` (or `DISCORD_ADMIN_ID` as fallback).
 
-**Status (2026-05-22):** voice connection and IPC handshake work; Gemini Live closes the WebSocket after 17-77s without responding. Diagnostic logging is live in the gem-voice sibling repo. See `CLAUDE.md` for the open-issue triage path.
+**Status (2026-05-22):** voice connection and IPC handshake work; Gemini Live closes the WebSocket after 17-77s without responding. Diagnostic logging is live in the gem-voice sibling repo. See `GEMINI.md` for the open-issue triage path.
 
 ---
 
@@ -196,7 +196,7 @@ Runtime state lives in `~/.gemini/channels/discord/` (override via `DISCORD_STAT
 | `.env` | `DISCORD_BOT_TOKEN`, `GEMINI_API_KEY`, `DISCORD_ADMIN_ID`, optional `GEMINI_MODEL`, `MAX_HISTORY_TOKENS` (default 80000), `MAX_UNSUMMARIZED_MESSAGES`, `SUMMARIZATION_BATCH_LIMIT`, `GEMINI_EMBED_COOLDOWN_MS` (default 3000), `GEMINI_BACKFILL_DELAY_MS` (default 100). **agy engine:** `GEMMA_AGY_CHAT` (`1` = agy is the global default engine; unset/`0` = api), `GEMMA_AGY_BIN` (agy binary path, default `~/.local/bin/agy`), `GEMMA_AGY_MODEL` (full display model string from `agy models`, default `"Gemini 3.5 Flash (Medium)"`), `GEMMA_AGY_CHAT_TIMEOUT_MS` (runaway-process backstop, default 600000) |
 | `access.json` | User + channel allowlists with per-channel render flags |
 | `memory.db` | SQLite + sqlite-vss database of embedded messages |
-| `persona.md` | Default system prompt |
+| `GEMINI.md` | Default system prompt; falls back to legacy `persona.md` when absent |
 | `pinned-facts.md` | Persistent facts injected every turn |
 | `gemma.log` | Service log (info + errors) |
 | `summaries.json` | Per-channel rolled-up summaries |
@@ -288,7 +288,7 @@ Runs as a systemd user service (`gemma.service`) on Node 22+ via nvm.
 git pull && npm install
 systemctl --user restart gemma
 
-# Hot reload (access.json + persona.md only, no code reload):
+# Hot reload (access.json + GEMINI.md/persona files only, no code reload):
 systemctl --user kill -s HUP gemma
 ```
 

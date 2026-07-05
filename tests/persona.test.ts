@@ -21,19 +21,37 @@ describe('PersonaLoader', () => {
     await reset()
   })
 
-  test('falls back to default persona when persona.md missing', async () => {
+  test('falls back to default persona when GEMINI.md and persona.md are missing', async () => {
     const loader = new PersonaLoader()
     await loader.load()
     const prompt = loader.buildSystemPrompt('unknown-channel-id')
     assert.ok(prompt.toLowerCase().includes('gemma'))
   })
 
-  test('includes persona.md contents', async () => {
-    await fs.writeFile(path.join(stateDir, 'persona.md'), 'Custom persona text here.', 'utf8')
+  test('includes GEMINI.md contents', async () => {
+    await fs.writeFile(path.join(stateDir, 'GEMINI.md'), 'Custom Gemini text here.', 'utf8')
     const loader = new PersonaLoader()
     await loader.load()
     const prompt = loader.buildSystemPrompt('c1')
-    assert.ok(prompt.includes('Custom persona text here.'))
+    assert.ok(prompt.includes('Custom Gemini text here.'))
+  })
+
+  test('falls back to legacy persona.md when GEMINI.md is missing', async () => {
+    await fs.writeFile(path.join(stateDir, 'persona.md'), 'Legacy persona text here.', 'utf8')
+    const loader = new PersonaLoader()
+    await loader.load()
+    const prompt = loader.buildSystemPrompt('c1')
+    assert.ok(prompt.includes('Legacy persona text here.'))
+  })
+
+  test('prefers GEMINI.md over legacy persona.md', async () => {
+    await fs.writeFile(path.join(stateDir, 'GEMINI.md'), 'New Gemini text here.', 'utf8')
+    await fs.writeFile(path.join(stateDir, 'persona.md'), 'Legacy persona text here.', 'utf8')
+    const loader = new PersonaLoader()
+    await loader.load()
+    const prompt = loader.buildSystemPrompt('c1')
+    assert.ok(prompt.includes('New Gemini text here.'))
+    assert.ok(!prompt.includes('Legacy persona text here.'))
   })
 
   test('tolerates missing squad-context dir', async () => {
@@ -44,13 +62,13 @@ describe('PersonaLoader', () => {
     assert.ok(prompt.length > 0)
   })
 
-  test('load() picks up persona.md edits on reload', async () => {
-    await fs.writeFile(path.join(stateDir, 'persona.md'), 'v1 persona', 'utf8')
+  test('load() picks up GEMINI.md edits on reload', async () => {
+    await fs.writeFile(path.join(stateDir, 'GEMINI.md'), 'v1 persona', 'utf8')
     const loader = new PersonaLoader()
     await loader.load()
     assert.ok(loader.buildSystemPrompt('c1').includes('v1 persona'))
 
-    await fs.writeFile(path.join(stateDir, 'persona.md'), 'v2 persona', 'utf8')
+    await fs.writeFile(path.join(stateDir, 'GEMINI.md'), 'v2 persona', 'utf8')
     await loader.load()
     assert.ok(loader.buildSystemPrompt('c1').includes('v2 persona'))
   })

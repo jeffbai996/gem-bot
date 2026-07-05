@@ -52,7 +52,7 @@ export const geminiCommand = new SlashCommandBuilder()
     subcommand
       .setName('persona')
       .setDescription('Hot-swap the bot persona')
-      .addStringOption(option => option.setName('filename').setDescription('The persona filename (e.g. persona.md)').setRequired(true))
+      .addStringOption(option => option.setName('filename').setDescription('The persona filename (e.g. GEMINI.md)').setRequired(true))
   )
   // Switch the GEMINI_MODEL env var and auto-restart so the new model takes
   // effect. Choices are pinned to known-good IDs — Gemini's model namespace
