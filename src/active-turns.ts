@@ -13,6 +13,7 @@
 // from codex's live shell/file-edit events).
 type Killer = () => void
 type BusyTool = 'shell' | 'edit' | null
+type PendingStop = { clearQueue: boolean }
 
 // Grace period (ms): a turn younger than this is never barged.
 export const BARGE_GRACE_MS = 2000
@@ -22,6 +23,7 @@ class ActiveTurns {
   private stopped = new Set<string>()
   private startedAt = new Map<string, number>()
   private busyTool = new Map<string, BusyTool>()
+  private pendingStops = new Map<string, PendingStop>()
 
   /** respondViaGemini: record how to kill this channel's running turn. */
   register(channelId: string, kill: Killer): void {
@@ -34,6 +36,7 @@ class ActiveTurns {
     this.killers.delete(channelId)
     this.startedAt.delete(channelId)
     this.busyTool.delete(channelId)
+    this.pendingStops.delete(channelId)
   }
 
   /** Mark the channel mid a destructive tool (barging then would be unsafe). Unused
@@ -60,11 +63,27 @@ class ActiveTurns {
     const k = this.killers.get(channelId)
     if (!k) return false
     if (opts.clearQueue) this.stopped.add(channelId)
+    this.pendingStops.delete(channelId)
     try { k() } catch { /* best-effort */ }
     this.killers.delete(channelId)
     this.startedAt.delete(channelId)
     this.busyTool.delete(channelId)
     return true
+  }
+
+  /** Normal message barge-in: mark the running turn to be killed at the next
+   *  lifecycle boundary instead of killing mid-output. */
+  deferStopFor(channelId: string, opts: { clearQueue: boolean }): boolean {
+    if (!this.killers.has(channelId)) return false
+    this.pendingStops.set(channelId, opts)
+    return true
+  }
+
+  /** Model/live-render loop: execute a pending deferred stop at a safe boundary. */
+  stopIfPending(channelId: string): boolean {
+    const pending = this.pendingStops.get(channelId)
+    if (!pending) return false
+    return this.stopFor(channelId, pending)
   }
 
   /** runChannelTurn: was this channel just stopped? Consumes the flag. */
@@ -82,6 +101,15 @@ class ActiveTurns {
   canBarge(channelId: string, now: number = Date.now()): boolean {
     if (!this.killers.has(channelId)) return false
     if (this.busyTool.get(channelId)) return false
+    const started = this.startedAt.get(channelId)
+    if (started === undefined) return false
+    return now - started >= BARGE_GRACE_MS
+  }
+
+  /** A normal message is allowed to request a deferred barge once the grace
+   *  window has passed, even if a lifecycle event is currently rendering. */
+  canRequestBarge(channelId: string, now: number = Date.now()): boolean {
+    if (!this.killers.has(channelId)) return false
     const started = this.startedAt.get(channelId)
     if (started === undefined) return false
     return now - started >= BARGE_GRACE_MS

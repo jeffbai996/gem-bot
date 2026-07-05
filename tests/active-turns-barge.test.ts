@@ -29,6 +29,7 @@ test('canBarge: setBusy blocks a barge even past grace (parity hook)', () => {
   const started = Date.now()
   activeTurns.setBusy(c, 'shell')
   assert.equal(activeTurns.canBarge(c, started + BARGE_GRACE_MS + 10_000), false)
+  assert.equal(activeTurns.canRequestBarge(c, started + BARGE_GRACE_MS + 10_000), true)
   activeTurns.clearBusy(c)
   assert.equal(activeTurns.canBarge(c, started + BARGE_GRACE_MS + 10_000), true)
   activeTurns.done(c)
@@ -51,6 +52,36 @@ test('stopFor(clearQueue:false) kills without marking stopped; stop() marks stop
 test('done() clears liveness so a finished turn can never be barged', () => {
   const c = cid()
   activeTurns.register(c, () => {})
+  activeTurns.deferStopFor(c, { clearQueue: false })
   activeTurns.done(c)
   assert.equal(activeTurns.canBarge(c, Date.now() + 999_999), false)
+  assert.equal(activeTurns.stopIfPending(c), false)
+})
+
+test('deferStopFor: records a pending barge without killing until boundary', () => {
+  const c = cid()
+  let killed = false
+  activeTurns.register(c, () => { killed = true })
+  assert.equal(activeTurns.deferStopFor(c, { clearQueue: false }), true)
+  assert.equal(killed, false)
+  assert.equal(activeTurns.isActive(c), true)
+  assert.equal(activeTurns.stopIfPending(c), true)
+  assert.equal(killed, true)
+  assert.equal(activeTurns.isActive(c), false)
+  assert.equal(activeTurns.consumeStopped(c), false, 'barge keeps the queue')
+})
+
+test('deferStopFor(clearQueue:true): pending user stop clears queue at boundary', () => {
+  const c = cid()
+  activeTurns.register(c, () => {})
+  assert.equal(activeTurns.deferStopFor(c, { clearQueue: true }), true)
+  assert.equal(activeTurns.consumeStopped(c), false, 'not stopped until boundary')
+  assert.equal(activeTurns.stopIfPending(c), true)
+  assert.equal(activeTurns.consumeStopped(c), true)
+})
+
+test('deferStopFor and stopIfPending: false when no turn is running or pending', () => {
+  const c = cid()
+  assert.equal(activeTurns.deferStopFor(c, { clearQueue: false }), false)
+  assert.equal(activeTurns.stopIfPending(c), false)
 })
