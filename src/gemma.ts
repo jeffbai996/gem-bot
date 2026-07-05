@@ -425,7 +425,7 @@ function renderTraceCard(toolCalls: ToolCall[], extras: TraceExtras = {}): strin
 }
 
 process.on('SIGHUP', async () => {
-  console.error('SIGHUP received — reloading access.json and persona.md')
+  console.error('SIGHUP received — reloading access.json and persona files')
   try {
     await access.load()
     await persona.load()
