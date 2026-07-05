@@ -2,6 +2,7 @@ import type { TextChannel, DMChannel, ThreadChannel } from 'discord.js'
 import { uriCache, isAllowedMime } from './attachments.ts'
 import { selectWithinBudget } from './token-budget.ts'
 import type { GeminiClient } from './gemini.ts'
+import { stripToolTraceCard } from './render-cleanup.ts'
 
 export interface HistoryAttachment {
   name: string
@@ -71,6 +72,7 @@ function describeAttachment(att: HistoryAttachment): string {
 // blocks since those are renderer output, not conversational content.
 export function stripBotMetadata(text: string): string {
   if (!text) return text
+  text = stripToolTraceCard(text)
   const lines = text.split('\n')
   const out: string[] = []
   let inMetadataBlock = false
