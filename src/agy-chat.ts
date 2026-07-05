@@ -4,6 +4,7 @@ import { readdirSync, statSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { GeminiContent } from './history.ts'
+import { killProcessTree } from './kill-tree.ts'
 import type {
   ParsedResponse,
   RespondMetadata,
@@ -301,9 +302,12 @@ function runAgy(
       return reject(new AgyChatError(`agy spawn failed: ${e?.message ?? e}`, Date.now() - t0))
     }
 
-    // Kill the whole group (agy may fork helpers), falling back to a plain kill.
+    // Kill agy AND any helpers it forks, walking the descendant tree by PPID so a
+    // child that re-groups via setpgid() (the way GNU `timeout` does in gpt's codex
+    // path) can't survive a plain process-group kill. Falls back to a direct kill.
+    // (Shared hardening with gpt-bot's codex-chat, Jeff 2026-07-05.)
     const killTree = () => {
-      try { process.kill(-(child!.pid as number), 'SIGKILL') }
+      try { killProcessTree(child!.pid as number) }
       catch { try { child!.kill('SIGKILL') } catch { /* already dead */ } }
     }
 
