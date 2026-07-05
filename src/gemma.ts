@@ -687,6 +687,12 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // reaches Gemini/agy, not get queued behind it.
   const stopController = new AbortController()
   activeTurns.register(message.channelId, () => stopController.abort())
+  const throwIfStopped = () => {
+    if (!stopController.signal.aborted) return
+    const abortErr = new Error('gemini turn stopped by user')
+    abortErr.name = 'AbortError'
+    throw abortErr
+  }
 
   try {
     // Fetch partial DM channels so we can send/read them
@@ -930,6 +936,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // gemini.ts emits start/end pairs per dispatch.
     let activeToolCount = 0
     const onLifecycleEvent = (e: LifecycleEvent) => {
+      if (activeTurns.stopIfPending(message.channelId)) return
       if (e.type === 'native_thinking') {
         applyLifecycle(message, 'native_thinking').catch(() => {})
       } else if (e.type === 'searching') {
@@ -1006,6 +1013,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       cacheEnabled: flags.cache,
       cacheTtlSec: flags.cacheTtlSec ?? undefined,
     }, (partial) => {
+      if (activeTurns.stopIfPending(message.channelId)) return
       latestParsed = partial
     }, onLifecycleEvent, combinedSignal)
 
@@ -1031,6 +1039,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     if (useAgy) {
       try {
+        throwIfStopped();
         ({ parsed, meta } = await respondViaAgy({
           systemPrompt: fullSystemPrompt,
           history,
@@ -1055,9 +1064,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         // shell/read files, so this turn quietly lost those capabilities.
         console.error('[agy] chat engine failed, falling back to API:', e instanceof Error ? e.message : e)
         agyFellBack = true
+        throwIfStopped();
         ;({ parsed, meta } = await apiRespond())
       }
     } else {
+      throwIfStopped();
       ({ parsed, meta } = await apiRespond())
     }
     // Keep flushStream's view in sync with the real result. apiRespond's
@@ -1579,15 +1590,14 @@ client.on('messageCreate', async (message: Message) => {
       return
     }
 
-    // Barge-in (Jeff 2026-07-01): a new message cuts off the in-flight turn and takes
-    // over — but only when safe (canBarge: past the grace window; gem's tools are
-    // sandboxed so there's no destructive-tool case). Kill WITHOUT clearing the queue,
-    // then unshift to the FRONT so the running runChannelTurn's drain loop picks it up
-    // first as it unwinds. If not safe, fall through to the normal path (which queues +
-    // coalesces as before — no regression).
+    // Barge-in (Jeff 2026-07-01/05): a new message takes over, but normal
+    // messages defer the stop until Gemma reaches a lifecycle/stream boundary.
+    // Explicit X/❌ above remains immediate. Deferring avoids half-rendered
+    // thinking/trace edits while still preventing long turns from holding the
+    // channel hostage.
     const st = channelTurns.get(message.channelId)
-    if (st?.running && activeTurns.canBarge(message.channelId)) {
-      activeTurns.stopFor(message.channelId, { clearQueue: false })
+    if (st?.running && activeTurns.canRequestBarge(message.channelId)) {
+      activeTurns.deferStopFor(message.channelId, { clearQueue: false })
       st.queue.unshift(message)
       void message.react('\u{23ED}\u{FE0F}').catch(() => {})  // ⏭️ "barging — cutting in"
       return
