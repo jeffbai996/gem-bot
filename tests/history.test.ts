@@ -1,6 +1,7 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { formatHistory, stripBotMetadata, type HistoryMessage } from '../src/history.ts'
+import { stripToolTraceCard } from '../src/render-cleanup.ts'
 
 // Narrow a parts entry to the text variant so .text access typechecks.
 // formatHistory always emits exactly one text part as parts[0]; the fileData
@@ -111,5 +112,84 @@ Here is the actual reply.`
       stripBotMetadata(input),
       'Here is the actual reply.',
     )
+  })
+
+  test('strips a leading tool trace card from reply text', () => {
+    const input = `🔧 **Tool trace**
+\`\`\`diff
++ ● search_squad_memory
++ ● shell
+\`\`\`
+
+actual answer`
+
+    assert.equal(stripToolTraceCard(input), 'actual answer')
+  })
+
+  test('strips numbered and quoted tool trace cards from reply text', () => {
+    const input = `> 🔧 **Tool trace 2/2**
+> \`\`\`diff
+> + ● Edit
+> - ● Bash FAILED
+> \`\`\`
+
+actual answer`
+
+    assert.equal(stripToolTraceCard(input), 'actual answer')
+  })
+
+  test('strips embedded tool trace card without eating surrounding prose', () => {
+    const input = `first chunk
+
+🔧 **Tool trace**
+\`\`\`diff
++ ● Search
+\`\`\`
+
+second chunk`
+
+    assert.equal(stripToolTraceCard(input), `first chunk
+
+second chunk`)
+  })
+
+  test('strips malformed leaked trace body when the fence marker rendered as text', () => {
+    const input = `actual answer
+
+Tool trace 2/2
+diff
++ ● apply_patch(src/gemma.ts)
++ ● tsc
+  ⎿ passed
+
+next answer line`
+
+    assert.equal(stripToolTraceCard(input), `actual answer
+
+next answer line`)
+  })
+
+  test('strips repeated trace headers without hanging', () => {
+    const input = `Tool trace
+Tool trace 2/2
+diff
++ ● shell
+
+reply`
+
+    assert.equal(stripToolTraceCard(input), 'reply')
+  })
+
+  test('strips leaked trace cards from bot history', () => {
+    const input = `🔧 **Tool trace 2/2**
+\`\`\`diff
++ ● Search
+\`\`\`
+
+real reply
+
+-# \` ◷ 1.2s \``
+
+    assert.equal(stripBotMetadata(input), 'real reply')
   })
 })

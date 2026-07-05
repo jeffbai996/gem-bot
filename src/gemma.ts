@@ -11,6 +11,7 @@ import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGr
 import { respondViaAgy, warmAgy, normalizeAgyThinkingChunk } from './agy-chat.ts'
 import { reformatUnifiedDiffs } from './diff-format.ts'
 import { chunk } from './chunk.ts'
+import { stripToolTraceCard } from './render-cleanup.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
 import { addVoiceGroup, executeVoiceCommand } from './voice-commands.ts'
 import { VoiceManager } from './voice.ts'
@@ -20,6 +21,7 @@ import { buildDefaultRegistry } from './tools/index.ts'
 import { PendingEditsStore } from './reactions/pending-edits.ts'
 import { applyLifecycle } from './reactions/lifecycle.ts'
 import { activeTurns } from './active-turns.ts'
+import { isHardStopMessage } from './stop-command.ts'
 import type { LifecycleEvent, ToolCall, CodeExecArtifact } from './gemini.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
 import { handleReaction } from './reactions/handler.ts'
@@ -40,6 +42,14 @@ dotenv.config({ path: path.join(STATE_DIR, '.env') })
 // the reference entirely, matching the Claude bots. Same return contract as
 // message.reply().catch(()=>null) so call sites are a drop-in swap.
 async function sendReply(message: Message, content: string, files?: string[]): Promise<Message | null> {
+  return sendChannelMessage(message, stripToolTraceCard(content), files)
+}
+
+async function sendRawMessage(message: Message, content: string, files?: string[]): Promise<Message | null> {
+  return sendChannelMessage(message, content, files)
+}
+
+async function sendChannelMessage(message: Message, content: string, files?: string[]): Promise<Message | null> {
   const channel = message.channel as any
   const payload: any = { content, allowedMentions: { repliedUser: false } }
   if (files && files.length) payload.files = files
@@ -93,6 +103,7 @@ async function replaceActiveMessage(
   label: string,
   files?: string[]
 ): Promise<void> {
+  content = stripToolTraceCard(content)
   const existing = activeMessages[index]
   if (existing) {
     if (existing.content === content && !files?.length) return
@@ -661,6 +672,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // engine shows real reasoning while it runs, not just a generic animated
   // label. Empty for the API engine (no agy_thinking events on that path).
   let liveAgyThinking = ''
+  const liveTraceMessage: { current: Message | null } = { current: null }
   const stopThinkingAnim = async () => {
     if (thinkingAnim) { clearInterval(thinkingAnim); thinkingAnim = null }
     if (spinnerEditPromise) { await spinnerEditPromise; spinnerEditPromise = null }
@@ -670,6 +682,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // pending one — else a timer that fires after an error/return would post an
   // orphan "Thinking…" bubble with no turn behind it.
   let placeholderTimer: ReturnType<typeof setTimeout> | null = null
+  // Register before the first awaited pre-processing call. Stops sent while
+  // history/media ingestion is still running must abort this turn before it
+  // reaches Gemini/agy, not get queued behind it.
+  const stopController = new AbortController()
+  activeTurns.register(message.channelId, () => stopController.abort())
 
   try {
     // Fetch partial DM channels so we can send/read them
@@ -794,6 +811,28 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       return clean ? `\n${quoteBlock(clean)}` : ''
     }
 
+    const liveTraceCard = (): string => {
+      if (flags.trace === 'off' || liveToolCalls.length === 0) return ''
+      const lines = liveToolCalls.map(c => {
+        const prefix = c.failed ? '- ● ' : '+ ● '
+        const suffix = c.running ? '...' : (c.failed ? ' FAILED' : '')
+        return `${prefix}${shortToolName(c.name)}${suffix}`
+      })
+      return '🔧 **Tool trace**\n```diff\n' + lines.join('\n') + '\n```'
+    }
+
+    const flushLiveTrace = async () => {
+      const card = liveTraceCard()
+      if (!card) return
+      if (liveTraceMessage.current) {
+        if (liveTraceMessage.current.content !== card) {
+          await liveTraceMessage.current.edit(card).catch(() => {})
+        }
+        return
+      }
+      liveTraceMessage.current = await sendRawMessage(message, card)
+    }
+
     const startSpinner = () => {
       if (thinkingAnim) return
       const GLYPHS = ['✻', '✢', '✱', '✶', '✷', '✸']
@@ -841,16 +880,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       if (isFlushing) return
       isFlushing = true
       try {
+        await flushLiveTrace()
         let fullReply = ''
-        const showLiveTools = flags.trace !== 'off' && liveToolCalls.length > 0
-        if (showLiveTools) {
-          const lines = liveToolCalls.map(c => {
-            const prefix = c.failed ? '- ● ' : '+ ● '
-            const suffix = c.running ? '...' : (c.failed ? ' FAILED' : '')
-            return `${prefix}${shortToolName(c.name)}${suffix}`
-          })
-          fullReply += '🔧 **Tool trace**\n```diff\n' + lines.join('\n') + '\n```' + '\n\n'
-        }
         if (latestParsed.reply) {
           fullReply += headingsToBold(latestParsed.reply)
         }
@@ -949,20 +980,17 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // envelope) — built once so the agy path feeds the model the SAME contract.
     const fullSystemPrompt = formatSystemPrompt(systemPrompt, flags.thinking)
 
-    // Register a killer so /gemini stop can abort this turn mid-stream.
-    // For the API path we abort the AbortController; for agy the process gets
-    // SIGTERM via the existing agy-chat abort path when we abort the controller
-    // that's wired into respondViaAgy's outer promise.
-    const stopController = new AbortController()
-    activeTurns.register(message.channelId, () => stopController.abort())
-
     // Combine speak-mode barge-in signal with the /gemini stop signal.
     const combinedSignal = (() => {
       if (!turnSignal) return stopController.signal
       const ac = new AbortController()
       const abort = () => ac.abort()
-      turnSignal.addEventListener('abort', abort, { once: true })
-      stopController.signal.addEventListener('abort', abort, { once: true })
+      if (turnSignal.aborted || stopController.signal.aborted) {
+        abort()
+      } else {
+        turnSignal.addEventListener('abort', abort, { once: true })
+        stopController.signal.addEventListener('abort', abort, { once: true })
+      }
       return ac.signal
     })()
 
@@ -1123,18 +1151,13 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     // 🔧 Tool-trace card — the single per-channel trace surface, gated by the
     // `trace` flag (off|on|collapse). Renders tool calls + web-searches +
-    // code-execution as ONE card (Jeff 2026-06-29 — folded in the old show_code
-    // content so they don't double-render or fragment into separate blocks).
-    // STAYS WITH THE REPLY (top of finalFullReply). Renders for BOTH engines:
-    // native gemini populates meta.toolCalls/searchQueries/codeArtifacts at its
-    // dispatch site; agy materializes trajectory tool names into meta.toolCalls
-    // post-hoc. 'collapse' renders inline then strips after a linger; 'on' keeps it.
+    // code-execution as ONE isolated card above the reply, never inside the answer
+    // body. Keeping trace out of finalFullReply prevents a partial live card from
+    // surviving as a dangling footer when chunking/edit ordering gets weird.
     const traceExtras = { searchQueries: meta.searchQueries, codeArtifacts: meta.codeArtifacts }
     const showTrace = flags.trace !== 'off'
       && (meta.toolCalls.length > 0 || meta.searchQueries.length > 0 || meta.codeArtifacts.length > 0)
-    if (showTrace) {
-      finalFullReply += renderTraceCard(meta.toolCalls, traceExtras) + '\n\n'
-    }
+    const finalTraceCard = showTrace ? renderTraceCard(meta.toolCalls, traceExtras) : ''
 
     // Native thinking summaries from gemini-3 thinking models (parts with
     // `thought: true`). Distinct from `parsed.thinking` (our JSON-wrapper
@@ -1271,6 +1294,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     } else if (meta.finishReason === 'SAFETY') {
       finalFullReply = '⚠️ response blocked by Gemini safety filter. ' + (finalFullReply || '(no content)')
     }
+    finalFullReply = stripToolTraceCard(finalFullReply)
 
     if (!finalFullReply && !parsed.react) {
        finalFullReply = '(Empty response)'
@@ -1301,11 +1325,25 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // and any excess streaming messages are deleted at the end. Splitting into
       // two separate send loops would have re-introduced the duplicate-on-failed-
       // delete bug that the edit-in-place approach exists to prevent.
+      if (finalTraceCard) {
+        const traceMsg = liveTraceMessage.current
+        if (traceMsg) {
+          if (traceMsg.content !== finalTraceCard) {
+            await traceMsg.edit(finalTraceCard).catch(() => {})
+          }
+        } else {
+          liveTraceMessage.current = await sendRawMessage(message, finalTraceCard)
+        }
+      } else if (liveTraceMessage.current) {
+        const traceMsg = liveTraceMessage.current
+        await traceMsg.delete().catch(() => {})
+        liveTraceMessage.current = null
+      }
+
       const thinkingPieces = thinkingMessage ? chunk(thinkingMessage, 2000, 'newline').filter(p => p.trim() !== '') : []
       const replyPieces = finalFullReply ? chunk(finalFullReply, 2000, 'newline').filter(p => p.trim() !== '') : []
       const pieces = [...thinkingPieces, ...replyPieces]
       // Index in activeMessages where the reply (vs thinking) begins. Used by the
-      // trace-collapse strip (operates on the reply's first chunk) and by the
       // thinking-collapse delete (removes the leading thinking messages).
       const replyStart = thinkingPieces.length
       // Files agy wrote this turn (e.g. a .md report) — attach to the LAST
@@ -1332,15 +1370,12 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       //     (indices 0..replyStart-1), leaving just the reply below. No more
       //     regex-stripping a combined string — the thought is its own message now,
       //     so we just remove it.
-      //   • trace:collapse → strip the 🔧 trace card from the reply's first chunk,
-      //     which now lives at activeMessages[replyStart] (the trace card stayed
-      //     with the reply, not the thinking message).
+      //   • trace:collapse → DELETE the separate trace card entirely.
       // Snapshot the messages we touch so a later turn mutating activeMessages
       // can't make the deferred callback hit the wrong message.
       const collapsingThinking = flags.thinking === 'collapse' && replyStart > 0
-      const collapsingTrace = flags.trace === 'collapse' && showTrace
+      const collapsingTrace = flags.trace === 'collapse' && !!liveTraceMessage.current
       const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000
-      let thinkingSpliced = 0   // how many leading thinking msgs we removed (for traceIdx)
 
       if (collapsingThinking) {
         // SAFETY: only delete leading messages that are genuinely thinking
@@ -1355,7 +1390,6 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         if (deleteCount > 0) {
           const thoughtMsgs = activeMessages.slice(0, deleteCount)
           activeMessages.splice(0, deleteCount)
-          thinkingSpliced = deleteCount
           setTimeout(() => {
             for (const m of thoughtMsgs) m.delete().catch(() => {})
           }, lingerMs)
@@ -1363,43 +1397,9 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       }
 
       if (collapsingTrace) {
-        // Calculate the collapsed reply pieces eagerly so we don't have to deal
-        // with partial/split trace cards in individual chunks later.
-        const collapsedReply = finalFullReply
-          .replace(/(?:> )?🔧 \*\*Tool trace\*\*\n(?:> )?```diff\n[\s\S]*?\n(?:> )?```\n*/, '')
-          .replace(/^\s+/, '')
-        const collapsedPieces = chunk(collapsedReply, 2000, 'newline').filter(p => p.trim() !== '')
-        const traceIdx = replyStart - thinkingSpliced
-        
-        setTimeout(async () => {
-          try {
-            const replyMessages = activeMessages.slice(traceIdx)
-            if (replyMessages.length === 0) return
-
-            for (let i = 0; i < collapsedPieces.length; i++) {
-              const piece = collapsedPieces[i]
-              if (i < replyMessages.length) {
-                if (replyMessages[i].content !== piece) {
-                  await replyMessages[i].edit(piece).catch(() => {})
-                }
-              } else {
-                const msg = await sendReply(message, piece)
-                if (msg) activeMessages.push(msg as Message)
-              }
-            }
-            
-            if (collapsedPieces.length < replyMessages.length) {
-              const excess = replyMessages.slice(collapsedPieces.length)
-              for (const m of excess) {
-                await m.delete().catch(() => {})
-                const idx = activeMessages.indexOf(m)
-                if (idx !== -1) activeMessages.splice(idx, 1)
-              }
-            }
-          } catch (err) {
-            console.error('Failed to collapse trace card:', err)
-          }
-        }, lingerMs)
+        const traceMsg = liveTraceMessage.current
+        liveTraceMessage.current = null
+        setTimeout(() => { traceMsg?.delete().catch(() => {}) }, lingerMs)
       }
     } else if (thinkingMessage) {
       // React-only turn (empty reply) that STILL produced reasoning: don't orphan
@@ -1444,6 +1444,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       await stopThinkingAnim()
       applyLifecycle(message, 'silenced').catch(() => {})
       for (const m of activeMessages) await m.delete().catch(() => {})
+      if (liveTraceMessage.current) await liveTraceMessage.current.delete().catch(() => {})
+      liveTraceMessage.current = null
       activeMessages = []
       return
     }
@@ -1481,6 +1483,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         for (const extra of activeMessages.slice(1)) {
           await extra.delete().catch(() => {})
         }
+        if (liveTraceMessage.current) await liveTraceMessage.current.delete().catch(() => {})
+        liveTraceMessage.current = null
       } else {
         await sendReply(message, msg)
       }
@@ -1560,8 +1564,10 @@ async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<
 
 client.on('messageCreate', async (message: Message) => {
   if (!message.author.bot && access.isAllowedAndEnabled(message.author.id, message.channelId)) {
-    // Lone ❌ message: kill the in-flight turn, post 🛑 + 🔁, swallow the message.
-    if (message.content.trim().replace(/️/g, '') === '❌') {
+    // Lone ❌ / X message: hard-kill the in-flight turn and swallow the message.
+    // This must run before barge/queue handling, otherwise "X" becomes just
+    // another queued prompt and only "works" after the turn finally unwinds.
+    if (isHardStopMessage(message.content)) {
       message.delete().catch(() => {})
       const killed = activeTurns.stop(message.channelId)
       if (killed) {
