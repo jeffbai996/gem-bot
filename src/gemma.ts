@@ -295,9 +295,11 @@ function formatDiff(unified: string): { badge: string; body: string[] } {
 // the trimmed assembler: header row + optional `⎿ resultPreview` line per call.
 const TRACE_BODY_CHAR_BUDGET = 1900
 const TRACE_MAX_LINES = 50
-const TRACE_RESULT_PREVIEW_MAX = 10
-// Cap at the most recent N tool calls so a long turn's trace stays a preview, not
-// a wall (Jeff 2026-07-05: "reduce it around 10 cells"). Parity with gpt/llm-bot.
+// Width of the ⎿ result-preview row. Was chopped to 10 (misread of "reduce ~10"),
+// which made every preview useless — restored to a readable width.
+const TRACE_RESULT_PREVIEW_MAX = Number(process.env.GEM_OUT_W ?? 78)
+// Cap the number of tool-call rows so a long turn's trace stays a preview, not a
+// wall — the last N calls plus a "+N earlier" marker. Parity with gpt/llm-bot.
 const MAX_TRACE_CALLS = Number(process.env.GEM_MAX_TRACE_CALLS ?? 10)
 const MAX_DIFF_BODY_LINES = Number(process.env.GEM_MAX_DIFF_BODY_LINES ?? 12)
 
