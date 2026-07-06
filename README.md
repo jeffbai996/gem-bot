@@ -131,7 +131,7 @@ Each channel can pick which engine answers text turns:
 - **Fail-open.** Any `agy` failure (timeout, empty output, spawn error) silently falls back to the metered API — the bot never goes dark because the flat-sub CLI hiccuped.
 - **Resolution order:** the channel's explicit `/gemini engine` pick → else the global `GEMMA_AGY_CHAT` env default (`1` = `agy`, unset/`0` = `api`).
 
-Set per channel with `/gemini engine agy|api|default` (`default` clears the per-channel pick so the env default applies). Configure via env: `GEMMA_AGY_CHAT` (global default), `GEMMA_AGY_BIN` (agy binary path, default `~/.local/bin/agy`), `GEMMA_AGY_MODEL` (full display model string from `agy models`, e.g. `"Gemini 3.5 Flash (Medium)"`), `GEMMA_AGY_CHAT_TIMEOUT_MS` (runaway-process backstop, default 600000).
+Set per channel with `/gemini engine agy|api|default` (`default` clears the per-channel pick so the env default applies). Configure via env: `GEMMA_AGY_CHAT` (global default), `GEMMA_AGY_BIN` (agy binary path, default `~/.local/bin/agy`), `GEMMA_AGY_MODEL` (full display model string from `agy models`, e.g. `"Gemini 3.5 Flash (Medium)"`), `GEMMA_AGY_IDLE_TIMEOUT_MS` (silent-child watchdog; active trajectory/stdout/stderr progress resets it, default 600000), `GEMMA_AGY_CHAT_TIMEOUT_MS` (hard runaway fuse, default 2700000).
 
 ### Persona & shared context
 
@@ -193,7 +193,7 @@ Runtime state lives in `~/.gemini/channels/discord/` (override via `DISCORD_STAT
 
 | File / dir | Purpose |
 |---|---|
-| `.env` | `DISCORD_BOT_TOKEN`, `GEMINI_API_KEY`, `DISCORD_ADMIN_ID`, optional `GEMINI_MODEL`, `MAX_HISTORY_TOKENS` (default 80000), `MAX_UNSUMMARIZED_MESSAGES`, `SUMMARIZATION_BATCH_LIMIT`, `GEMINI_EMBED_COOLDOWN_MS` (default 3000), `GEMINI_BACKFILL_DELAY_MS` (default 100). **agy engine:** `GEMMA_AGY_CHAT` (`1` = agy is the global default engine; unset/`0` = api), `GEMMA_AGY_BIN` (agy binary path, default `~/.local/bin/agy`), `GEMMA_AGY_MODEL` (full display model string from `agy models`, default `"Gemini 3.5 Flash (Medium)"`), `GEMMA_AGY_CHAT_TIMEOUT_MS` (runaway-process backstop, default 600000) |
+| `.env` | `DISCORD_BOT_TOKEN`, `GEMINI_API_KEY`, `DISCORD_ADMIN_ID`, optional `GEMINI_MODEL`, `MAX_HISTORY_TOKENS` (default 80000), `MAX_UNSUMMARIZED_MESSAGES`, `SUMMARIZATION_BATCH_LIMIT`, `GEMINI_EMBED_COOLDOWN_MS` (default 3000), `GEMINI_BACKFILL_DELAY_MS` (default 100). **agy engine:** `GEMMA_AGY_CHAT` (`1` = agy is the global default engine; unset/`0` = api), `GEMMA_AGY_BIN` (agy binary path, default `~/.local/bin/agy`), `GEMMA_AGY_MODEL` (full display model string from `agy models`, default `"Gemini 3.5 Flash (Medium)"`), `GEMMA_AGY_IDLE_TIMEOUT_MS` (silent-child watchdog, default 600000), `GEMMA_AGY_CHAT_TIMEOUT_MS` (hard runaway fuse, default 2700000) |
 | `access.json` | User + channel allowlists with per-channel render flags |
 | `memory.db` | SQLite + sqlite-vss database of embedded messages |
 | `GEMINI.md` | Default system prompt; falls back to legacy `persona.md` when absent |
