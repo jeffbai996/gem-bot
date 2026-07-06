@@ -41,20 +41,21 @@ const AGY_MODEL = process.env.GEMMA_AGY_MODEL || 'Gemini 3.5 Flash (Medium)'
 // Extract the effort label from the model name, e.g. "Gemini 3.5 Flash (Medium)" → "medium"
 const AGY_EFFORT = (AGY_MODEL.match(/\(([^)]+)\)/)?.[1] ?? '').toLowerCase() || undefined
 
-// Chat-scale agy wait. `agy -p` is a blocking CLI call with no streaming event
-// channel; if it stalls, Discord just shows the thinking placeholder until this
-// trips and the caller falls back to the API. Keep the default short enough that
-// a broken agent path cannot hold the channel hostage.
-// Generous so a LONG agentic task (many tool calls — search, browse, ibkr, file
-// ops) runs to completion instead of getting SIGKILL'd mid-task and falling back
-// to the tool-less API engine, which then claims it "can't do the task" (Jeff
-// 2026-06-30: unshackle agy — a deep agentic task with Pro can run ~30min, not 30s). The
-// backstop only exists to reap a genuinely WEDGED process, not to bound real work.
-const PRINT_TIMEOUT_MS = Number(process.env.GEMMA_AGY_PRINT_TIMEOUT_MS) || 1_800_000
-// Outer runaway-process backstop. This should fire after agy's own
-// --print-timeout; it exists to kill the whole process group if the CLI ignores
-// or wedges past its own timer.
-const TIMEOUT_MS = Number(process.env.GEMMA_AGY_CHAT_TIMEOUT_MS) || (PRINT_TIMEOUT_MS + 60_000)
+// Watchdog policy, not a guessed "turn should be done by now" timer.
+// agy -p blocks until the final answer, but it writes trajectory progress while
+// working. Active trajectory/stdout/stderr progress resets the idle watchdog. The
+// hard timeout is only a final runaway fuse so a broken child cannot live forever.
+const IDLE_TIMEOUT_MS = Number(process.env.GEMMA_AGY_IDLE_TIMEOUT_MS) || 10 * 60_000
+const HARD_TIMEOUT_MS = Number(process.env.GEMMA_AGY_CHAT_TIMEOUT_MS) || 45 * 60_000
+const PRINT_TIMEOUT_MS = Number(process.env.GEMMA_AGY_PRINT_TIMEOUT_MS) || HARD_TIMEOUT_MS
+
+export function agyWatchdogPolicy(): { idleTimeoutMs: number; hardTimeoutMs: number; printTimeoutMs: number } {
+  return {
+    idleTimeoutMs: IDLE_TIMEOUT_MS,
+    hardTimeoutMs: Math.max(HARD_TIMEOUT_MS, IDLE_TIMEOUT_MS + 60_000),
+    printTimeoutMs: Math.max(PRINT_TIMEOUT_MS, IDLE_TIMEOUT_MS + 60_000),
+  }
+}
 
 // Squad-memory on the agy path: like codex-chat.ts, we don't wire an MCP
 // server — agy can run the squad-store CLI directly through its own agentic
@@ -278,7 +279,8 @@ function runAgy(
   // waiting for human confirmation that never comes (toolPermission=request-review
   // is the default, and -p has no human to respond). --add-dir grants the
   // squad-store bin dir so agy can run the recall CLI.
-  const printTimeout = `${Math.max(1, Math.ceil(PRINT_TIMEOUT_MS / 1000))}s`
+  const watchdog = agyWatchdogPolicy()
+  const printTimeout = `${Math.max(1, Math.ceil(watchdog.printTimeoutMs / 1000))}s`
   const args = [
     '--sandbox',
     '--dangerously-skip-permissions',
@@ -314,11 +316,25 @@ function runAgy(
     let out = ''
     let err = ''
     let timedOut = false
+    let timeoutKind: 'idle' | 'hard' | null = null
     let stoppedByUser = false
-    child.stdout!.on('data', (d) => { out += d.toString() })
-    child.stderr!.on('data', (d) => { err += d.toString() })
+    let lastActivityAt = Date.now()
+    const markActivity = () => { lastActivityAt = Date.now() }
+    child.stdout!.on('data', (d) => { markActivity(); out += d.toString() })
+    child.stderr!.on('data', (d) => { markActivity(); err += d.toString() })
 
-    const timer = setTimeout(() => { timedOut = true; killTree() }, TIMEOUT_MS)
+    const hardTimer = setTimeout(() => {
+      timedOut = true
+      timeoutKind = 'hard'
+      killTree()
+    }, watchdog.hardTimeoutMs)
+    const idleTimer = setInterval(() => {
+      if (timedOut) return
+      if (Date.now() - lastActivityAt < watchdog.idleTimeoutMs) return
+      timedOut = true
+      timeoutKind = 'idle'
+      killTree()
+    }, Math.min(30_000, Math.max(1000, Math.floor(watchdog.idleTimeoutMs / 4))))
 
     // /gemini stop → the AbortSignal fires → SIGKILL the agy process group so a
     // user stop actually ends an in-flight agy turn (Jeff 2026-07-01). If the
@@ -356,25 +372,31 @@ function runAgy(
             const key = `${i}:${traj.tools[i].name}`
             if (emittedTools.has(key)) continue
             emittedTools.add(key)
+            markActivity()
             try { onEvent({ type: 'tool_call_start', name: traj.tools[i].name }) } catch { /* ignore */ }
           }
           if (traj.thinking && traj.thinking !== lastEmittedThinking) {
             lastEmittedThinking = traj.thinking
+            markActivity()
             try { onEvent({ type: 'agy_thinking', text: traj.thinking }) } catch { /* ignore */ }
           }
         } catch { /* trajectory not ready / unreadable — try next tick */ }
       }, 1200)
     }
     const stopPoll = () => { if (livePoll) { clearInterval(livePoll); livePoll = null } }
+    const clearTimers = () => {
+      clearTimeout(hardTimer)
+      clearInterval(idleTimer)
+    }
 
     child.on('error', (e) => {
-      clearTimeout(timer)
+      clearTimers()
       clearAbort()
       stopPoll()
       reject(new AgyChatError(`agy process error: ${e?.message ?? e}`, Date.now() - t0))
     })
     child.on('close', (code, closeSignal) => {
-      clearTimeout(timer)
+      clearTimers()
       clearAbort()
       stopPoll()
       if (stoppedByUser) {
@@ -384,7 +406,7 @@ function runAgy(
         return reject(new AgyChatError('agy stopped by user', Date.now() - t0))
       }
       if (timedOut) {
-        return reject(new AgyChatError(`agy timed out after ${Math.round((Date.now() - t0) / 1000)}s`, Date.now() - t0))
+        return reject(new AgyChatError(`agy ${timeoutKind ?? 'runaway'} watchdog fired after ${Math.round((Date.now() - t0) / 1000)}s`, Date.now() - t0))
       }
       if (code !== 0) {
         const why = closeSignal ? `signal ${closeSignal}` : `code ${code}`
