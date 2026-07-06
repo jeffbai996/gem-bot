@@ -295,6 +295,7 @@ function formatDiff(unified: string): { badge: string; body: string[] } {
 // the trimmed assembler: header row + optional `⎿ resultPreview` line per call.
 const TRACE_BODY_CHAR_BUDGET = 1900
 const TRACE_MAX_LINES = 50
+const TRACE_RESULT_PREVIEW_MAX = 10
 
 function buildTraceLines(toolCalls: ToolCall[]): string[] {
   const lines: string[] = []
@@ -359,8 +360,8 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
       if (body.length > 24) lines.push(`... (${body.length - 24} more lines)`)
     } else if (call.resultPreview) {
       let rp = call.resultPreview.replace(/\n/g, ' ')
-      // result preview capped at 84 to match the header budget (no card overflow).
-      if (rp.length > 84) rp = rp.slice(0, 83) + '…'
+      // Continuation row: keep the second trace line tiny (Jeff: ~10 cells).
+      if (rp.length > TRACE_RESULT_PREVIEW_MAX) rp = rp.slice(0, TRACE_RESULT_PREVIEW_MAX - 1) + '…'
       lines.push(`  ⎿ ${rp}`)
     }
   }
@@ -402,8 +403,8 @@ function codeTraceLines(arts: CodeExecArtifact[]): string[] {
     lines.push(`${failed ? '- ● ' : '+ ● '}Code(${a.language})${failed ? ' FAILED' : ''}`)
     if (a.output) {
       let out = a.output.replace(/\n/g, ' ').trim()
-      // Output line limit is 84. Prefix "  ⎿ " is 4 chars. Max out is 80.
-      if (out.length > 80) out = out.slice(0, 79) + '…'
+      // Continuation row: keep the second trace line tiny (Jeff: ~10 cells).
+      if (out.length > TRACE_RESULT_PREVIEW_MAX) out = out.slice(0, TRACE_RESULT_PREVIEW_MAX - 1) + '…'
       if (out) lines.push(`  ⎿ ${out}`)
     }
   }
