@@ -296,13 +296,21 @@ function formatDiff(unified: string): { badge: string; body: string[] } {
 const TRACE_BODY_CHAR_BUDGET = 1900
 const TRACE_MAX_LINES = 50
 const TRACE_RESULT_PREVIEW_MAX = 10
+// Cap at the most recent N tool calls so a long turn's trace stays a preview, not
+// a wall (Jeff 2026-07-05: "reduce it around 10 cells"). Parity with gpt/llm-bot.
+const MAX_TRACE_CALLS = Number(process.env.GEM_MAX_TRACE_CALLS ?? 10)
+const MAX_DIFF_BODY_LINES = Number(process.env.GEM_MAX_DIFF_BODY_LINES ?? 12)
 
 function buildTraceLines(toolCalls: ToolCall[]): string[] {
   const lines: string[] = []
+  // Keep the last N calls (most recent = most relevant); note how many were dropped.
+  const dropped = Math.max(0, toolCalls.length - MAX_TRACE_CALLS)
+  const capped = dropped ? toolCalls.slice(-MAX_TRACE_CALLS) : toolCalls
+  if (dropped) lines.push(`+ ● …(+${dropped} earlier call${dropped === 1 ? '' : 's'})`)
   // Edits (with diffs) first: the diff is the payload and must not get starved by
   // a long list of shell rows below it, which the card's length cap then truncates
   // to a couple lines (gpt-bot's ordering). Order within each group preserved.
-  const ordered = [...toolCalls.filter(c => c.diff), ...toolCalls.filter(c => !c.diff)]
+  const ordered = [...capped.filter(c => c.diff), ...capped.filter(c => !c.diff)]
   for (const call of ordered) {
     const prefix = call.failed ? '- ● ' : '+ ● '
     const tail = call.failed ? ' FAILED' : ''
@@ -352,12 +360,14 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
       // own +/- markers so Discord's diff highlighter colors them.
       const { badge, body } = formatDiff(call.diff)
       lines.push(`  ⎿ ${badge}`)
-      for (const b of body.slice(0, 24)) {
+      for (const b of body.slice(0, MAX_DIFF_BODY_LINES)) {
         let line = b
         if (line.length > 84) line = line.slice(0, 83) + '…'
         lines.push(line)
       }
-      if (body.length > 24) lines.push(`... (${body.length - 24} more lines)`)
+      if (body.length > MAX_DIFF_BODY_LINES) {
+        lines.push(`... (${body.length - MAX_DIFF_BODY_LINES} more lines)`)
+      }
     } else if (call.resultPreview) {
       let rp = call.resultPreview.replace(/\n/g, ' ')
       // Continuation row: keep the second trace line tiny (Jeff: ~10 cells).
