@@ -28,9 +28,11 @@ import { handleReaction } from './reactions/handler.ts'
 import { SummaryStore } from './summarization/store.ts'
 import { SummarizationScheduler } from './summarization/scheduler.ts'
 import { fetchMessagesSince, recordInFlightTurn, clearInFlightTurn, getAllInFlightTurns } from './db.ts'
+import { DeferredActions } from './deferred-actions.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
+const deferredActions = new DeferredActions(path.join(STATE_DIR, 'deferred-actions.json'))
 
 // Send a plain channel message instead of a Discord reply-reference.
 //
@@ -512,6 +514,7 @@ const speakTurnControllers = new Map<string, AbortController>()
 client.once('ready', async () => {
   console.error(`Gem online as ${client.user?.tag} (${client.user?.id})`)
   warmAgy()
+  deferredActions.rearm(client)
   client.user?.setPresence({
     status: 'online',
     activities: [{ name: '🗄️ indexing the rubble', type: ActivityType.Custom, state: '🗄️ indexing the rubble' }]
@@ -1434,16 +1437,19 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         if (deleteCount > 0) {
           const thoughtMsgs = activeMessages.slice(0, deleteCount)
           activeMessages.splice(0, deleteCount)
-          setTimeout(() => {
-            for (const m of thoughtMsgs) m.delete().catch(() => {})
-          }, lingerMs)
+          const dueAt = Date.now() + lingerMs
+          for (const m of thoughtMsgs) {
+            deferredActions.schedule(client, { channelId: m.channelId, messageId: m.id, action: 'delete', dueAt })
+          }
         }
       }
 
       if (collapsingTrace) {
         const traceMsg = liveTraceMessage.current
         liveTraceMessage.current = null
-        setTimeout(() => { traceMsg?.delete().catch(() => {}) }, lingerMs)
+        if (traceMsg) {
+          deferredActions.schedule(client, { channelId: traceMsg.channelId, messageId: traceMsg.id, action: 'delete', dueAt: Date.now() + lingerMs })
+        }
       }
     } else if (thinkingMessage) {
       // React-only turn (empty reply) that STILL produced reasoning: don't orphan
@@ -1464,7 +1470,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       if (flags.thinking === 'collapse') {
         const thoughtMsgs = activeMessages.splice(0)
         const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000
-        setTimeout(() => { for (const m of thoughtMsgs) m.delete().catch(() => {}) }, lingerMs)
+        const dueAt = Date.now() + lingerMs
+        for (const m of thoughtMsgs) {
+          deferredActions.schedule(client, { channelId: m.channelId, messageId: m.id, action: 'delete', dueAt })
+        }
       }
     } else {
       // Truly empty (react-only, no reasoning): delete the placeholder messages.
