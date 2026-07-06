@@ -300,7 +300,7 @@ const TRACE_MAX_LINES = 50
 const TRACE_RESULT_PREVIEW_MAX = Number(process.env.GEM_OUT_W ?? 78)
 // Cap the number of tool-call rows so a long turn's trace stays a preview, not a
 // wall — the last N calls plus a "+N earlier" marker. Parity with gpt/llm-bot.
-const MAX_TRACE_CALLS = Number(process.env.GEM_MAX_TRACE_CALLS ?? 10)
+const MAX_TRACE_CALLS = Number(process.env.GEM_MAX_TRACE_CALLS ?? 11)
 const MAX_DIFF_BODY_LINES = Number(process.env.GEM_MAX_DIFF_BODY_LINES ?? 12)
 
 function buildTraceLines(toolCalls: ToolCall[]): string[] {
