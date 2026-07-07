@@ -722,6 +722,23 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // label. Empty for the API engine (no agy_thinking events on that path).
   let liveAgyThinking = ''
   const liveTraceMessage: { current: Message | null } = { current: null }
+  const collapseFailsafed = new Set<string>()
+  const collapseFailsafeMs = Math.max(
+    60_000,
+    Number(process.env.GEMINI_COLLAPSE_FAILSAFE_MS ?? '600000')
+  )
+  const scheduleCollapseFailsafe = (m: Message | null, kind: 'thinking' | 'trace') => {
+    if (!m) return
+    if (collapseFailsafed.has(m.id)) return
+    collapseFailsafed.add(m.id)
+    deferredActions.schedule(client, {
+      channelId: m.channelId,
+      messageId: m.id,
+      action: 'delete',
+      dueAt: Date.now() + collapseFailsafeMs,
+    })
+    console.error(`[cleanup] scheduled ${kind} collapse failsafe message=${m.id} in ${Math.round(collapseFailsafeMs / 1000)}s`)
+  }
   const stopThinkingAnim = async () => {
     if (thinkingAnim) { clearInterval(thinkingAnim); thinkingAnim = null }
     if (spinnerEditPromise) { await spinnerEditPromise; spinnerEditPromise = null }
@@ -882,11 +899,12 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       if (liveTraceMessage.current) {
         if (liveTraceMessage.current.content !== card) {
           await liveTraceMessage.current.edit(card).catch(() => {})
-        }
-        return
       }
-      liveTraceMessage.current = await sendRawMessage(message, card)
+      return
     }
+    liveTraceMessage.current = await sendRawMessage(message, card)
+    if (flags.trace === 'collapse') scheduleCollapseFailsafe(liveTraceMessage.current, 'trace')
+  }
 
     const startSpinner = () => {
       if (thinkingAnim) return
@@ -912,6 +930,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       if (initialMsg) {
         activeMessages.push(initialMsg as Message)
         recordInFlightTurn(message.channelId, initialMsg.id, message.id)
+        if (flags.thinking === 'collapse') scheduleCollapseFailsafe(initialMsg as Message, 'thinking')
       }
       startSpinner()
     }
