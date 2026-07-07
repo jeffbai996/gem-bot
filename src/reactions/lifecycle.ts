@@ -27,7 +27,7 @@
  */
 import type { Message } from 'discord.js'
 
-export const EMOJI = {
+const EMOJI = {
   received:        '👀',
   ingesting:       '📎',
   thinking:        '🤔',
@@ -102,21 +102,4 @@ export async function applyLifecycle(message: Message, state: LifecycleState): P
   await message.react(emoji).catch(e => {
     console.error(`[lifecycle] react ${emoji} (${state}) failed:`, e)
   })
-}
-
-/**
- * Drop a transient reaction (don't replace it). Useful when a transient
- * stage ends but another stage hasn't started yet — e.g. a search
- * completes mid-stream but more thinking continues, so we drop 🌐 without
- * adding a new state.
- */
-export async function dropLifecycle(message: Message, state: LifecycleState): Promise<void> {
-  const emoji = EMOJI[state]
-  if (!emoji) return
-  const me = message.client.user
-  if (!me) return
-  const r = message.reactions.cache.get(emoji)
-  if (r) {
-    await r.users.remove(me.id).catch(() => { /* fire-and-forget */ })
-  }
 }

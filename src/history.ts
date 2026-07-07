@@ -4,7 +4,7 @@ import { selectWithinBudget } from './token-budget.ts'
 import type { GeminiClient } from './gemini.ts'
 import { stripToolTraceCard } from './render-cleanup.ts'
 
-export interface HistoryAttachment {
+interface HistoryAttachment {
   name: string
   url: string
   mimeType: string | null
@@ -28,7 +28,7 @@ export interface GeminiContent {
 // 100 messages per call, so don't exceed this without pagination.
 const HISTORY_RAW_LIMIT = 100
 
-export async function fetchHistory(
+async function fetchHistory(
   channel: TextChannel | DMChannel | ThreadChannel,
   beforeMessageId: string
 ): Promise<HistoryMessage[]> {
