@@ -115,7 +115,7 @@ function extractJsonObject(s: string): string | null {
 // whitespace between tokens; inside strings, escapes control chars so
 // JSON.parse accepts them (and we get the original newlines back via the
 // parse's own unescaping).
-export function normalizeJsonWhitespace(s: string): string {
+function normalizeJsonWhitespace(s: string): string {
   let out = ''
   let inString = false
   let escaped = false
@@ -451,7 +451,7 @@ export function extractUsage(response: any): UsageMetadata | null {
 // Google's "search suggestion" chip — required by Gemini ToS to be shown
 // whenever grounding is used. Returns the rendered HTML widget. Discord can't
 // render HTML, but we can stash the URL the chip points at as a fallback link.
-export function extractSearchEntryPointHtml(candidate: any): string | null {
+function extractSearchEntryPointHtml(candidate: any): string | null {
   const html = candidate?.groundingMetadata?.searchEntryPoint?.renderedContent
   return typeof html === 'string' && html.length > 0 ? html : null
 }
@@ -460,7 +460,7 @@ export function extractSearchEntryPointHtml(candidate: any): string | null {
 // inline (base64 in payload) or via fileData URI (uploaded to File API).
 // Used to decide whether to drop the codeExecution tool for this turn —
 // see GeminiClient.buildTools.
-export function contentsHaveAudioVideo(contents: Array<{ parts?: Array<any> }>): boolean {
+function contentsHaveAudioVideo(contents: Array<{ parts?: Array<any> }>): boolean {
   for (const c of contents) {
     const parts = c?.parts
     if (!Array.isArray(parts)) continue
@@ -478,7 +478,7 @@ export function contentsHaveAudioVideo(contents: Array<{ parts?: Array<any> }>):
 // Compact preview of a tool result for in-chat display. Strings get truncated;
 // objects are JSON-stringified and truncated. Long results would clutter the
 // reply, so we cap aggressively.
-export function previewToolResult(result: unknown): string {
+function previewToolResult(result: unknown): string {
   let s: string
   if (typeof result === 'string') {
     s = result
@@ -514,7 +514,7 @@ export function selectFunctionCallPart(
 
 // Pull the queries Gemma actually typed into Google. Lets the user see when
 // the model is misframing what it's looking up, and confirms grounding fired.
-export function extractSearchQueries(candidate: any): string[] {
+function extractSearchQueries(candidate: any): string[] {
   const queries = candidate?.groundingMetadata?.webSearchQueries
   if (!Array.isArray(queries)) return []
   return queries.filter((q: unknown): q is string => typeof q === 'string' && q.trim().length > 0)
@@ -523,7 +523,7 @@ export function extractSearchQueries(candidate: any): string[] {
 // Gemini 3 thinking models emit thought-summary parts with `thought: true`.
 // extractModelText filters these out (they're not part of the user-facing
 // text), so we pull them separately for optional rendering.
-export function extractNativeThoughts(parts: Array<{ text?: string, thought?: boolean }> | undefined): string {
+function extractNativeThoughts(parts: Array<{ text?: string, thought?: boolean }> | undefined): string {
   if (!parts) return ''
   const chunks: string[] = []
   for (const p of parts) {
@@ -605,7 +605,7 @@ export interface BuildRequestArgs {
   cacheTtlSec?: number         // override TTL when caching; falls back to manager default
 }
 
-export function buildUserTurn(args: BuildRequestArgs): Content {
+function buildUserTurn(args: BuildRequestArgs): Content {
   const textBody = `${args.userName}: ${args.userMessageText || '(no text)'}`
   const parts: Part[] = [{ text: textBody }, ...args.userMediaParts]
   return { role: 'user', parts }
@@ -616,7 +616,7 @@ export function buildUserTurn(args: BuildRequestArgs): Content {
 // filters at cache-resurrect time, but a single rogue part anywhere in the
 // request 400s the entire turn (seen with `video/text/timestamp` 2026-05-01).
 // This is the last gate before the SDK call.
-export function sanitizeContents(contents: Content[]): { sanitized: Content[]; dropped: Array<{ mime: string }> } {
+function sanitizeContents(contents: Content[]): { sanitized: Content[]; dropped: Array<{ mime: string }> } {
   const dropped: Array<{ mime: string }> = []
   const sanitized = contents.map((c) => {
     const cleanedParts = (c.parts ?? []).filter((p: any) => {

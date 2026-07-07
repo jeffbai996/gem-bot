@@ -8,7 +8,7 @@ import { loadIbkrTools } from './ibkr-tools.ts'
 import { ibkrUnreachableStub } from './ibkr-unreachable-stub.ts'
 
 export { ToolRegistry } from './registry.ts'
-export type { Tool, ToolContext } from './registry.ts'
+export type { ToolContext } from './registry.ts'
 
 export async function buildDefaultRegistry(): Promise<ToolRegistry> {
   const r = new ToolRegistry()

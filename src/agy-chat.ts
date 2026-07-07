@@ -18,7 +18,7 @@ import type {
 // goes dark just because the flat-sub CLI hiccuped. Mirrors codex-chat.ts's
 // throw-and-fall-back contract; we keep it a plain Error since there's no
 // user-facing "stop"/"interrupted" distinction to draw on this path.
-export class AgyChatError extends Error {
+class AgyChatError extends Error {
   constructor(message: string, public readonly afterMs: number) {
     super(message)
     this.name = 'AgyChatError'

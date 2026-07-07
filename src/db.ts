@@ -8,7 +8,7 @@ const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gem
 fs.mkdirSync(STATE_DIR, { recursive: true })
 const DB_PATH = path.join(STATE_DIR, 'memory.db')
 
-export const db = new Database(DB_PATH)
+const db = new Database(DB_PATH)
 
 // Load the sqlite-vss extension
 sqliteVss.load(db)
