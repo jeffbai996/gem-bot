@@ -42,7 +42,7 @@ A single turn against Gem in a verbose-mode channel renders something like this:
 >
 > ` ↑ 14,200 · ↓ 310 · ◷ 4.2s `
 
-The verbose blocks (🌐 / 🛠️ / 🧠 / 💭 / token+time footer) are toggleable per channel. With them off, you get just the prose reply and a token footer — the model still uses every tool, you just don't see the receipts.
+The reasoning, tool-trace, and token/time footer surfaces are toggleable per channel. With trace/thinking off, you get just the prose reply and footer — the model can still use tools; the receipts are just hidden.
 
 ---
 
@@ -119,9 +119,9 @@ TTL defaults to 2 hours, configurable per channel via `/gemini cache ttl <second
 Each channel can pick which engine answers text turns:
 
 - **`api`** (default) — the metered Gemini API. Full native tooling (`googleSearch`, `codeExecution`, the function-call registry), grounding sources, the verbose usage footer, and the live tool-trace. This is everything described above.
-- **`agy`** — route text turns through the [Antigravity CLI](https://antigravity.google) (`agy`) running under a flat Google subscription instead of the metered API. Cheap, fixed-cost chat — but single-shot `agy -p` returns plain text with **no visible tool-trace, no grounding panel, and no token usage**. The whole turn (persona + recent history + the new message) is flattened into one prompt; `agy` web-searches on its own, so web grounding isn't lost, it's just not surfaced as a trace.
+- **`agy`** — route text turns through the [Antigravity CLI](https://antigravity.google) (`agy`) running under a flat Google subscription instead of the metered API. Cheap, fixed-cost chat. The bot now reconstructs visible thinking/tool trace from agy's trajectory when available, but agy still does not emit Gemini API grounding panels or token usage. The whole turn (persona + recent history + the new message) is flattened into one prompt; `agy` web-searches on its own, so web grounding isn't lost, it is just surfaced differently.
 
-**Tradeoff in one line:** `agy` = flat-sub cheap chat, no visible tool-trace; `api` = full tools + grounding + trace.
+**Tradeoff in one line:** `agy` = flat-sub cheap chat with trajectory-based trace/thinking and no token usage; `api` = full Gemini API tools + grounding + usage.
 
 **Long-term-memory aware on both paths.** Like the API path's `search_memory` tool, the `agy` path is told it can shell out to a recall CLI for durable shared context (people, preferences, projects, past decisions) and run it before replying when a message turns on that knowledge. `agy` is spawned with `--add-dir` pointing at that CLI's bin dir so the recall command is reachable from inside its sandbox.
 
@@ -144,7 +144,7 @@ The system prompt is composed at runtime from:
 
 **Per-guild persona overrides.** Drop a `persona.<guildId>.md` file in the state dir and Gem loads that persona when running in that guild, falling back to the default `GEMINI.md` everywhere else. Hot-swappable at runtime via `/gemini persona <filename>` for the current guild — no restart, no global flag flip.
 
-Gem's persona file establishes the core rule: **never pretend you did something you couldn't do.** She has `googleSearch`, `codeExecution`, multimodal perception, Discord history, and YouTube transcript ingestion — but no shell, no file write, no IBKR account state, no ability to grant her own access. Hallucinating action is the single biggest failure mode and the persona makes that explicit.
+Gem's persona file establishes the core rule: **never pretend you did something you couldn't do.** On the API engine she has `googleSearch`, `codeExecution`, multimodal perception, Discord history, and YouTube transcript ingestion, but no shell/filesystem. On the `agy` engine, the per-turn wrapper grants the CLI sandbox access to the approved shell/files/MCP surface and restores its trajectory as trace/thinking when available. Hallucinating action is still the single biggest failure mode.
 
 ---
 
@@ -171,9 +171,11 @@ Manage everything from inside Discord — no terminal-side JSON edits required. 
 |---------|---------|
 | `/gemini allow @user` / `/gemini revoke @user` | User allowlist |
 | `/gemini channel #channel enabled require_mention` | Enable/disable in a channel; require @ mention or not |
-| `/gemini thinking always\|auto\|collapse\|never [#channel]` | When/how to render the 💭 thinking block. `auto` = Gemma decides (default); `always` = force every reply; `collapse` = show it then strip after the linger; `never` = off |
-| `/gemini set <flag> <value> [#channel]` | Per-channel flags. `flag`: `show_code` (`true\|false`), `verbose` (`true\|false`), `require_mention` (`true\|false` — flip the @-mention gate without re-running `/gemini channel`) |
-| `/gemini engine agy\|api\|default [#channel]` | Per-channel chat engine. `agy` = Antigravity CLI / flat sub (no tool-trace); `api` = metered Gemini API (full tools + grounding + trace); `default` = clear the pick, use the `GEMMA_AGY_CHAT` env default. Media turns always use `api` |
+| `/gemini thinking off\|on\|collapse [#channel]` | When/how to render the 💭 thinking block. `off` = no block (default); `on` = keep it; `collapse` = show it then delete after the linger |
+| `/gemini trace off\|on\|collapse [#channel]` | Dedicated 🔧 tool-trace card. `collapse` schedules both final linger cleanup and a crash failsafe (`GEMINI_COLLAPSE_FAILSAFE_MS`, default 600s) |
+| `/gemini counter off\|token\|both [#channel]` | Footer counter. `both` includes cached-prefix detail when the API reports it; agy degrades to time-only |
+| `/gemini mention on\|off [#channel]` | Flip the @-mention gate without re-running `/gemini channel` |
+| `/gemini engine agy\|api\|default [#channel]` | Per-channel chat engine. `agy` = Antigravity CLI / flat sub with trajectory trace when available; `api` = metered Gemini API; `default` = clear the pick, use the `GEMMA_AGY_CHAT` env default. Media turns always use `api` |
 | `/gemini model api [id]` | Switch the metered Gemini API model (`GEMINI_MODEL`) and auto-restart the bot. Omit `id` to show the current one. Choices: `gemini-3-flash-preview` (default), `gemini-3-pro-preview`, `gemini-3.5-flash`, `gemini-3.1-flash-lite-preview` |
 | `/gemini model agy [agy_model]` | Switch the Antigravity CLI flat-sub model (`GEMMA_AGY_MODEL`) and auto-restart the bot. Omit `agy_model` to show the current one. Independent of `/gemini model api` — each only touches its own setting |
 | `/gemini cache on\|off [#channel]` | Toggle server-side context caching |
@@ -213,9 +215,9 @@ Runtime state lives in `~/.gemini/channels/discord/` (override via `DISCORD_STAT
     "<channel_id>": {
       "enabled": true,
       "requireMention": true,
-      "thinking": "auto",
-      "showCode": true,
-      "verbose": true,
+      "thinking": "off",
+      "trace": "collapse",
+      "counter": "both",
       "cache": true,
       "cacheTtlSec": null
     }
@@ -260,9 +262,9 @@ cat > ~/.gemini/channels/discord/access.json <<EOF
     "YOUR_CHANNEL_ID": {
       "enabled": true,
       "requireMention": true,
-      "thinking": "auto",
-      "showCode": false,
-      "verbose": false
+      "thinking": "off",
+      "trace": "off",
+      "counter": "both"
     }
   }
 }

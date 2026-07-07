@@ -10,7 +10,8 @@ export type ThinkingMode = 'off' | 'on' | 'collapse'
 
 // Chat engine for a channel. 'api' = the metered Gemini API (full tools +
 // grounding + trace). 'agy' = route text turns through the Antigravity CLI
-// (flat Google sub, no visible tool-trace). Media turns always use 'api'
+// (flat Google sub; trace/thinking restored from agy's trajectory when available).
+// Media turns always use 'api'
 // regardless — agy -p is text-only.
 export type ChatEngine = 'agy' | 'api'
 
@@ -96,6 +97,40 @@ const DEFAULT_FLAGS = {
   cache: true,
 }
 
+function normalizeChannelConfig(raw: ChannelConfig): { config: ChannelConfig; changed: boolean } {
+  const src = raw as ChannelConfig & { showCode?: unknown; verbose?: unknown }
+  const hadRetiredFields = 'showCode' in src || 'verbose' in src
+  const { showCode: _showCode, verbose: _verbose, ...rest } = src
+  let changed = hadRetiredFields
+
+  const thinking = normThinking(rest.thinking)
+  if (rest.thinking !== undefined && rest.thinking !== thinking) changed = true
+  if (rest.thinking !== undefined || changed) rest.thinking = thinking
+
+  if (rest.trace !== undefined && !VALID_TRACE_MODES.includes(rest.trace)) {
+    delete rest.trace
+    changed = true
+  }
+  if (rest.counter !== undefined && !VALID_COUNTER_MODES.includes(rest.counter)) {
+    delete rest.counter
+    changed = true
+  }
+  if (rest.engine !== undefined && !VALID_ENGINES.includes(rest.engine)) {
+    delete rest.engine
+    changed = true
+  }
+  if (rest.cache !== undefined && typeof rest.cache !== 'boolean') {
+    delete rest.cache
+    changed = true
+  }
+  if (rest.cacheTtlSec !== undefined && (typeof rest.cacheTtlSec !== 'number' || !Number.isFinite(rest.cacheTtlSec))) {
+    delete rest.cacheTtlSec
+    changed = true
+  }
+
+  return { config: rest, changed }
+}
+
 export class AccessManager {
   private stateDir: string
   private file: string
@@ -111,10 +146,18 @@ export class AccessManager {
     try {
       const raw = await fs.readFile(this.file, 'utf8')
       const parsed = JSON.parse(raw) as Partial<AccessFile>
+      let changed = false
+      const channels: Record<string, ChannelConfig> = {}
+      for (const [id, cfg] of Object.entries(parsed.channels ?? {})) {
+        const normalized = normalizeChannelConfig(cfg)
+        channels[id] = normalized.config
+        changed = changed || normalized.changed
+      }
       this.data = {
         users: parsed.users ?? {},
-        channels: parsed.channels ?? {}
+        channels
       }
+      if (changed) await this.save()
     } catch (e: any) {
       if (e.code === 'ENOENT') {
         this.data = { ...EMPTY }

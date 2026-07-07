@@ -158,8 +158,8 @@ export const geminiCommand = new SlashCommandBuilder()
       )
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
   )
-  // Per-channel chat engine. agy = Antigravity CLI (flat Google sub, no visible
-  // tool-trace); api = the metered Gemini API (full tools + grounding + trace).
+  // Per-channel chat engine. agy = Antigravity CLI (flat Google sub; trajectory
+  // trace/thinking restored when available); api = the metered Gemini API.
   // `default` clears the per-channel pick so the GEMMA_AGY_CHAT env default
   // applies. Media turns always use the API regardless (agy -p is text-only).
   .addSubcommand(subcommand =>
@@ -171,7 +171,7 @@ export const geminiCommand = new SlashCommandBuilder()
         .setDescription('omit to show current engine; else agy | api | default')
         .setRequired(false)
         .addChoices(
-          { name: 'agy — Antigravity CLI / flat Google sub (no tool-trace)', value: 'agy' },
+          { name: 'agy — Antigravity CLI / flat Google sub', value: 'agy' },
           { name: 'api — metered Gemini API (full tools + grounding + trace)', value: 'api' },
           { name: 'default — clear pick, use the GEMMA_AGY_CHAT env default', value: 'default' },
         )
@@ -383,7 +383,7 @@ interface ExtraDeps {
       return
     }
 
-    // /gemini thinking always|auto|collapse|never — gates the 💭 thinking block
+    // /gemini thinking off|on|collapse — gates the 💭 thinking block
     // AND the 🧠 native-reasoning block (both reasoning-trace renders). The
     // footer moved to /gemini counter (2026-06-28). optInReply was dropped
     // 2026-05-02. Cache toggle stays under the cache subcommand group below.
@@ -642,6 +642,7 @@ interface ExtraDeps {
       const apiModel = process.env.GEMINI_MODEL || 'gemini-3-flash-preview'
       const agyModel = process.env.GEMMA_AGY_MODEL || 'Gemini 3.5 Flash (Medium)'
       const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000
+      const failsafeMs = Math.max(60_000, Number(process.env.GEMINI_COLLAPSE_FAILSAFE_MS ?? '600000'))
       const rows: Array<[string, string]> = [
         ['engine', String(engine)],
         ['api model', apiModel],
@@ -653,6 +654,7 @@ interface ExtraDeps {
         ['cache ttl', f.cacheTtlSec != null ? `${f.cacheTtlSec}s` : 'default'],
         ['require @', f.requireMention ? 'yes' : 'no'],
         ['collapse linger', `${Math.round(lingerMs / 1000)}s`],
+        ['collapse failsafe', `${Math.round(failsafeMs / 1000)}s`],
       ]
       const pad = Math.max(...rows.map(([k]) => k.length))
       const body = rows.map(([k, v]) => `${k.padEnd(pad)} : ${v}`).join('\n')
