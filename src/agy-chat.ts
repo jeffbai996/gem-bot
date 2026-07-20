@@ -45,15 +45,14 @@ const AGY_EFFORT = (AGY_MODEL.match(/\(([^)]+)\)/)?.[1] ?? '').toLowerCase() || 
 // agy -p blocks until the final answer, but it writes trajectory progress while
 // working. Active trajectory/stdout/stderr progress resets the idle watchdog. The
 // hard timeout is only a final runaway fuse so a broken child cannot live forever.
-const IDLE_TIMEOUT_MS = Number(process.env.GEMMA_AGY_IDLE_TIMEOUT_MS) || 10 * 60_000
-const HARD_TIMEOUT_MS = Number(process.env.GEMMA_AGY_CHAT_TIMEOUT_MS) || 45 * 60_000
-const PRINT_TIMEOUT_MS = Number(process.env.GEMMA_AGY_PRINT_TIMEOUT_MS) || HARD_TIMEOUT_MS
-
 export function agyWatchdogPolicy(): { idleTimeoutMs: number; hardTimeoutMs: number; printTimeoutMs: number } {
+  const idle = Number(process.env.GEMMA_AGY_IDLE_TIMEOUT_MS) || 10 * 60_000
+  const hard = Number(process.env.GEMMA_AGY_CHAT_TIMEOUT_MS) || 45 * 60_000
+  const print = Number(process.env.GEMMA_AGY_PRINT_TIMEOUT_MS) || hard
   return {
-    idleTimeoutMs: IDLE_TIMEOUT_MS,
-    hardTimeoutMs: Math.max(HARD_TIMEOUT_MS, IDLE_TIMEOUT_MS + 60_000),
-    printTimeoutMs: Math.max(PRINT_TIMEOUT_MS, IDLE_TIMEOUT_MS + 60_000),
+    idleTimeoutMs: idle,
+    hardTimeoutMs: Math.max(hard, idle + 60_000),
+    printTimeoutMs: Math.max(print, idle + 60_000),
   }
 }
 

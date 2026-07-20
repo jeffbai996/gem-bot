@@ -24,10 +24,27 @@ Since the user asked "why is that," I want to provide a thoughtful answer.`,
 
 describe('agyWatchdogPolicy', () => {
   test('uses an idle watchdog plus a longer hard runaway fuse', () => {
-    assert.deepEqual(agyWatchdogPolicy(), {
-      idleTimeoutMs: 600_000,
-      hardTimeoutMs: 2_700_000,
-      printTimeoutMs: 2_700_000,
-    })
+    const origIdle = process.env.GEMMA_AGY_IDLE_TIMEOUT_MS
+    const origHard = process.env.GEMMA_AGY_CHAT_TIMEOUT_MS
+    const origPrint = process.env.GEMMA_AGY_PRINT_TIMEOUT_MS
+
+    delete process.env.GEMMA_AGY_IDLE_TIMEOUT_MS
+    delete process.env.GEMMA_AGY_CHAT_TIMEOUT_MS
+    delete process.env.GEMMA_AGY_PRINT_TIMEOUT_MS
+
+    try {
+      assert.deepEqual(agyWatchdogPolicy(), {
+        idleTimeoutMs: 600_000,
+        hardTimeoutMs: 2_700_000,
+        printTimeoutMs: 2_700_000,
+      })
+    } finally {
+      if (origIdle !== undefined) process.env.GEMMA_AGY_IDLE_TIMEOUT_MS = origIdle
+      else delete process.env.GEMMA_AGY_IDLE_TIMEOUT_MS
+      if (origHard !== undefined) process.env.GEMMA_AGY_CHAT_TIMEOUT_MS = origHard
+      else delete process.env.GEMMA_AGY_CHAT_TIMEOUT_MS
+      if (origPrint !== undefined) process.env.GEMMA_AGY_PRINT_TIMEOUT_MS = origPrint
+      else delete process.env.GEMMA_AGY_PRINT_TIMEOUT_MS
+    }
   })
 })
