@@ -4,6 +4,7 @@ import { statSync } from 'node:fs'
 import os from 'os'
 import dotenv from 'dotenv'
 import { AccessManager } from './access.ts'
+import { isAddressedToAnotherBot } from './mention-gate.ts'
 import { PersonaLoader } from './persona.ts'
 import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
@@ -647,6 +648,7 @@ function ingestAndGate(message: Message): boolean {
   if (message.author.bot || !client.user) return false
 
   const isMention = message.mentions.users.has(client.user.id)
+  if (isAddressedToAnotherBot(client.user.id, message.mentions.users.values())) return false
   const gate = access.canHandle({
     channelId: message.channelId,
     userId: message.author.id,
@@ -950,9 +952,12 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     }
 
     let isFlushing = false
+    let currentFlushPromise: Promise<void> | null = null
     const flushStream = async () => {
-      if (isFlushing) return
+      if (isFlushing) return currentFlushPromise
       isFlushing = true
+      let resolveFlush: () => void = () => {}
+      currentFlushPromise = new Promise((resolve) => { resolveFlush = resolve })
       try {
         await flushLiveTrace()
         let fullReply = ''
@@ -989,6 +994,9 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         }
       } finally {
         isFlushing = false
+        const resolve = resolveFlush
+        currentFlushPromise = null
+        resolve()
       }
     }
 
@@ -1161,7 +1169,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // otherwise land on Discord after the final content write below, leaving
     // the message permanently stuck on stale "Thinking…" text.
     await stopThinkingAnim()
-    // One last flush to ensure we haven't missed anything before final rendering
+    // One last flush to ensure we haven't missed anything before final rendering.
+    // If a flush is currently in progress, wait for it to complete first.
+    while (currentFlushPromise) {
+      await currentFlushPromise
+    }
     await flushStream()
 
     // Usage metadata — one line per turn for cost tracking
