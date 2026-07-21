@@ -10,6 +10,7 @@ import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
 import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources, parseResponse, formatSystemPrompt, type ParsedResponse } from './gemini.ts'
 import { respondViaAgy, warmAgy, normalizeAgyThinkingChunk } from './agy-chat.ts'
+import { composeThinkingCard } from './live-headline.ts'
 import { reformatUnifiedDiffs } from './diff-format.ts'
 import { chunk } from './chunk.ts'
 import { stripToolTraceCard } from './render-cleanup.ts'
@@ -871,9 +872,16 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // real narrate.py parity, deferred as low value-to-risk). 1200 leaves ~800
     // char headroom under Discord's 2000 cap for the header + blockquote markup.
     const SNIPPET_MAX = 1200
-    const liveThinkingSnippet = (): string => {
-      if (!liveAgyThinking) return ''
-      let head = liveAgyThinking
+    // Unified live-thinking source (Jeff 2026-07-20, gpt-paradigm port): agy
+    // feeds the trajectory poll's thinking; the API engine feeds the streamed
+    // partial `thinking` field (JSON fields stream in order react → thinking
+    // → reply, so during the thinking phase this grows live). Before this the
+    // API engine had NO live thinking in the spinner at all.
+    const liveThinkingText = (): string =>
+      liveAgyThinking || latestParsed.thinking || ''
+    const liveThinkingSnippet = (text: string): string => {
+      if (!text) return ''
+      let head = text
       if (head.length > SNIPPET_MAX) {
         // Cut at the last word boundary at/under the cap so we never clip a
         // token mid-way, then a single trailing ellipsis.
@@ -919,7 +927,13 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         const sp = GLYPHS[fi % GLYPHS.length]
         const d = dots[fi % dots.length]
         fi++
-        spinnerEditPromise = target.edit(`💭 ${sp} **${thinkingLabel}${d}**${liveThinkingSnippet()}`).catch(() => {})
+        // 💭 header + 🧠 current-thought line + thinking snippet — gpt-bot's
+        // live card, both engines (the brain line swaps as thinking advances).
+        const live = liveThinkingText()
+        spinnerEditPromise = target.edit(composeThinkingCard({
+          label: thinkingLabel, glyph: sp, dots: d,
+          thinking: live, snippet: liveThinkingSnippet(live),
+        })).catch(() => {})
       }, 1500)
     }
 
