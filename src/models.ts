@@ -3,21 +3,16 @@ export const DEFAULT_AGY_MODEL = 'gemini-3.6-flash-medium'
 
 export const API_MODEL_CHOICES = [
   { name: 'Gemini 3.6 Flash — current balanced default', value: 'gemini-3.6-flash' },
-  { name: 'Gemini 3.5 Flash — sustained agentic/coding work', value: 'gemini-3.5-flash' },
   { name: 'Gemini 3.1 Pro — strongest reasoning tier', value: 'gemini-3.1-pro-preview' },
-  { name: 'Gemini 3.5 Flash-Lite — fastest/cheapest', value: 'gemini-3.5-flash-lite' },
 ] as const
 
 // Exact ids printed by `agy models`. Antigravity no longer accepts the old
-// display strings such as "Gemini 3.5 Flash (Medium)" as its canonical model
+// display strings such as "Gemini 3.6 Flash (Medium)" as its canonical model
 // selector, so slash-command values deliberately use these CLI ids verbatim.
 export const AGY_MODEL_CHOICES = [
   { name: 'Gemini 3.6 Flash (Medium) — balanced default', value: 'gemini-3.6-flash-medium' },
   { name: 'Gemini 3.6 Flash (High) — more reasoning', value: 'gemini-3.6-flash-high' },
   { name: 'Gemini 3.6 Flash (Low) — fastest', value: 'gemini-3.6-flash-low' },
-  { name: 'Gemini 3.5 Flash (Medium)', value: 'gemini-3.5-flash-medium' },
-  { name: 'Gemini 3.5 Flash (High)', value: 'gemini-3.5-flash-high' },
-  { name: 'Gemini 3.5 Flash (Low)', value: 'gemini-3.5-flash-low' },
   { name: 'Gemini 3.1 Pro (High)', value: 'gemini-3.1-pro-high' },
   { name: 'Gemini 3.1 Pro (Low)', value: 'gemini-3.1-pro-low' },
   { name: 'Claude Sonnet 4.6', value: 'claude-sonnet-4-6' },

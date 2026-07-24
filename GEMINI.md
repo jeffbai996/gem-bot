@@ -3,7 +3,7 @@
 This document provides context for agents working on `gem-bot`.
 
 ## Project Overview
-A standalone Discord bot using Discord.js and the Gemini API (current default `gemini-3-flash-preview`, with `gemini-3-pro-preview`, `gemini-3.5-flash`, and `gemini-3.1-flash-lite-preview` selectable via `/gemini model`). It acts as an intelligent assistant with access to Gemini tools (Google Search, Code Execution) and supports full multimodal input (Images, Video, Audio, Documents).
+A standalone Discord bot using Discord.js and the Gemini API (current default `gemini-3.6-flash`, with `gemini-3.1-pro-preview` also selectable via `/gemini model`). It acts as an intelligent assistant with access to Gemini tools (Google Search, Code Execution) and supports full multimodal input (Images, Video, Audio, Documents).
 
 ## Core Architecture
 - **Language/Runtime:** TypeScript + Node.js (via `tsx`).
