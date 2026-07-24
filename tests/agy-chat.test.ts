@@ -88,6 +88,32 @@ describe('parseAgyTrajectoryText live narration', () => {
     assert.equal(parsed.answer, 'The service was using the stale checkout.')
   })
 
+  test('keeps the latest Antigravity heading available for the compact live card', () => {
+    const parsed = parseAgyTrajectoryText([
+      {
+        step_index: 2,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        thinking: '**Checking System Guidelines**\n\nI am reviewing a long block of internal setup details.',
+        content: 'I will inspect the repository.',
+        tool_calls: [{ name: 'list_dir', args: { DirectoryPath: '/workspace' } }],
+      },
+      {
+        step_index: 5,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        thinking: '**Inspecting The Renderer**\n\nI am now carefully reviewing a verbose paragraph about the renderer.',
+        content: 'I will inspect the live renderer.',
+        tool_calls: [{ name: 'view_file', args: { AbsolutePath: '/workspace/live.ts' } }],
+      },
+    ].map(row => JSON.stringify(row)).join('\n'))
+
+    assert.equal(
+      parsed.liveThinking,
+      '**Inspecting The Renderer**\nI am now carefully reviewing a verbose paragraph about the renderer.',
+    )
+  })
+
   test('treats a current tool-bearing last step as live progress, not a final answer', () => {
     const parsed = parseAgyTrajectoryText(JSON.stringify({
       step_index: 2,
