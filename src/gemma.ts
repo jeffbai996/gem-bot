@@ -9,8 +9,14 @@ import { PersonaLoader } from './persona.ts'
 import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
 import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources, parseResponse, formatSystemPrompt, type ParsedResponse } from './gemini.ts'
-import { respondViaAgy, warmAgy, normalizeAgyThinkingChunk } from './agy-chat.ts'
+import { respondViaAgy, warmAgy } from './agy-chat.ts'
 import { composeThinkingCard } from './live-headline.ts'
+import {
+  DEFAULT_AGY_MODEL,
+  DEFAULT_GEMINI_MODEL,
+  friendlyModelName,
+  modelEffort,
+} from './models.ts'
 import { reformatUnifiedDiffs } from './diff-format.ts'
 import { chunk } from './chunk.ts'
 import { stripToolTraceCard } from './render-cleanup.ts'
@@ -31,9 +37,11 @@ import { SummaryStore } from './summarization/store.ts'
 import { SummarizationScheduler } from './summarization/scheduler.ts'
 import { fetchMessagesSince, recordInFlightTurn, clearInFlightTurn, getAllInFlightTurns } from './db.ts'
 import { DeferredActions } from './deferred-actions.ts'
+import { resolveLiveUpdateInterval } from './live-update.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
+const LIVE_UPDATE_INTERVAL_MS = resolveLiveUpdateInterval(process.env.GEM_LIVE_UPDATE_INTERVAL_MS)
 const deferredActions = new DeferredActions(path.join(STATE_DIR, 'deferred-actions.json'))
 
 // Send a plain channel message instead of a Discord reply-reference.
@@ -161,7 +169,7 @@ function renderThoughtBlock(header: string, body: string): string {
   return trimmed ? `${header}\n${quoteBlock(trimmed)}` : ''
 }
 
-const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-3-flash-preview'
+const MODEL_NAME = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL
 // Cap conversation history sent per turn. 80k tokens is generous for chat
 // (~60k words of prior context) while keeping per-turn input cost bounded
 // on flash-class models. Old default was 200k, which meant every turn
@@ -719,11 +727,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // message gets permanently stuck showing stale "Thinking…" text forever,
   // since nothing ever re-checks or re-writes it (Jeff 2026-06-30).
   let spinnerEditPromise: Promise<unknown> | null = null
-  // Latest live thinking text from agy's trajectory poll (agy_thinking lifecycle
-  // event) — the spinner tick renders a trailing snippet of this so the agy
-  // engine shows real reasoning while it runs, not just a generic animated
-  // label. Empty for the API engine (no agy_thinking events on that path).
+  // Latest compact Antigravity snapshot. Reasoning and public action narration
+  // stay separate so the live card replaces one current state in place instead
+  // of accumulating the entire trajectory.
   let liveAgyThinking = ''
+  let liveAgyDetail = ''
   const liveTraceMessage: { current: Message | null } = { current: null }
   const collapseFailsafed = new Set<string>()
   const collapseFailsafeMs = Math.max(
@@ -824,19 +832,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // Media ALWAYS forces the native API — agy -p can't consume image/audio.
     const useAgy = resolvedEngine === 'agy' && allParts.length === 0
 
-    const getFriendlyModelName = () => {
-      if (useAgy) {
-        return process.env.GEMMA_AGY_MODEL || 'Gemini 3.5 Flash (Medium)'
-      }
-      const id = process.env.GEMINI_MODEL || 'gemini-3-flash-preview'
-      if (id === 'gemini-3-pro-preview') return 'Gemini 3 Pro'
-      if (id === 'gemini-3.5-flash') return 'Gemini 3.5 Flash'
-      if (id === 'gemini-3-flash-preview') return 'Gemini 3 Flash'
-      if (id === 'gemini-3.1-flash-lite-preview') return 'Gemini 3.1 Flash Lite'
-      return id
-    }
-    const modelFriendly = getFriendlyModelName()
-    const effort = (modelFriendly.match(/\(([^)]+)\)/)?.[1] ?? '').toLowerCase()
+    const activeModel = useAgy
+      ? (process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL)
+      : (process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL)
+    const modelFriendly = friendlyModelName(activeModel)
+    const effort = modelEffort(activeModel)
     const thinkingLabel = effort ? `Thinking with ${effort} effort` : `Thinking with ${modelFriendly}`
 
     let latestParsed: ParsedResponse = { react: null, thinking: null, reply: null }
@@ -859,39 +859,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // existing bot message, so there are no typing dots to show first.
     const PLACEHOLDER_DELAY_MS = parseInt(process.env.GEMMA_PLACEHOLDER_DELAY_MS ?? '2500', 10)
 
-    // Live agy thinking snippet for the spinner. Show the LEADING ~300 chars of
-    // the latest thinking (Gemma narrates top-down — the start reads as "what
-    // it's about to do", which is what we want live). Trim on a WORD boundary and
-    // append a trailing … if clipped. Was last-300 with a *leading* … — that
-    // sliced mid-word and rendered as "…w actively focusing on…", the stray
-    // leading ellipsis Jeff flagged 2026-07-01. Normalized + blockquoted to match
-    // the final block's styling. Empty when there's no live thinking yet (API
-    // engine, or agy hasn't written a thinking step to the trajectory yet).
-    // Bumped 300 → 1200 (Jeff 2026-07-02): show much more of the live thinking
-    // tail in the spinner instead of the full rolling-segment port (that's the
-    // real narrate.py parity, deferred as low value-to-risk). 1200 leaves ~800
-    // char headroom under Discord's 2000 cap for the header + blockquote markup.
-    const SNIPPET_MAX = 1200
-    // Unified live-thinking source (Jeff 2026-07-20, gpt-paradigm port): agy
-    // feeds the trajectory poll's thinking; the API engine feeds the streamed
-    // partial `thinking` field (JSON fields stream in order react → thinking
-    // → reply, so during the thinking phase this grows live). Before this the
-    // API engine had NO live thinking in the spinner at all.
+    // The API engine only has streamed reasoning; Antigravity adds a separate
+    // public action narration. Both render the same compact gpt-style card:
+    // one latest 🧠 headline plus one latest action, never the full history.
     const liveThinkingText = (): string =>
       liveAgyThinking || latestParsed.thinking || ''
-    const liveThinkingSnippet = (text: string): string => {
-      if (!text) return ''
-      let head = text
-      if (head.length > SNIPPET_MAX) {
-        // Cut at the last word boundary at/under the cap so we never clip a
-        // token mid-way, then a single trailing ellipsis.
-        const slice = head.slice(0, SNIPPET_MAX)
-        const lastSpace = slice.lastIndexOf(' ')
-        head = (lastSpace > SNIPPET_MAX * 0.6 ? slice.slice(0, lastSpace) : slice).trimEnd() + '…'
-      }
-      const clean = normalizeAgyThinkingChunk(head).trim()
-      return clean ? `\n${quoteBlock(clean)}` : ''
-    }
 
     const liveTraceCard = (): string => {
       if (flags.trace === 'off' || liveToolCalls.length === 0) return ''
@@ -927,14 +899,14 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         const sp = GLYPHS[fi % GLYPHS.length]
         const d = dots[fi % dots.length]
         fi++
-        // 💭 header + 🧠 current-thought line + thinking snippet — gpt-bot's
-        // live card, both engines (the brain line swaps as thinking advances).
+        // One render owner, one latest snapshot. Replacing this card in place
+        // is the important bit; no stale planner lines queue behind it.
         const live = liveThinkingText()
         spinnerEditPromise = target.edit(composeThinkingCard({
           label: thinkingLabel, glyph: sp, dots: d,
-          thinking: live, snippet: liveThinkingSnippet(live),
+          thinking: live, detail: liveAgyDetail,
         })).catch(() => {})
-      }, 1500)
+      }, LIVE_UPDATE_INTERVAL_MS)
     }
 
     // Post the placeholder bubble + start the spinner, once. No-op if a message
@@ -1044,10 +1016,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           call.failed = e.failed
         }
         flushStream().catch(() => {})
-      } else if (e.type === 'agy_thinking') {
-        // Picked up by the next spinner tick (runs every 1.5s independently) —
-        // no need to force an edit here, just keep the latest text current.
-        liveAgyThinking = e.text
+      } else if (e.type === 'agy_progress') {
+        // Picked up by the next spinner tick; coalescing here keeps the Discord
+        // edit cadence bounded even when the trajectory writes several steps.
+        liveAgyThinking = e.thinking || liveAgyThinking
+        liveAgyDetail = e.detail
       }
     }
     // Speak-mode FULL BARGE-IN. If this message is being spoken to a vc and a

@@ -5,6 +5,7 @@ import { isAllowedMime } from './attachments.ts'
 import type { ThinkingMode } from './access.ts'
 import { ToolRegistry } from './tools/registry.ts'
 import { GeminiCacheManager, type CachedRef } from './cache.ts'
+import { DEFAULT_GEMINI_MODEL } from './models.ts'
 
 // Thrown when Gemini rejects the request payload itself (HTTP 400). The
 // gemma.ts message handler catches this to surface a specific error to the
@@ -587,10 +588,10 @@ export type LifecycleEvent =
   | { type: 'native_thinking' }
   | { type: 'tool_call_start', name: string }
   | { type: 'tool_call_end', name: string, failed: boolean }
-  // agy's trajectory file carries real `thinking` text per planning step (same
-  // field operator_agent.py's live poll surfaces) — fired with the latest known
-  // full thinking text whenever the agy live trajectory poll sees it change.
-  | { type: 'agy_thinking', text: string }
+  // Antigravity exposes a public action narration on each planner step plus
+  // occasional substantive reasoning summaries. Keep them separate so the
+  // live card replaces one snapshot in place instead of accumulating a wall.
+  | { type: 'agy_progress', thinking: string, detail: string }
 
 export interface BuildRequestArgs {
   systemPrompt: string
@@ -638,7 +639,7 @@ export class GeminiClient {
   private apiKey: string
   private cacheManager: GeminiCacheManager
 
-  constructor(apiKey: string, modelName: string = 'gemini-3-flash-preview', registry: ToolRegistry) {
+  constructor(apiKey: string, modelName: string = DEFAULT_GEMINI_MODEL, registry: ToolRegistry) {
     this.apiKey = apiKey
     this.registry = registry
     this.modelName = modelName

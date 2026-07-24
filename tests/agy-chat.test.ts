@@ -1,6 +1,10 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { agyWatchdogPolicy, normalizeAgyThinkingChunk } from '../src/agy-chat.ts'
+import {
+  agyWatchdogPolicy,
+  normalizeAgyThinkingChunk,
+  parseAgyTrajectoryText,
+} from '../src/agy-chat.ts'
 
 describe('normalizeAgyThinkingChunk', () => {
   test('keeps headings attached to their body and strips leaked blockquote markers', () => {
@@ -46,5 +50,53 @@ describe('agyWatchdogPolicy', () => {
       if (origPrint !== undefined) process.env.GEMMA_AGY_PRINT_TIMEOUT_MS = origPrint
       else delete process.env.GEMMA_AGY_PRINT_TIMEOUT_MS
     }
+  })
+})
+
+describe('parseAgyTrajectoryText live narration', () => {
+  test('keeps the final thought history but exposes only the latest live snapshot', () => {
+    const rows = [
+      {
+        step_index: 2,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        content: 'I will inspect the repository.',
+        tool_calls: [{ name: 'list_dir', args: { DirectoryPath: '/workspace' } }],
+      },
+      {
+        step_index: 5,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        thinking: '**Finding the real path**\nThe service points at a different checkout.',
+        content: 'I will inspect the service checkout.',
+        tool_calls: [{ name: 'view_file', args: { AbsolutePath: '/workspace/service.ts' } }],
+      },
+      {
+        step_index: 8,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        content: 'The service was using the stale checkout.',
+        tool_calls: [],
+      },
+    ]
+    const parsed = parseAgyTrajectoryText(rows.map(row => JSON.stringify(row)).join('\n'))
+
+    assert.match(parsed.thinking ?? '', /I will inspect the repository/)
+    assert.match(parsed.thinking ?? '', /Finding the real path/)
+    assert.equal(parsed.liveThinking, '**Finding the real path**\nThe service points at a different checkout.')
+    assert.equal(parsed.liveProgress, 'I will inspect the service checkout.')
+    assert.equal(parsed.answer, 'The service was using the stale checkout.')
+  })
+
+  test('treats a current tool-bearing last step as live progress, not a final answer', () => {
+    const parsed = parseAgyTrajectoryText(JSON.stringify({
+      step_index: 2,
+      source: 'MODEL',
+      type: 'PLANNER_RESPONSE',
+      content: 'I will search the command implementation.',
+      tool_calls: [{ name: 'grep_search', args: { Query: 'limits' } }],
+    }))
+
+    assert.equal(parsed.liveProgress, 'I will search the command implementation.')
   })
 })

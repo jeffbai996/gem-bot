@@ -8,21 +8,13 @@ import { GeminiCacheManager } from './cache.ts'
 import { insertMessage } from './db.ts'
 import { rewriteEnvVar, scheduleSelfRestart } from './restart.ts'
 import { activeTurns } from './active-turns.ts'
-
-// Valid agy `--model` display strings (from `agy models`). The /gemini model
-// `agy_model` choice list is built from this, and the handler re-validates
-// against it so an API-style id (e.g. gemini-3-flash-preview) can never be
-// written as the agy model — agy's --model only accepts these display strings.
-// Add new tiers here when `agy models` grows.
-const VALID_AGY_MODELS: string[] = [
-  'Gemini 3.5 Flash (Medium)',
-  'Gemini 3.5 Flash (High)',
-  'Gemini 3.5 Flash (Low)',
-  'Gemini 3.1 Pro (Low)',
-  'Gemini 3.1 Pro (High)',
-  'Claude Sonnet 4.6 (Thinking)',
-  'Claude Opus 4.6 (Thinking)',
-]
+import {
+  AGY_MODEL_CHOICES,
+  API_MODEL_CHOICES,
+  DEFAULT_AGY_MODEL,
+  DEFAULT_GEMINI_MODEL,
+  isValidAgyModel,
+} from './models.ts'
 
 export const geminiCommand = new SlashCommandBuilder()
   .setName('gemini')
@@ -80,34 +72,18 @@ export const geminiCommand = new SlashCommandBuilder()
           .setName('id')
           .setDescription('omit to show current')
           .setRequired(false)
-          .addChoices(
-            { name: 'gemini-3-pro-preview — strongest reasoning, ~10x cost', value: 'gemini-3-pro-preview' },
-            { name: 'gemini-3.5-flash — newer, repriced ~5x ($1.50/$9.00 per 1M)', value: 'gemini-3.5-flash' },
-            { name: 'gemini-3-flash-preview — balanced default', value: 'gemini-3-flash-preview' },
-            { name: 'gemini-3.1-flash-lite-preview — cheapest, low-latency', value: 'gemini-3.1-flash-lite-preview' },
-          )
+          .addChoices(...API_MODEL_CHOICES)
         )
       )
       .addSubcommand(s => s
         .setName('agy')
         .setDescription('Antigravity CLI flat-sub model (GEMMA_AGY_MODEL)')
-        // MUST be a full agy display string from `agy models`, NOT an API id —
-        // agy's --model expects exactly these. The choice list is what blocks
-        // a user from setting an API-style id here (the handler re-validates
-        // against VALID_AGY_MODELS too, in case the option is filled raw).
+        // MUST be an exact id from `agy models`, not a Gemini API model id.
         .addStringOption(option => option
           .setName('agy_model')
           .setDescription('omit to show current')
           .setRequired(false)
-          .addChoices(
-            { name: 'Gemini 3.5 Flash (Medium) — balanced default', value: 'Gemini 3.5 Flash (Medium)' },
-            { name: 'Gemini 3.5 Flash (High) — more reasoning', value: 'Gemini 3.5 Flash (High)' },
-            { name: 'Gemini 3.5 Flash (Low) — fastest/cheapest', value: 'Gemini 3.5 Flash (Low)' },
-            { name: 'Gemini 3.1 Pro (Low) — Pro tier, lighter', value: 'Gemini 3.1 Pro (Low)' },
-            { name: 'Gemini 3.1 Pro (High) — Pro tier, strongest', value: 'Gemini 3.1 Pro (High)' },
-            { name: 'Claude Sonnet 4.6 (Thinking)', value: 'Claude Sonnet 4.6 (Thinking)' },
-            { name: 'Claude Opus 4.6 (Thinking)', value: 'Claude Opus 4.6 (Thinking)' },
-          )
+          .addChoices(...AGY_MODEL_CHOICES)
         )
       )
   )
@@ -343,8 +319,8 @@ interface ExtraDeps {
         // No value -> show this engine's current model. Doesn't touch or
         // mention the other engine's model at all.
         const cur = targetEngine === 'agy'
-          ? (process.env.GEMMA_AGY_MODEL || '(default \u2014 GEMMA_AGY_MODEL not set; falls back to Gemini 3.5 Flash (Medium))')
-          : (process.env.GEMINI_MODEL || '(default \u2014 GEMINI_MODEL not set; falls back to gemini-3-flash-preview)')
+          ? (process.env.GEMMA_AGY_MODEL || `(default — ${DEFAULT_AGY_MODEL})`)
+          : (process.env.GEMINI_MODEL || `(default — ${DEFAULT_GEMINI_MODEL})`)
         const valOpt = targetEngine === 'agy' ? 'agy_model' : 'id'
         return interaction.reply({
           content: `\ud83e\udd16 Current **${targetEngine}** model (${envKey}): \`${cur}\`\nPass \`${valOpt}\` to change it.`,
@@ -352,12 +328,10 @@ interface ExtraDeps {
         })
       }
 
-      // Guard: never let an API-style id land in the agy slot. The agy --model
-      // value must be a real `agy models` display string; the choice list already
-      // constrains the UI, but re-validate in case the option is filled raw.
-      if (targetEngine === 'agy' && !VALID_AGY_MODELS.includes(newModel)) {
+      // Guard against stale/raw option payloads outside the registered picker.
+      if (targetEngine === 'agy' && !isValidAgyModel(newModel)) {
         return interaction.reply({
-          content: `\u274c \`${newModel}\` is not a valid agy model. Use a display string from \`agy models\` (e.g. \`Gemini 3.5 Flash (Medium)\`), not an API id.`,
+          content: `❌ \`${newModel}\` is not a valid agy model. Use an exact id from \`agy models\` (e.g. \`${DEFAULT_AGY_MODEL}\`).`,
           ephemeral: true,
         })
       }
@@ -639,8 +613,8 @@ interface ExtraDeps {
       const envEngine = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
       const engine = f.engine ?? `${envEngine} (env default)`
       // Models are env-level (not per-channel): show the one for the active engine.
-      const apiModel = process.env.GEMINI_MODEL || 'gemini-3-flash-preview'
-      const agyModel = process.env.GEMMA_AGY_MODEL || 'Gemini 3.5 Flash (Medium)'
+      const apiModel = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL
+      const agyModel = process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL
       const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000
       const failsafeMs = Math.max(60_000, Number(process.env.GEMINI_COLLAPSE_FAILSAFE_MS ?? '600000'))
       const rows: Array<[string, string]> = [
