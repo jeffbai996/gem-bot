@@ -1,11 +1,30 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { latestThinkingHeadline, brainLine, composeThinkingCard } from '../src/live-headline.js'
+import {
+  latestThinkingHeadline,
+  compactLiveDetail,
+  brainLine,
+  composeCollapsedThinkingCard,
+  composeThinkingCard,
+} from '../src/live-headline.js'
 
 describe('latestThinkingHeadline', () => {
   it('returns the last non-empty line', () => {
     const text = 'First I looked at the repo.\n\nNow checking the margin math.'
     assert.equal(latestThinkingHeadline(text), 'Now checking the margin math.')
+  })
+
+  it('prefers the latest explicit thought heading over its verbose body', () => {
+    const text = [
+      '**Checking System Guidelines**',
+      '',
+      'I am currently reviewing every instruction and persona detail before continuing.',
+      '',
+      '**Inspecting The Renderer**',
+      '',
+      'I am now carefully investigating how each Discord edit is constructed and dispatched.',
+    ].join('\n')
+    assert.equal(latestThinkingHeadline(text), 'Inspecting The Renderer')
   })
 
   it('strips markdown dressing (quotes, headers, bold, bullets, brain)', () => {
@@ -27,6 +46,22 @@ describe('latestThinkingHeadline', () => {
   it('returns empty for empty or whitespace-only input', () => {
     assert.equal(latestThinkingHeadline(''), '')
     assert.equal(latestThinkingHeadline('\n\n  \n'), '')
+  })
+})
+
+describe('compactLiveDetail', () => {
+  it('keeps only the first line of multi-line action narration', () => {
+    assert.equal(
+      compactLiveDetail('I will inspect the renderer.\nThen I will inspect the service.\nThen I will restart it.'),
+      'I will inspect the renderer.',
+    )
+  })
+
+  it('clips a long action line on a word boundary', () => {
+    const out = compactLiveDetail('I will inspect ' + 'every relevant file '.repeat(20))
+    assert.ok(out.length <= 161)
+    assert.ok(out.endsWith('…'))
+    assert.ok(!out.endsWith('fil…'))
   })
 })
 
@@ -73,5 +108,33 @@ describe('composeThinkingCard', () => {
     })
     assert.match(out, /latest useful headline/)
     assert.doesNotMatch(out, /Old reasoning wall/)
+  })
+
+  it('keeps verbose multi-line action narration to one compact line', () => {
+    const out = composeThinkingCard({
+      label: 'Thinking',
+      thinking: '**Inspecting the renderer**\nI am reviewing every implementation detail.',
+      detail: 'I will inspect the current edit owner.\nI will inspect the queue next.',
+    })
+    assert.equal(
+      out,
+      '💭 ✻ **Thinking…**\n> 🧠 *inspecting the renderer*\nI will inspect the current edit owner.',
+    )
+  })
+})
+
+describe('composeCollapsedThinkingCard', () => {
+  it('finishes with only the latest Antigravity heading, not its accumulated wall', () => {
+    const out = composeCollapsedThinkingCard(42, [
+      '**Checking System Guidelines**',
+      'I am reviewing every instruction in a long internal paragraph.',
+      '**Fixing The Renderer**',
+      'I am now reasoning through every implementation detail at length.',
+    ].join('\n'))
+    assert.equal(
+      out,
+      '💭 **Thought for 42s**\n> 🧠 *fixing the renderer*',
+    )
+    assert.doesNotMatch(out, /every instruction|implementation detail/)
   })
 })

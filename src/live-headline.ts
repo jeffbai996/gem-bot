@@ -1,7 +1,7 @@
 // Live "🧠 current thought" headline — gpt-bot's live-ui paradigm, ported
 // 2026-07-20. The 💭 spinner card gains a compact italic line showing the
-// CURRENT thought (the last non-empty line of the streamed thinking), which
-// swaps in place as the thinking advances:
+// CURRENT thought (an explicit Antigravity heading when available, otherwise
+// the stream's last non-empty line), which swaps in place as thinking advances:
 //
 //   💭 ✻ **Thinking with high effort…**
 //   > 🧠 *weighing the margin math against the thesis*
@@ -12,22 +12,45 @@
 // `thinking` field. The cumulative reasoning wall never renders live.
 
 const HEADLINE_MAX = 120
+const DETAIL_MAX = 160
 
-/** Last non-empty line of the live thinking, stripped of markdown dressing
- * and clipped to a headline length on a word boundary. */
-export function latestThinkingHeadline(text: string): string {
-  const line = text.split(/\r?\n/).map(p => p.trim()).filter(Boolean).at(-1) ?? ''
-  const clean = line
+function clipOnWordBoundary(text: string, max: number): string {
+  if (text.length <= max) return text
+  const slice = text.slice(0, max)
+  const lastSpace = slice.lastIndexOf(' ')
+  return (lastSpace > max * 0.6 ? slice.slice(0, lastSpace) : slice).trimEnd() + '…'
+}
+
+function cleanHeadlineLine(line: string): string {
+  return line
     .replace(/^>\s*/, '')
     .replace(/^#{1,6}\s+/, '')
     .replace(/^🧠\s*/, '')
     .replace(/^\*\*(.+)\*\*$/, '$1')
     .replace(/^[-*]\s+/, '')
     .trim()
-  if (clean.length <= HEADLINE_MAX) return clean
-  const slice = clean.slice(0, HEADLINE_MAX)
-  const lastSpace = slice.lastIndexOf(' ')
-  return (lastSpace > HEADLINE_MAX * 0.6 ? slice.slice(0, lastSpace) : slice).trimEnd() + '…'
+}
+
+/** Compact live headline. Antigravity emits `**Short heading**` followed by a
+ * long private-reasoning paragraph, so prefer the latest explicit heading.
+ * Generic/native streams without headings retain the gpt-bot behavior of using
+ * their latest non-empty line. */
+export function latestThinkingHeadline(text: string): string {
+  const lines = text.split(/\r?\n/).map(p => p.trim()).filter(Boolean)
+  const explicit = lines.filter(line =>
+    /^\*\*.+\*\*$/.test(line) || /^#{1,6}\s+\S/.test(line)
+  ).at(-1)
+  const clean = cleanHeadlineLine(explicit ?? lines.at(-1) ?? '')
+  return clipOnWordBoundary(clean, HEADLINE_MAX)
+}
+
+/** Public Antigravity action narration belongs below the headline, but only as
+ * one bounded line. Some planner steps emit paragraphs/lists here; rendering
+ * them verbatim recreates the wall this live surface is meant to replace. */
+export function compactLiveDetail(text: string): string {
+  const line = text.split(/\r?\n/).map(p => p.trim()).find(Boolean) ?? ''
+  const clean = line.replace(/^>\s*/, '').replace(/^[-*]\s+/, '').trim()
+  return clipOnWordBoundary(clean, DETAIL_MAX)
 }
 
 /** The `> 🧠 *headline*` quote line (with leading newline), or '' when the
@@ -35,6 +58,12 @@ export function latestThinkingHeadline(text: string): string {
 export function brainLine(thinking: string): string {
   const headline = latestThinkingHeadline(thinking)
   return headline ? `\n> 🧠 *${headline.toLocaleLowerCase('en-US')}*` : ''
+}
+
+/** Final compact snapshot for `thinking:collapse`. Full `thinking:on` remains
+ * available separately for deliberate inspection of the complete trace. */
+export function composeCollapsedThinkingCard(seconds: number, thinking: string): string {
+  return `💭 **Thought for ${seconds}s**${brainLine(thinking)}`
 }
 
 /** Compose the full 💭 spinner card: header + one 🧠 headline + the latest
@@ -47,6 +76,6 @@ export function composeThinkingCard(opts: {
   detail?: string
 }): string {
   const { label, glyph = '✻', dots = '…', thinking = '', detail = '' } = opts
-  const cleanDetail = detail.trim()
+  const cleanDetail = compactLiveDetail(detail)
   return `💭 ${glyph} **${label}${dots}**${brainLine(thinking)}${cleanDetail ? `\n${cleanDetail}` : ''}`
 }

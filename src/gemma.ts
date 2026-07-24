@@ -10,7 +10,7 @@ import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
 import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources, parseResponse, formatSystemPrompt, type ParsedResponse } from './gemini.ts'
 import { respondViaAgy, warmAgy } from './agy-chat.ts'
-import { composeThinkingCard } from './live-headline.ts'
+import { composeCollapsedThinkingCard, composeThinkingCard } from './live-headline.ts'
 import {
   DEFAULT_AGY_MODEL,
   DEFAULT_GEMINI_MODEL,
@@ -1263,7 +1263,13 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       const thoughtSecs = Math.round(respondElapsedMs / 1000)
       const header = `💭 **Thought for ${thoughtSecs}s**`
       if (parsed.thinking) {
-        thinkingMessage += renderThoughtBlock(header, parsed.thinking) + '\n\n'
+        // Collapse mode is the live-narration surface: finish on the same
+        // compact latest headline the user watched in place, not the entire
+        // accumulated Antigravity scratchpad. `thinking:on` remains the explicit
+        // full-trace mode for anyone who actually wants the wall.
+        thinkingMessage += flags.thinking === 'collapse'
+          ? composeCollapsedThinkingCard(thoughtSecs, parsed.thinking) + '\n\n'
+          : renderThoughtBlock(header, parsed.thinking) + '\n\n'
       } else {
         thinkingMessage += header + '\n\n'
       }
