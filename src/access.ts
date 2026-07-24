@@ -2,11 +2,11 @@ import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
 
-// Unified across the squad bots (gpt/llm use the same triple): off | on | collapse.
+// Unified across the squad bots: off | on | live | collapse.
 // Legacy gem values 'never'/'always'/'auto' are coerced on read (normThinking):
 // never→off, always→on, auto→off (auto had no distinct wired behavior — it just
 // fell through with no system-prompt addendum, so it's folded into off).
-export type ThinkingMode = 'off' | 'on' | 'collapse'
+export type ThinkingMode = 'off' | 'on' | 'live' | 'collapse'
 
 // Chat engine for a channel. 'api' = the metered Gemini API (full tools +
 // grounding + trace). 'agy' = route text turns through the Antigravity CLI
@@ -33,7 +33,7 @@ export type TraceMode = 'off' | 'on' | 'collapse'
 export interface ChannelConfig {
   enabled: boolean
   requireMention: boolean
-  thinking?: ThinkingMode  // default "off" — render the 💭 thinking block (off | on | collapse)
+  thinking?: ThinkingMode  // default "off" — render the 💭 thinking block
   trace?: TraceMode        // default "off" — the 🔧 Tool-trace card: tools + web-search + code-exec (off | on | collapse)
   counter?: CounterMode    // default "token" — usage/timing footer (off | token | both)
   cache?: boolean          // default true — cache the stable system-prompt prefix server-side
@@ -57,6 +57,7 @@ export interface ChannelFlags {
 }
 
 export interface AccessFile {
+  version: 2
   users: Record<string, { allowed: boolean }>
   channels: Record<string, ChannelConfig>
 }
@@ -67,15 +68,15 @@ export interface CanHandleInput {
   isMention: boolean
 }
 
-const EMPTY: AccessFile = { users: {}, channels: {} }
-const VALID_THINKING_MODES: ThinkingMode[] = ['off', 'on', 'collapse']
+const EMPTY: AccessFile = { version: 2, users: {}, channels: {} }
+const VALID_THINKING_MODES: ThinkingMode[] = ['off', 'on', 'live', 'collapse']
 
 // Coerce a persisted thinking value (which may be a legacy gem mode) to the
-// unified triple. never→off, always→on, auto→off; anything already valid passes.
+// unified modes. never→off, always→on, auto→off; anything already valid passes.
 function normThinking(v: unknown): ThinkingMode {
   if (v === 'never' || v === 'auto') return 'off'
   if (v === 'always') return 'on'
-  if (v === 'off' || v === 'on' || v === 'collapse') return v
+  if (v === 'off' || v === 'on' || v === 'live' || v === 'collapse') return v
   return DEFAULT_FLAGS.thinking
 }
 const VALID_ENGINES: ChatEngine[] = ['agy', 'api']
@@ -146,14 +147,21 @@ export class AccessManager {
     try {
       const raw = await fs.readFile(this.file, 'utf8')
       const parsed = JSON.parse(raw) as Partial<AccessFile>
-      let changed = false
+      const needsThinkingModeMigration = parsed.version !== 2
+      let changed = needsThinkingModeMigration
       const channels: Record<string, ChannelConfig> = {}
       for (const [id, cfg] of Object.entries(parsed.channels ?? {})) {
-        const normalized = normalizeChannelConfig(cfg)
+        // Before schema v2, "collapse" was the compact replace-in-place view.
+        // Preserve that behavior under its new explicit name exactly once.
+        const migrated = needsThinkingModeMigration && cfg.thinking === 'collapse'
+          ? { ...cfg, thinking: 'live' as ThinkingMode }
+          : cfg
+        const normalized = normalizeChannelConfig(migrated)
         channels[id] = normalized.config
         changed = changed || normalized.changed
       }
       this.data = {
+        version: 2,
         users: parsed.users ?? {},
         channels
       }
@@ -226,7 +234,7 @@ export class AccessManager {
     flags?: Partial<ChannelFlags>
   ): Promise<void> {
     if (flags?.thinking !== undefined && !VALID_THINKING_MODES.includes(flags.thinking)) {
-      throw new Error(`invalid thinking mode "${flags.thinking}" — must be one of: off, on, collapse`)
+      throw new Error(`invalid thinking mode "${flags.thinking}" — must be one of: off, on, live, collapse`)
     }
     // Preserve existing flag values when re-running /gemini channel on an
     // already-configured channel. Only enabled+requireMention are mandatory;
@@ -265,7 +273,7 @@ export class AccessManager {
       throw new Error(`channel ${channelId} not configured — run /gemini channel first`)
     }
     if (patch.thinking !== undefined && !VALID_THINKING_MODES.includes(patch.thinking)) {
-      throw new Error(`invalid thinking mode "${patch.thinking}" — must be one of: off, on, collapse`)
+      throw new Error(`invalid thinking mode "${patch.thinking}" — must be one of: off, on, live, collapse`)
     }
     if (patch.engine != null && !VALID_ENGINES.includes(patch.engine)) {
       throw new Error(`invalid engine "${patch.engine}" — must be one of: agy, api`)

@@ -7,9 +7,9 @@
 //   > 🧠 *weighing the margin math against the thesis*
 //   <latest public action narration>
 //
-// Works for both engines: agy feeds the latest trajectory reasoning and action
-// as separate fields, while the API engine feeds its streamed partial
-// `thinking` field. The cumulative reasoning wall never renders live.
+// Works for both engines: agy feeds trajectory reasoning and action as separate
+// fields, while the API engine feeds its streamed partial `thinking` field.
+// `live` uses the compact current headline; `collapse` accumulates every line.
 
 const HEADLINE_MAX = 120
 const DETAIL_MAX = 160
@@ -29,6 +29,15 @@ function cleanHeadlineLine(line: string): string {
     .replace(/^\*\*(.+)\*\*$/, '$1')
     .replace(/^[-*]\s+/, '')
     .trim()
+}
+
+/** Every cleaned non-empty reasoning line, preserving arrival order for the
+ * explicit full-trace collapse mode. */
+export function thinkingTraceLines(parts: string[]): string[] {
+  return parts
+    .flatMap(part => part.split(/\r?\n/))
+    .map(cleanHeadlineLine)
+    .filter(Boolean)
 }
 
 /** Compact live headline. Antigravity emits `**Short heading**` followed by a
@@ -60,9 +69,9 @@ export function brainLine(thinking: string): string {
   return headline ? `\n> 🧠 *${headline.toLocaleLowerCase('en-US')}*` : ''
 }
 
-/** Final compact snapshot for `thinking:collapse`. Full `thinking:on` remains
+/** Final compact snapshot for `thinking:live`. Full `thinking:on` remains
  * available separately for deliberate inspection of the complete trace. */
-export function composeCollapsedThinkingCard(seconds: number, thinking: string): string {
+export function composeLiveThinkingCard(seconds: number, thinking: string): string {
   return `💭 **Thought for ${seconds}s**${brainLine(thinking)}`
 }
 
@@ -73,9 +82,20 @@ export function composeThinkingCard(opts: {
   glyph?: string
   dots?: string
   thinking?: string
+  reasoningTrace?: string[]
   detail?: string
 }): string {
-  const { label, glyph = '✻', dots = '…', thinking = '', detail = '' } = opts
+  const {
+    label,
+    glyph = '✻',
+    dots = '…',
+    thinking = '',
+    reasoningTrace = [],
+    detail = '',
+  } = opts
+  const trace = thinkingTraceLines(reasoningTrace)
+    .map(line => `> 🧠 *${line.toLocaleLowerCase('en-US')}*`)
   const cleanDetail = compactLiveDetail(detail)
-  return `💭 ${glyph} **${label}${dots}**${brainLine(thinking)}${cleanDetail ? `\n${cleanDetail}` : ''}`
+  const reasoning = trace.length ? `\n${trace.join('\n')}` : brainLine(thinking)
+  return `💭 ${glyph} **${label}${dots}**${reasoning}${cleanDetail ? `\n${cleanDetail}` : ''}`
 }

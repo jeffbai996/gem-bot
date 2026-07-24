@@ -4,8 +4,9 @@ import {
   latestThinkingHeadline,
   compactLiveDetail,
   brainLine,
-  composeCollapsedThinkingCard,
+  composeLiveThinkingCard,
   composeThinkingCard,
+  thinkingTraceLines,
 } from '../src/live-headline.js'
 
 describe('latestThinkingHeadline', () => {
@@ -121,11 +122,39 @@ describe('composeThinkingCard', () => {
       '💭 ✻ **Thinking…**\n> 🧠 *inspecting the renderer*\nI will inspect the current edit owner.',
     )
   })
+
+  it('renders the full accumulated reasoning trace in collapse mode', () => {
+    const out = composeThinkingCard({
+      label: 'Thinking',
+      reasoningTrace: [
+        'Checking the first failure mode',
+        'Comparing the second failure mode\nFixing the actual edit owner',
+      ],
+    })
+    assert.equal(
+      out,
+      [
+        '💭 ✻ **Thinking…**',
+        '> 🧠 *checking the first failure mode*',
+        '> 🧠 *comparing the second failure mode*',
+        '> 🧠 *fixing the actual edit owner*',
+      ].join('\n'),
+    )
+  })
 })
 
-describe('composeCollapsedThinkingCard', () => {
+describe('thinkingTraceLines', () => {
+  it('cleans every non-empty line without collapsing to the latest headline', () => {
+    assert.deepEqual(
+      thinkingTraceLines(['> First pass\n\n## Second pass', '🧠 Third pass']),
+      ['First pass', 'Second pass', 'Third pass'],
+    )
+  })
+})
+
+describe('composeLiveThinkingCard', () => {
   it('finishes with only the latest Antigravity heading, not its accumulated wall', () => {
-    const out = composeCollapsedThinkingCard(42, [
+    const out = composeLiveThinkingCard(42, [
       '**Checking System Guidelines**',
       'I am reviewing every instruction in a long internal paragraph.',
       '**Fixing The Renderer**',
