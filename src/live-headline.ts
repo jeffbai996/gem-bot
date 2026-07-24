@@ -5,10 +5,11 @@
 //
 //   💭 ✻ **Thinking with high effort…**
 //   > 🧠 *weighing the margin math against the thesis*
-//   > <leading snippet of the live thinking>
+//   <latest public action narration>
 //
-// Works for both engines: agy feeds it trajectory thinking (agy_thinking
-// events), the API engine feeds it the streamed partial `thinking` field.
+// Works for both engines: agy feeds the latest trajectory reasoning and action
+// as separate fields, while the API engine feeds its streamed partial
+// `thinking` field. The cumulative reasoning wall never renders live.
 
 const HEADLINE_MAX = 120
 
@@ -36,15 +37,16 @@ export function brainLine(thinking: string): string {
   return headline ? `\n> 🧠 *${headline.toLocaleLowerCase('en-US')}*` : ''
 }
 
-/** Compose the full 💭 spinner card: header + 🧠 headline + snippet. The
- * snippet arrives pre-formatted (leading newline + blockquote) or ''. */
+/** Compose the full 💭 spinner card: header + one 🧠 headline + the latest
+ * public action narration. */
 export function composeThinkingCard(opts: {
   label: string
   glyph?: string
   dots?: string
   thinking?: string
-  snippet?: string
+  detail?: string
 }): string {
-  const { label, glyph = '✻', dots = '…', thinking = '', snippet = '' } = opts
-  return `💭 ${glyph} **${label}${dots}**${brainLine(thinking)}${snippet}`
+  const { label, glyph = '✻', dots = '…', thinking = '', detail = '' } = opts
+  const cleanDetail = detail.trim()
+  return `💭 ${glyph} **${label}${dots}**${brainLine(thinking)}${cleanDetail ? `\n${cleanDetail}` : ''}`
 }

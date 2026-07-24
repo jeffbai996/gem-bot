@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { GeminiContent } from './history.ts'
 import { killProcessTree } from './kill-tree.ts'
+import { DEFAULT_AGY_MODEL, modelEffort } from './models.ts'
 import type {
   ParsedResponse,
   RespondMetadata,
@@ -31,15 +32,12 @@ class AgyChatError extends Error {
 // codex one: build prompt → run → return the text.
 const AGY_BIN = process.env.GEMMA_AGY_BIN || '/home/jbai/.local/bin/agy'
 
-// Optional model override. agy's `--model` expects the FULL display string from
-// `agy models` (e.g. "Gemini 3.5 Flash (Medium)"), not an API model id. Default
-// is a sensible Flash tier; when unset we still pass an explicit Flash model so
-// behavior is deterministic rather than riding agy's own default-of-the-day.
-// Default to Medium. The .env overrides this anyway (GEMMA_AGY_MODEL=Gemini 3.5 Flash (Medium))
-// — this code default only matters when the .env doesn't set it, e.g. in tests.
-const AGY_MODEL = process.env.GEMMA_AGY_MODEL || 'Gemini 3.5 Flash (Medium)'
-// Extract the effort label from the model name, e.g. "Gemini 3.5 Flash (Medium)" → "medium"
-const AGY_EFFORT = (AGY_MODEL.match(/\(([^)]+)\)/)?.[1] ?? '').toLowerCase() || undefined
+// Resolve lazily, after gemma.ts loads the state-dir .env. Module-level env
+// capture happened before dotenv.config() under ESM, which meant `/gemini model
+// agy` rewrote the right file but the restarted process quietly kept the code
+// default. `agy models` now exposes exact slug ids such as
+// `gemini-3.6-flash-medium`; pass those through verbatim.
+const agyModel = (): string => process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL
 
 // Watchdog policy, not a guessed "turn should be done by now" timer.
 // agy -p blocks until the final answer, but it writes trajectory progress while
@@ -284,7 +282,7 @@ function runAgy(
     '--sandbox',
     '--dangerously-skip-permissions',
     '--add-dir', SQUAD_STORE_DIR,
-    '--model', AGY_MODEL,
+    '--model', agyModel(),
     '--print-timeout', printTimeout,
     '-p', prompt,
   ]
@@ -351,13 +349,12 @@ function runAgy(
     // the post-hoc parse in respondViaAgy still produces the final canonical
     // trace regardless. Only runs when we have the pre-launch snapshot + onEvent.
     //
-    // Also fires `agy_thinking` with the latest known full thinking text whenever
-    // it changes — operator_agent.py's live poll does the exact same thing (reads
-    // `thinking` off each PLANNER_RESPONSE step in the same trajectory file) to
-    // show live reasoning; gem-bot already polled this file for tool names only,
-    // discarding the thinking field. (Jeff 2026-06-30: "wire it up.")
+    // Also emits one replace-in-place live snapshot: the latest public action
+    // narration plus the latest substantive reasoning block. The final parser
+    // still retains the full trajectory for the opt-in completed thought card;
+    // only the live surface is compact.
     const emittedTools = new Set<string>()
-    let lastEmittedThinking = ''
+    let lastEmittedProgress = ''
     let livePoll: ReturnType<typeof setInterval> | null = null
     if (onEvent && trajBefore) {
       livePoll = setInterval(() => {
@@ -374,10 +371,17 @@ function runAgy(
             markActivity()
             try { onEvent({ type: 'tool_call_start', name: traj.tools[i].name }) } catch { /* ignore */ }
           }
-          if (traj.thinking && traj.thinking !== lastEmittedThinking) {
-            lastEmittedThinking = traj.thinking
+          const progressKey = JSON.stringify([traj.liveThinking, traj.liveProgress])
+          if ((traj.liveThinking || traj.liveProgress) && progressKey !== lastEmittedProgress) {
+            lastEmittedProgress = progressKey
             markActivity()
-            try { onEvent({ type: 'agy_thinking', text: traj.thinking }) } catch { /* ignore */ }
+            try {
+              onEvent({
+                type: 'agy_progress',
+                thinking: traj.liveThinking ?? '',
+                detail: traj.liveProgress ?? '',
+              })
+            } catch { /* ignore */ }
           }
         } catch { /* trajectory not ready / unreadable — try next tick */ }
       }, 1200)
@@ -463,6 +467,10 @@ interface AgyTrajStep {
 // (mapped to display names). Empty/null when nothing was found.
 interface AgyTrajParse {
   thinking: string | null
+  // Compact live snapshot. Unlike `thinking`, these fields never accumulate
+  // every prior planner step.
+  liveThinking: string | null
+  liveProgress: string | null
   // Each tool call with a best-effort duration. agy logs only second-resolution
   // `created_at` per step (no completed_at), so we derive a call's duration as
   // the gap to the NEXT step's created_at. 0 when unknown (the trace omits the
@@ -704,13 +712,24 @@ function findAgyTrajectory(before: Map<string, number>, fingerprint?: string): s
 // are skipped (non-MODEL source). Best-effort: any error → empty parse, and the
 // caller falls back to the current behavior.
 function parseAgyTrajectory(path: string): AgyTrajParse {
-  const empty: AgyTrajParse = { thinking: null, tools: [], answer: null, writtenFiles: [] }
-  let raw: string
   try {
-    raw = readFileSync(path, 'utf8')
+    return parseAgyTrajectoryText(readFileSync(path, 'utf8'))
   } catch {
-    return empty
+    return emptyAgyTrajectory()
   }
+}
+
+const emptyAgyTrajectory = (): AgyTrajParse => ({
+  thinking: null,
+  liveThinking: null,
+  liveProgress: null,
+  tools: [],
+  answer: null,
+  writtenFiles: [],
+})
+
+export function parseAgyTrajectoryText(raw: string): AgyTrajParse {
+  const empty = emptyAgyTrajectory()
   const steps: AgyTrajStep[] = []
   for (const line of raw.split('\n')) {
     const t = line.trim()
@@ -758,12 +777,15 @@ function parseAgyTrajectory(path: string): AgyTrajParse {
   const tools: Array<{ name: string; durationMs: number; diff?: string }> = []
   const writtenFiles: string[] = []
   let answer: string | null = null
+  let liveThinking: string | null = null
+  let liveProgress: string | null = null
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i]
     if (s.source !== 'MODEL') continue // skip USER_INPUT / CONVERSATION_HISTORY / CHECKPOINT
     if (s.type === 'PLANNER_RESPONSE') {
       const isFinal = i === lastPlannerIdx
-      if (isFinal) {
+      const hasTools = Array.isArray(s.tool_calls) && s.tool_calls.length > 0
+      if (isFinal && !hasTools) {
         // The final planner step's content IS the answer text.
         if (typeof s.content === 'string' && s.content.trim()) answer = s.content.trim()
       }
@@ -774,8 +796,14 @@ function parseAgyTrajectory(path: string): AgyTrajParse {
       // Thinking…"). The final step's content is the answer, never thinking.
       if (typeof s.thinking === 'string' && s.thinking.trim()) {
         thinkingChunks.push(s.thinking.trim())
+        liveThinking = normalizeAgyThinkingChunk(s.thinking)
       } else if (!isFinal && typeof s.content === 'string' && s.content.trim()) {
         thinkingChunks.push(s.content.trim())
+      }
+      // A tool-bearing current last step is still intermediate even though it
+      // is temporarily the last row in a growing live transcript.
+      if ((hasTools || !isFinal) && typeof s.content === 'string' && s.content.trim()) {
+        liveProgress = s.content.trim()
       }
       const dur = stepMs(i)
       for (const tc of s.tool_calls ?? []) {
@@ -814,7 +842,7 @@ function parseAgyTrajectory(path: string): AgyTrajParse {
   const thinking = thinkingChunks.length
     ? thinkingChunks.map(normalizeAgyThinkingChunk).join('\n\n').trim()
     : null
-  return { thinking, tools, answer, writtenFiles }
+  return { thinking, liveThinking, liveProgress, tools, answer, writtenFiles }
 }
 
 // Fire a trivial agy -p to prime the long-lived server process so the first
@@ -823,7 +851,7 @@ export function warmAgy(): void {
   if (process.env.GEMMA_AGY_CHAT !== '1') return
   const child = spawn(AGY_BIN, [
     '--sandbox', '--add-dir', SQUAD_STORE_DIR,
-    '--model', AGY_MODEL,
+    '--model', agyModel(),
     '--print-timeout', '20s',
     '-p', 'Reply with just the word READY and nothing else. Do not use any tools.',
   ], {
@@ -1000,6 +1028,7 @@ export async function respondViaAgy(
     throw new AgyChatError('agy returned an unparseable / empty reply', 0)
   }
 
-  if (AGY_EFFORT) parsed.effort = AGY_EFFORT
+  const effort = modelEffort(agyModel())
+  if (effort) parsed.effort = effort
   return { parsed, meta: { ...emptyMeta(), toolCalls, writtenFiles } }
 }

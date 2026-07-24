@@ -52,17 +52,26 @@ describe('composeThinkingCard', () => {
     )
   })
 
-  it('header + brain line + snippet when thinking is live', () => {
+  it('renders one current brain line plus only the latest action narration', () => {
     const out = composeThinkingCard({
       label: 'Thinking with high effort',
       glyph: '✢',
       dots: '..',
       thinking: 'Step one done.\nWeighing the margin math',
-      snippet: '\n> Step one done. Weighing…',
+      detail: 'Checking the live renderer.',
     })
     assert.equal(
       out,
-      '💭 ✢ **Thinking with high effort..**\n> 🧠 *weighing the margin math*\n> Step one done. Weighing…',
+      '💭 ✢ **Thinking with high effort..**\n> 🧠 *weighing the margin math*\nChecking the live renderer.',
     )
+  })
+
+  it('does not render the cumulative reasoning body', () => {
+    const out = composeThinkingCard({
+      label: 'Thinking',
+      thinking: 'Old reasoning wall.\nLatest useful headline',
+    })
+    assert.match(out, /latest useful headline/)
+    assert.doesNotMatch(out, /Old reasoning wall/)
   })
 })
