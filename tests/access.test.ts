@@ -95,7 +95,7 @@ describe('AccessManager', () => {
     await mgr.load()
     const raw = await fs.readFile(path.join(testDir, 'access.json'), 'utf8')
     const parsed = JSON.parse(raw)
-    assert.deepEqual(parsed, { users: {}, channels: {} })
+    assert.deepEqual(parsed, { version: 2, users: {}, channels: {} })
   })
 
   test('reload picks up edits without process restart', async () => {
@@ -187,6 +187,35 @@ describe('AccessManager', () => {
     mgr = new AccessManager()
     await mgr.load()
     assert.equal(mgr.channelFlags('C1').thinking, 'off')
+  })
+
+  test('migrates the old collapse thinking mode to live once', async () => {
+    await writeAccess({
+      users: {},
+      channels: {
+        C1: { enabled: true, requireMention: false, thinking: 'collapse', trace: 'collapse' }
+      }
+    })
+    mgr = new AccessManager()
+    await mgr.load()
+
+    assert.equal(mgr.channelFlags('C1').thinking, 'live')
+    assert.equal(mgr.channelFlags('C1').trace, 'collapse')
+    const migrated = JSON.parse(await fs.readFile(path.join(testDir, 'access.json'), 'utf8'))
+    assert.equal(migrated.version, 2)
+    assert.equal(migrated.channels.C1.thinking, 'live')
+  })
+
+  test('preserves the new collapse thinking mode after migration', async () => {
+    await writeAccess({ version: 2, users: {}, channels: {} })
+    mgr = new AccessManager()
+    await mgr.load()
+    await mgr.setChannel('C1', true, false)
+    await mgr.setChannelFlags('C1', { thinking: 'collapse' })
+
+    const reloaded = new AccessManager()
+    await reloaded.load()
+    assert.equal(reloaded.channelFlags('C1').thinking, 'collapse')
   })
 
   test('channelFlags returns defaults for unknown channel', async () => {

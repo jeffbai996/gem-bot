@@ -10,7 +10,7 @@ import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
 import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources, parseResponse, formatSystemPrompt, type ParsedResponse } from './gemini.ts'
 import { respondViaAgy, warmAgy } from './agy-chat.ts'
-import { composeCollapsedThinkingCard, composeThinkingCard } from './live-headline.ts'
+import { composeLiveThinkingCard, composeThinkingCard } from './live-headline.ts'
 import {
   DEFAULT_AGY_MODEL,
   DEFAULT_GEMINI_MODEL,
@@ -727,10 +727,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // message gets permanently stuck showing stale "Thinking…" text forever,
   // since nothing ever re-checks or re-writes it (Jeff 2026-06-30).
   let spinnerEditPromise: Promise<unknown> | null = null
-  // Latest compact Antigravity snapshot. Reasoning and public action narration
-  // stay separate so the live card replaces one current state in place instead
-  // of accumulating the entire trajectory.
+  // Antigravity's current snapshot plus the ordered chunks needed by the
+  // explicit full-trace collapse mode.
   let liveAgyThinking = ''
+  const liveAgyThinkingTrace: string[] = []
   let liveAgyDetail = ''
   const liveTraceMessage: { current: Message | null } = { current: null }
   const collapseFailsafed = new Set<string>()
@@ -826,6 +826,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     }
 
     const flags = access.channelFlags(message.channelId)
+    const transientThinking = flags.thinking === 'live' || flags.thinking === 'collapse'
 
     const envDefaultEngine = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
     const resolvedEngine = flags.engine ?? envDefaultEngine
@@ -859,11 +860,15 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // existing bot message, so there are no typing dots to show first.
     const PLACEHOLDER_DELAY_MS = parseInt(process.env.GEMMA_PLACEHOLDER_DELAY_MS ?? '2500', 10)
 
-    // The API engine only has streamed reasoning; Antigravity adds a separate
-    // public action narration. Both render the same compact gpt-style card:
-    // one latest 🧠 headline plus one latest action, never the full history.
+    // Live replaces one current thought in place. Collapse instead streams the
+    // whole trace line by line; both keep Antigravity's public action narration
+    // as one separate bounded line.
     const liveThinkingText = (): string =>
       liveAgyThinking || latestParsed.thinking || ''
+    const liveThinkingTrace = (): string[] =>
+      liveAgyThinkingTrace.length
+        ? liveAgyThinkingTrace
+        : latestParsed.thinking ? [latestParsed.thinking] : []
 
     const liveTraceCard = (): string => {
       if (flags.trace === 'off' || liveToolCalls.length === 0) return ''
@@ -904,7 +909,9 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         const live = liveThinkingText()
         spinnerEditPromise = target.edit(composeThinkingCard({
           label: thinkingLabel, glyph: sp, dots: d,
-          thinking: live, detail: liveAgyDetail,
+          thinking: flags.thinking === 'off' ? '' : live,
+          reasoningTrace: flags.thinking === 'collapse' ? liveThinkingTrace() : [],
+          detail: liveAgyDetail,
         })).catch(() => {})
       }, LIVE_UPDATE_INTERVAL_MS)
     }
@@ -918,7 +925,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       if (initialMsg) {
         activeMessages.push(initialMsg as Message)
         recordInFlightTurn(message.channelId, initialMsg.id, message.id)
-        if (flags.thinking === 'collapse') scheduleCollapseFailsafe(initialMsg as Message, 'thinking')
+        if (transientThinking) scheduleCollapseFailsafe(initialMsg as Message, 'thinking')
       }
       startSpinner()
     }
@@ -929,8 +936,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       recordInFlightTurn(message.channelId, opts.editTarget.id, message.id)
       await opts.editTarget.edit(`💭 **${thinkingLabel}…**`).catch(() => {})
       startSpinner()
-    } else if (flags.thinking === 'collapse') {
-      // Collapse mode: post placeholder immediately so we see the spinner and "Thinking with..."
+    } else if (transientThinking) {
+      // Transient modes reserve the first message for the live thought card.
       await postPlaceholder()
     } else {
       // Normal turn: dots now, placeholder only if still working after the delay.
@@ -965,7 +972,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         // turn beat the delay → no transient bubble) and kill any running spinner
         // so it can't overwrite streamed text on its next 1.5s tick.
         if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
-        if (flags.thinking !== 'collapse') {
+        if (!transientThinking) {
           await stopThinkingAnim()
         }
 
@@ -973,7 +980,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         lastFlushedFullReply = fullReply
 
         const pieces = chunk(fullReply, 2000, 'newline')
-        const offset = flags.thinking === 'collapse' ? 1 : 0
+        const offset = transientThinking ? 1 : 0
         
         for (let i = 0; i < pieces.length; i++) {
           await replaceActiveMessage(message, activeMessages, i + offset, pieces[i], 'stream')
@@ -1020,6 +1027,9 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         // Picked up by the next spinner tick; coalescing here keeps the Discord
         // edit cadence bounded even when the trajectory writes several steps.
         liveAgyThinking = e.thinking || liveAgyThinking
+        if (e.thinking && liveAgyThinkingTrace.at(-1) !== e.thinking) {
+          liveAgyThinkingTrace.push(e.thinking)
+        }
         liveAgyDetail = e.detail
       }
     }
@@ -1248,11 +1258,12 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // Header sits at column 0; body blockquoted so the inner content visually
     // indents under the header without doubling up the indent on the title.
     // Goes into thinkingMessage (the separate thought-message), NOT the reply.
-    if (flags.thinking !== 'off' && meta.nativeThoughts) {
+    if (flags.thinking !== 'off' && flags.thinking !== 'live' && meta.nativeThoughts) {
       thinkingMessage += renderThoughtBlock('🧠 **Reasoning:**', meta.nativeThoughts) + '\n\n'
     }
 
-    const showThinkingFinal = flags.thinking === 'collapse' || (flags.thinking === 'on' && !!parsed.thinking)
+    const showThinkingFinal = flags.thinking === 'live'
+      || ((flags.thinking === 'on' || flags.thinking === 'collapse') && !!parsed.thinking)
     if (showThinkingFinal) {
       // Single line, no trailing colon (Jeff 2026-06-30). Was two stacked 💭
       // lines — a leftover "Thinking with X effort…" line ABOVE "Thought for
@@ -1262,14 +1273,14 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // "Thought for Ns" regardless of effort/model choice.
       const thoughtSecs = Math.round(respondElapsedMs / 1000)
       const header = `💭 **Thought for ${thoughtSecs}s**`
-      if (parsed.thinking) {
-        // Collapse mode is the live-narration surface: finish on the same
-        // compact latest headline the user watched in place, not the entire
-        // accumulated Antigravity scratchpad. `thinking:on` remains the explicit
-        // full-trace mode for anyone who actually wants the wall.
-        thinkingMessage += flags.thinking === 'collapse'
-          ? composeCollapsedThinkingCard(thoughtSecs, parsed.thinking) + '\n\n'
-          : renderThoughtBlock(header, parsed.thinking) + '\n\n'
+      const finalThinking = parsed.thinking || meta.nativeThoughts
+      if (finalThinking) {
+        // Live finishes on the same compact latest headline the user watched.
+        // Collapse and on retain the full trace; collapse removes it after the
+        // configured linger while on keeps it.
+        thinkingMessage += flags.thinking === 'live'
+          ? composeLiveThinkingCard(thoughtSecs, finalThinking) + '\n\n'
+          : renderThoughtBlock(header, finalThinking) + '\n\n'
       } else {
         thinkingMessage += header + '\n\n'
       }
@@ -1450,14 +1461,15 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
       // Collapse (Jeff 2026-06-25, reworked 2026-06-28 for the split). After a
       // linger, best-effort fire-and-forget:
-      //   • thinking:collapse → DELETE the separate thinking message(s) entirely
+      //   • thinking:live|collapse → DELETE the separate thinking message(s)
+      //     entirely
       //     (indices 0..replyStart-1), leaving just the reply below. No more
       //     regex-stripping a combined string — the thought is its own message now,
       //     so we just remove it.
       //   • trace:collapse → DELETE the separate trace card entirely.
       // Snapshot the messages we touch so a later turn mutating activeMessages
       // can't make the deferred callback hit the wrong message.
-      const collapsingThinking = flags.thinking === 'collapse' && replyStart > 0
+      const collapsingThinking = transientThinking && replyStart > 0
       const collapsingTrace = flags.trace === 'collapse' && !!liveTraceMessage.current
       const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000
 
@@ -1502,9 +1514,9 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         const excess = activeMessages.splice(thinkingPieces.length)
         for (const m of excess) await m.delete().catch(() => {})
       }
-      // Honor thinking:collapse here too — delete the thought message(s) after the
-      // linger, same as the main path.
-      if (flags.thinking === 'collapse') {
+      // Honor both transient modes here too — delete the thought message(s)
+      // after the linger, same as the main path.
+      if (transientThinking) {
         const thoughtMsgs = activeMessages.splice(0)
         const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000
         const dueAt = Date.now() + lingerMs

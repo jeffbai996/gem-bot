@@ -94,22 +94,22 @@ export const geminiCommand = new SlashCommandBuilder()
       .addChannelOption(option => option.setName('channel').setDescription('Channel to scrape').setRequired(true))
       .addIntegerOption(option => option.setName('limit').setDescription('Max messages to embed').setMinValue(1).setMaxValue(500).setRequired(false))
   )
-  // `value` is a string because values vary per flag (thinking: always|auto|
-  // never; others: true|false). The handler validates. `cache on/off` lives
-  // under the cache subcommand group below since it shares semantics with
-  // cache info|ttl|flush.
+  // The handler validates the string picker. `cache on/off` lives under the
+  // cache subcommand group below since it shares semantics with cache
+  // info|ttl|flush.
   .addSubcommand(subcommand =>
     subcommand
       .setName('thinking')
-      .setDescription('When to render the 💭 thinking block: off | on | collapse.')
+      .setDescription('Reasoning display for this channel: off | on | live | collapse.')
       .addStringOption(option => option
         .setName('mode')
-        .setDescription('off (no block) | on (force every reply) | collapse (show then strip after a linger)')
+        .setDescription('off | on | live | collapse')
         .setRequired(true)
         .addChoices(
           { name: 'off — no thinking block (default)', value: 'off' },
           { name: 'on — force a thinking block every reply', value: 'on' },
-          { name: 'collapse — show it, then strip after the linger', value: 'collapse' },
+          { name: 'live — show only the current thought', value: 'live' },
+          { name: 'collapse — stream the full trace, then collapse', value: 'collapse' },
         )
       )
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
@@ -357,7 +357,7 @@ interface ExtraDeps {
       return
     }
 
-    // /gemini thinking off|on|collapse — gates the 💭 thinking block
+    // /gemini thinking off|on|live|collapse — gates the 💭 thinking block
     // AND the 🧠 native-reasoning block (both reasoning-trace renders). The
     // footer moved to /gemini counter (2026-06-28). optInReply was dropped
     // 2026-05-02. Cache toggle stays under the cache subcommand group below.
@@ -367,11 +367,15 @@ interface ExtraDeps {
       if (!channel) {
         return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
       }
-      if (!['off', 'on', 'collapse'].includes(mode)) {
-        return interaction.reply({ content: `❌ \`thinking\` must be one of: off, on, collapse (got \`${mode}\`)`, ephemeral: true })
+      if (!['off', 'on', 'live', 'collapse'].includes(mode)) {
+        return interaction.reply({ content: `❌ \`thinking\` must be one of: off, on, live, collapse (got \`${mode}\`)`, ephemeral: true })
       }
       const updated = await access.setChannelFlags(channel.id, { thinking: mode as ThinkingMode })
-      const note = mode === 'collapse' ? ' — shown live, stripped after the linger' : ''
+      const note = mode === 'live'
+        ? ' — current thought shown live, then stripped after the linger'
+        : mode === 'collapse'
+          ? ' — full trace shown live, then collapsed after the linger'
+          : ''
       return interaction.reply({ content: `✅ <#${channel.id}> thinking = \`${updated.thinking}\`${note}.`, ephemeral: true })
     }
 
