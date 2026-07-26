@@ -29,6 +29,8 @@ import { buildDefaultRegistry } from './tools/index.ts'
 import { PendingEditsStore } from './reactions/pending-edits.ts'
 import { applyLifecycle } from './reactions/lifecycle.ts'
 import { activeTurns } from './active-turns.ts'
+import { ChannelTurnRunner } from './channel-turns.ts'
+import { LatestQueueMarker } from './queue-marker.ts'
 import { isHardStopMessage } from './stop-command.ts'
 import type { LifecycleEvent, ToolCall, CodeExecArtifact } from './gemini.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
@@ -502,7 +504,8 @@ function installGracefulShutdown(): void {
       const t = setTimeout(() => resolve('timeout'), timeoutMs)
       t.unref?.()
     })
-    const idle = activeTurns.waitForIdle().then(() => 'idle' as const)
+    const idle = Promise.all([activeTurns.waitForIdle(), channelTurns.waitForIdle()])
+      .then(() => 'idle' as const)
     Promise.race([idle, timer])
       .then(reason => {
         console.error(`[shutdown] exiting after ${reason}`)
@@ -1617,7 +1620,27 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 // messages are folded into ONE batched follow-up turn (their text joined),
 // repeated until the queue drains. Result: exactly one thinking indicator per
 // active generation per channel. Cross-channel turns still run concurrently.
-const channelTurns = new Map<string, { running: boolean; queue: Message[] }>()
+interface QueuedChannelTurn { message: Message; opts: HandleOpts }
+const queueMarker = new LatestQueueMarker(() => client.user?.id)
+const QUEUE_SETTLE_MS = Number(process.env.GEM_QUEUE_SETTLE_MS) || 1_000
+const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
+  async (channelId, batch) => {
+    const messages = batch.map(item => item.message)
+    const withAtt = [...messages].reverse().find(message => message.attachments.size > 0)
+    const carrier = withAtt ?? messages[messages.length - 1]
+    const carrierItem = batch.find(item => item.message.id === carrier.id) ?? batch[batch.length - 1]
+    const combined = messages.map(message => message.content).filter(Boolean).join('\n')
+    await queueMarker.clear(channelId)
+    await handleUserMessage(
+      carrier,
+      batch.length === 1
+        ? carrierItem.opts
+        : { combinedText: combined || undefined },
+    )
+  },
+  channelId => activeTurns.consumeStopped(channelId),
+  QUEUE_SETTLE_MS,
+)
 
 async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<void> {
   // Embed (always, for allowed messages) + gate. A gated-OUT message never
@@ -1627,40 +1650,9 @@ async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<
   if (!ingestAndGate(message)) return
 
   const cid = message.channelId
-  let st = channelTurns.get(cid)
-  if (!st) { st = { running: false, queue: [] }; channelTurns.set(cid, st) }
-  if (st.running) {
-    // A turn is already generating for this channel — queue this message and
-    // mark it seen. It'll be batched into the follow-up turn below.
-    st.queue.push(message)
-    void message.react('\u{1F557}').catch(() => {})
-    return
-  }
-  st.running = true
-  try {
-    await handleUserMessage(message, opts)
-    if (activeTurns.consumeStopped(cid)) { st.queue.length = 0 }
-    while (st.queue.length) {
-      if (activeTurns.consumeStopped(cid)) { st.queue.length = 0; break }
-      const batch = st.queue.splice(0, st.queue.length)
-      // Carrier = the message whose attachments get processed. Default to the
-      // LAST message, but if an EARLIER batched message carried attachments
-      // (image/file) and the last didn't, prefer the one WITH attachments — else
-      // a "[image]" then "what is this?" pair would silently drop the image
-      // (only the carrier's attachments are ingested). Picks the last message
-      // that has attachments; falls back to the final message.
-      const withAtt = [...batch].reverse().find(m => m.attachments.size > 0)
-      const carrier = withAtt ?? batch[batch.length - 1]
-      const combined = batch.map(m => m.content).filter(Boolean).join('\n')
-      const botId = client.user?.id
-      if (botId) for (const m of batch) {
-        void m.reactions.cache.get('\u{1F557}')?.users.remove(botId).catch(() => {})
-      }
-      await handleUserMessage(carrier, { combinedText: combined || undefined })
-    }
-  } finally {
-    st.running = false
-    if (!st.queue.length) channelTurns.delete(cid)
+  const outcome = await channelTurns.submit(cid, { message, opts })
+  if (outcome === 'queued') {
+    void queueMarker.mark(cid, message)
   }
 }
 
@@ -1687,11 +1679,11 @@ client.on('messageCreate', async (message: Message) => {
     // Explicit X/❌ above remains immediate. Deferring avoids half-rendered
     // thinking/trace edits while still preventing long turns from holding the
     // channel hostage.
-    const st = channelTurns.get(message.channelId)
-    if (st?.running && activeTurns.canRequestBarge(message.channelId)) {
+    if (channelTurns.isRunning(message.channelId) && activeTurns.canRequestBarge(message.channelId)) {
+      if (!ingestAndGate(message)) return
       activeTurns.deferStopFor(message.channelId, { clearQueue: false })
-      st.queue.unshift(message)
-      void message.react('\u{23ED}\u{FE0F}').catch(() => {})  // ⏭️ "barging — cutting in"
+      channelTurns.enqueue(message.channelId, { message, opts: {} })
+      void queueMarker.mark(message.channelId, message)
       return
     }
   }
