@@ -1,0 +1,87 @@
+/** FIFO per-channel runner that folds a quiet burst into one follow-up turn. */
+export type SubmitOutcome = 'queued' | 'drained'
+
+const delay = (ms: number): Promise<void> =>
+  new Promise(resolve => setTimeout(resolve, ms))
+
+interface ChannelState<T> {
+  running: boolean
+  queue: T[]
+}
+
+export class ChannelTurnRunner<T> {
+  private readonly states = new Map<string, ChannelState<T>>()
+  private readonly idleWaiters = new Set<() => void>()
+
+  constructor(
+    private readonly processBatch: (channelId: string, batch: T[]) => Promise<void>,
+    private readonly shouldClearQueue: (channelId: string) => boolean = () => false,
+    private readonly settleMs = 0,
+  ) {}
+
+  async submit(channelId: string, item: T): Promise<SubmitOutcome> {
+    const existing = this.states.get(channelId)
+    if (existing?.running) {
+      existing.queue.push(item)
+      return 'queued'
+    }
+
+    const state: ChannelState<T> = existing ?? { running: false, queue: [] }
+    state.running = true
+    this.states.set(channelId, state)
+    try {
+      await this.processBatch(channelId, [item])
+      if (this.shouldClearQueue(channelId)) state.queue.length = 0
+      while (state.queue.length) {
+        await this.waitForQuietQueue(state)
+        if (this.shouldClearQueue(channelId)) {
+          state.queue.length = 0
+          break
+        }
+        const batch = state.queue.splice(0, state.queue.length)
+        await this.processBatch(channelId, batch)
+        if (this.shouldClearQueue(channelId)) state.queue.length = 0
+      }
+      return 'drained'
+    } catch (error) {
+      state.queue.length = 0
+      throw error
+    } finally {
+      state.running = false
+      if (!state.queue.length) this.states.delete(channelId)
+      this.resolveIdleIfNeeded()
+    }
+  }
+
+  enqueue(channelId: string, item: T): number {
+    const state = this.states.get(channelId)
+    if (!state?.running) return 0
+    state.queue.push(item)
+    return state.queue.length
+  }
+
+  isRunning(channelId: string): boolean {
+    return this.states.get(channelId)?.running === true
+  }
+
+  waitForIdle(): Promise<void> {
+    if (this.states.size === 0) return Promise.resolve()
+    return new Promise(resolve => this.idleWaiters.add(resolve))
+  }
+
+  private async waitForQuietQueue(state: ChannelState<T>): Promise<void> {
+    if (this.settleMs <= 0) return
+    while (state.queue.length) {
+      const depth = state.queue.length
+      await delay(this.settleMs)
+      if (state.queue.length === depth) return
+    }
+  }
+
+  private resolveIdleIfNeeded(): void {
+    if (this.states.size > 0) return
+    const waiters = [...this.idleWaiters]
+    this.idleWaiters.clear()
+    for (const resolve of waiters) resolve()
+  }
+}
