@@ -40,6 +40,11 @@ import { SummarizationScheduler } from './summarization/scheduler.ts'
 import { fetchMessagesSince, recordInFlightTurn, clearInFlightTurn, getAllInFlightTurns } from './db.ts'
 import { DeferredActions } from './deferred-actions.ts'
 import { resolveLiveUpdateInterval } from './live-update.ts'
+import {
+  DEFAULT_LIVE_END_LINGER_MS,
+  TRACE_RESULT_PAYLOAD_MAX,
+  TRACE_ROW_MAX,
+} from './tool-trace.ts'
 import { extractPresenceDirective, normalizePresenceText } from './presence.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
@@ -324,7 +329,7 @@ const TRACE_BODY_CHAR_BUDGET = 1900
 const TRACE_MAX_LINES = 50
 // Width of the ⎿ result-preview row. Was chopped to 10 (misread of "reduce ~10"),
 // which made every preview useless — restored to a readable width.
-const TRACE_RESULT_PREVIEW_MAX = Number(process.env.GEM_OUT_W ?? 78)
+const TRACE_RESULT_PREVIEW_MAX = Number(process.env.GEM_OUT_W ?? TRACE_RESULT_PAYLOAD_MAX)
 // Cap the number of tool-call rows so a long turn's trace stays a preview, not a
 // wall — the last N calls plus a "+N earlier" marker. Parity with gpt/llm-bot.
 const MAX_TRACE_CALLS = Number(process.env.GEM_MAX_TRACE_CALLS ?? 11)
@@ -373,11 +378,9 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
     const hasArgs = displayArgs && typeof displayArgs === 'object' && Object.keys(displayArgs).length > 0
     let argPart = ''
     if (hasArgs) {
-      // HEADER_LINE_MAX 84 (Jeff 2026-06-30): cap lines at ~84 so a long row never
-      // wraps/overflows the Discord trace card. Raised from the old 79 to expose a
-      // bit more command/arg, but kept tight — 84 is the practical max before wrap.
-      // prefix 4 + name + () 2 + tailStr → digest gets the rest of 84.
-      const budget = 84 - 4 - name.length - 2 - tailStr.length
+      // Budget the whole rendered header, including marker, name, parens, and
+      // timing/failure suffix. Discord's diff fence wraps beyond 76 columns.
+      const budget = TRACE_ROW_MAX - 4 - name.length - 2 - tailStr.length
       const digest = argDigest(displayArgs, budget)
       argPart = digest ? `(${digest})` : ''
     }
@@ -391,7 +394,7 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
       lines.push(`  ⎿ ${badge}`)
       for (const b of body.slice(0, MAX_DIFF_BODY_LINES)) {
         let line = b
-        if (line.length > 84) line = line.slice(0, 83) + '…'
+        if (line.length > TRACE_ROW_MAX) line = line.slice(0, TRACE_ROW_MAX - 1) + '…'
         lines.push(line)
       }
       if (body.length > MAX_DIFF_BODY_LINES) {
@@ -424,9 +427,8 @@ interface TraceExtras {
 function searchTraceLines(queries: string[]): string[] {
   return queries.map(q => {
     let d = q.replace(/\n/g, ' ').trim()
-    // Total line budget 79. Prefix "+ ● Web search(" is 15. Closing ")" is 1. Total 16.
-    // So max length of query is 79 - 16 = 63.
-    if (d.length > 63) d = d.slice(0, 62) + '…'
+    const queryMax = TRACE_ROW_MAX - '+ ● Web search()'.length
+    if (d.length > queryMax) d = d.slice(0, queryMax - 1) + '…'
     return `+ ● Web search(${d})`
   })
 }
@@ -458,7 +460,9 @@ function renderTraceCard(toolCalls: ToolCall[], extras: TraceExtras = {}): strin
     ...searchTraceLines(extras.searchQueries ?? []),
     ...buildTraceLines(toolCalls),
     ...codeTraceLines(extras.codeArtifacts ?? []),
-  ]
+  ].map(line => line.length > TRACE_ROW_MAX
+    ? line.slice(0, TRACE_ROW_MAX - 1) + '…'
+    : line)
   const fitted: string[] = []
   let running = 0
   for (const ln of all.slice(0, TRACE_MAX_LINES)) {
@@ -1528,7 +1532,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // can't make the deferred callback hit the wrong message.
       const collapsingThinking = transientThinking && replyStart > 0
       const collapsingTrace = flags.trace === 'collapse' && !!liveTraceMessage.current
-      const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 5_000
+      const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || DEFAULT_LIVE_END_LINGER_MS
 
       if (collapsingThinking) {
         // SAFETY: only delete leading messages that are genuinely thinking
@@ -1575,7 +1579,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // after the linger, same as the main path.
       if (transientThinking) {
         const thoughtMsgs = activeMessages.splice(0)
-        const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 5_000
+        const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || DEFAULT_LIVE_END_LINGER_MS
         const dueAt = Date.now() + lingerMs
         for (const m of thoughtMsgs) {
           deferredActions.schedule(client, { channelId: m.channelId, messageId: m.id, action: 'delete', dueAt })

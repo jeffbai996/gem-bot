@@ -613,7 +613,7 @@ function agyToolDisplayName(
       if (detail) {
         detail = detail.replace(/\s+/g, ' ')
         if (innerSpec.basename) detail = detail.replace(/\/+$/, '').split('/').pop() || detail
-        const maxDetailLen = 69 - verb.length
+        const maxDetailLen = 62 - verb.length
         if (detail.length > maxDetailLen) {
           detail = detail.slice(0, Math.max(0, maxDetailLen - 1)) + '…'
         }
@@ -634,10 +634,10 @@ function agyToolDisplayName(
     if (typeof v === 'string' && v.trim()) {
       detail = v.trim().replace(/\s+/g, ' ')
       if (spec.basename) detail = detail.replace(/\/+$/, '').split('/').pop() || detail
-      // Total line limit is 83. Prefix "+ ● " is 4. Assume max tail is 8.
+      // Total line limit is 76. Prefix "+ ● " is 4. Assume max tail is 8.
       // Verb(detail) has spec.verb.length + 2 + detail.length.
-      // So detail.length <= 83 - 4 - 8 - spec.verb.length - 2 = 69 - spec.verb.length.
-      const maxDetailLen = 69 - spec.verb.length
+      // So detail.length <= 76 - 4 - 8 - spec.verb.length - 2 = 62 - spec.verb.length.
+      const maxDetailLen = 62 - spec.verb.length
       if (detail.length > maxDetailLen) {
         detail = detail.slice(0, Math.max(0, maxDetailLen - 1)) + '…'
       }

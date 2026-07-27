@@ -12,9 +12,9 @@
 // "<marker> <right-justified lineno> <content>" so Discord's ```diff colorizer
 // fires (marker at column 0) with an aligned line-number gutter.
 
+import { TRACE_ROW_MAX } from './tool-trace.ts'
+
 const _HUNK_RE = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/
-// Match the Claude bots' row width so wrapping behaves the same in Discord.
-const TRACE_ROW_MAX = 84
 const DIFF_MEGA_LINE_MAX = 300
 
 /** Render ONE raw unified-diff string as a Claude-style line-numbered ```diff```
@@ -67,7 +67,11 @@ export function renderClaudeStyleDiff(diffText: string): string {
     return marker === ' ' ? `  ${numStr} ${clipped}` : `${marker} ${numStr} ${clipped}`
   })
   const badge = `⎿ [+${added}, -${removed}]`
-  const headerBlock = header.length ? header.join('\n') + '\n' : ''
+  const headerBlock = header.length
+    ? header.map(line => line.length > TRACE_ROW_MAX
+      ? line.slice(0, TRACE_ROW_MAX - 1) + '…'
+      : line).join('\n') + '\n'
+    : ''
   return '```diff\n' + headerBlock + badge + '\n' + body.join('\n') + '\n```'
 }
 
