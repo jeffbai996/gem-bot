@@ -567,9 +567,14 @@ function applyBasePresence(text: string): void {
       status: 'online',
       activities: [presenceActivity(basePresenceText)],
     })
+    console.error(`[presence] applied "${basePresenceText}"`)
+  } catch (error) {
+    console.error('[presence] Discord update failed:', error)
+  }
+  try {
     writeFileSync(PRESENCE_FILE, JSON.stringify({ text: basePresenceText }) + '\n', { mode: 0o600 })
   } catch (error) {
-    console.error('[presence] update failed:', error)
+    console.error('[presence] persistence failed:', error)
   }
 }
 
@@ -577,10 +582,7 @@ client.once('ready', async () => {
   console.error(`Gem online as ${client.user?.tag} (${client.user?.id})`)
   warmAgy()
   deferredActions.rearm(client)
-  client.user?.setPresence({
-    status: 'online',
-    activities: [presenceActivity(basePresenceText)]
-  })
+  applyBasePresence(basePresenceText)
 
   // Sweep turns left in-flight by the PREVIOUS process (crash, OOM, manual
   // restart mid-turn) — anything still in this table means that process died
