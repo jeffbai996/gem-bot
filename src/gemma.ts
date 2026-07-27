@@ -1,6 +1,6 @@
 import { Client, GatewayIntentBits, Partials, ActivityType, REST, Routes, type Message } from 'discord.js'
 import path from 'path'
-import { statSync } from 'node:fs'
+import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import os from 'os'
 import dotenv from 'dotenv'
 import { AccessManager } from './access.ts'
@@ -40,11 +40,26 @@ import { SummarizationScheduler } from './summarization/scheduler.ts'
 import { fetchMessagesSince, recordInFlightTurn, clearInFlightTurn, getAllInFlightTurns } from './db.ts'
 import { DeferredActions } from './deferred-actions.ts'
 import { resolveLiveUpdateInterval } from './live-update.ts'
+import { extractPresenceDirective, normalizePresenceText } from './presence.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
 const LIVE_UPDATE_INTERVAL_MS = resolveLiveUpdateInterval(process.env.GEM_LIVE_UPDATE_INTERVAL_MS)
 const deferredActions = new DeferredActions(path.join(STATE_DIR, 'deferred-actions.json'))
+const PRESENCE_FILE = path.join(STATE_DIR, 'presence.json')
+const DEFAULT_PRESENCE_TEXT = '📡 waiting on gemini 4'
+
+function loadPresenceText(): string {
+  try {
+    const parsed = JSON.parse(readFileSync(PRESENCE_FILE, 'utf8'))
+    const text = typeof parsed?.text === 'string' ? normalizePresenceText(parsed.text) : ''
+    return text || DEFAULT_PRESENCE_TEXT
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code !== 'ENOENT') console.error('[presence] load failed:', error)
+    return DEFAULT_PRESENCE_TEXT
+  }
+}
 
 // Send a plain channel message instead of a Discord reply-reference.
 //
@@ -537,13 +552,34 @@ addVoiceGroup(geminiCommand)
 // correct if that ever changes.
 const speakTurnControllers = new Map<string, AbortController>()
 
+let basePresenceText = loadPresenceText()
+function presenceActivity(text: string) {
+  return { name: text, type: ActivityType.Custom, state: text }
+}
+
+function applyBasePresence(text: string): void {
+  const normalized = normalizePresenceText(text)
+  if (!normalized) return
+
+  basePresenceText = normalized
+  try {
+    client.user?.setPresence({
+      status: 'online',
+      activities: [presenceActivity(basePresenceText)],
+    })
+    writeFileSync(PRESENCE_FILE, JSON.stringify({ text: basePresenceText }) + '\n', { mode: 0o600 })
+  } catch (error) {
+    console.error('[presence] update failed:', error)
+  }
+}
+
 client.once('ready', async () => {
   console.error(`Gem online as ${client.user?.tag} (${client.user?.id})`)
   warmAgy()
   deferredActions.rearm(client)
   client.user?.setPresence({
     status: 'online',
-    activities: [{ name: '🗄️ indexing the rubble', type: ActivityType.Custom, state: '🗄️ indexing the rubble' }]
+    activities: [presenceActivity(basePresenceText)]
   })
 
   // Sweep turns left in-flight by the PREVIOUS process (crash, OOM, manual
@@ -1090,7 +1126,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       cacheTtlSec: flags.cacheTtlSec ?? undefined,
     }, (partial) => {
       if (activeTurns.stopIfPending(message.channelId)) return
-      latestParsed = partial
+      const visible = extractPresenceDirective(partial.reply)
+      latestParsed = { ...partial, reply: visible.reply }
     }, onLifecycleEvent, combinedSignal)
 
     // OPTIONAL agy chat engine: route turns through the Antigravity CLI
@@ -1165,7 +1202,12 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // branch, and briefly overwrites the just-finished reply with a bare
     // "💭 Thinking…" before the real final render corrects it a moment later
     // (Jeff 2026-06-30 — the "Thinking… flash after the reply" bug report).
+    const presenceUpdate = extractPresenceDirective(parsed.reply)
+    parsed = { ...parsed, reply: presenceUpdate.reply }
     latestParsed = parsed
+    if (presenceUpdate.presence) {
+      applyBasePresence(presenceUpdate.presence)
+    }
     const respondElapsedMs = Date.now() - respondT0
 
     if (streamInterval) {
