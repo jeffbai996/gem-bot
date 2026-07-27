@@ -1,10 +1,47 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  buildAgyArgs,
+  buildAgyPrompt,
   agyWatchdogPolicy,
   normalizeAgyThinkingChunk,
   parseAgyTrajectoryText,
 } from '../src/agy-chat.ts'
+
+describe('agy media bridge', () => {
+  test('tells agy to inspect local Discord attachments with view_file', () => {
+    const prompt = buildAgyPrompt({
+      systemPrompt: 'You are Gemma.',
+      history: [],
+      userMessageText: 'what happens in this?',
+      userName: 'Alice',
+      mediaFiles: [{
+        path: '/tmp/gem/inbox/message-1/0-clip.mp4',
+        name: 'clip.mp4',
+        mimeType: 'video/mp4',
+      }],
+    })
+
+    assert.match(prompt, /Discord attachments/)
+    assert.match(prompt, /view_file/)
+    assert.match(prompt, /0-clip\.mp4/)
+    assert.match(prompt, /video\/mp4/)
+  })
+
+  test('grants every attachment directory before the prompt positional', () => {
+    const args = buildAgyArgs(['/tmp/gem/inbox/message-1', '/tmp/gem/inbox/message-1'])
+    const promptIndex = args.indexOf('-p')
+    const granted = args
+      .map((arg, index) => arg === '--add-dir' ? args[index + 1] : null)
+      .filter(Boolean)
+
+    assert.ok(promptIndex > 0)
+    assert.equal(granted.length, 2)
+    assert.match(granted[0] ?? '', /\/\.local\/bin$/)
+    assert.equal(granted[1], '/tmp/gem/inbox/message-1')
+    assert.ok(args.indexOf('/tmp/gem/inbox/message-1') < promptIndex)
+  })
+})
 
 describe('normalizeAgyThinkingChunk', () => {
   test('keeps headings attached to their body and strips leaked blockquote markers', () => {

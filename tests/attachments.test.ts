@@ -53,6 +53,48 @@ describe('processAttachments', () => {
     assert.equal(result.skipped.length, 0)
   })
 
+  test('keeps an agy attachment in the message inbox until cleanup', async () => {
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+    const srv = await startServer((_, res) => { res.writeHead(200); res.end(pngBytes) })
+    const input: InputAttachment[] = [{
+      url: `${srv.url}/chart.png`,
+      name: '../chart.png',
+      size: pngBytes.length,
+      contentType: 'image/png'
+    }]
+    const result = await processAttachments('msg-agy', input, 'test-api-key', { keepLocalFiles: true })
+    srv.close()
+
+    assert.equal(result.localFiles.length, 1)
+    assert.equal(result.localFiles[0].name, '../chart.png')
+    assert.equal(result.localFiles[0].mimeType, 'image/png')
+    assert.equal(path.dirname(result.localFiles[0].path), path.join(testDir, 'inbox', 'msg-agy'))
+    assert.equal(await fs.readFile(result.localFiles[0].path, 'hex'), pngBytes.toString('hex'))
+
+    await result.cleanup()
+    await assert.rejects(() => fs.access(result.localFiles[0].path))
+  })
+
+  test('defers Gemini API upload for agy audio and video', async () => {
+    const mediaBytes = Buffer.from('local-media-smoke')
+    const srv = await startServer((_, res) => { res.writeHead(200); res.end(mediaBytes) })
+    const input: InputAttachment[] = [{
+      url: `${srv.url}/tone.mp3`,
+      name: 'tone.mp3',
+      size: mediaBytes.length,
+      contentType: 'audio/mpeg'
+    }]
+    const result = await processAttachments('msg-agy-audio', input, 'intentionally-invalid', {
+      keepLocalFiles: true,
+    })
+    srv.close()
+
+    assert.equal(result.localFiles.length, 1)
+    assert.equal(result.parts.length, 0)
+    assert.equal(result.skipped.length, 0)
+    await result.cleanup()
+  })
+
   test('skips oversized file', async () => {
     const srv = await startServer((_, res) => { res.writeHead(200); res.end('x') })
     const input: InputAttachment[] = [{

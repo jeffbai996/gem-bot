@@ -127,7 +127,7 @@ Each channel can pick which engine answers text turns:
 
 **Routing rules:**
 
-- **Media turns always use `api`.** `agy -p` is text-only, so any turn carrying an image/audio/video/doc attachment falls back to the API regardless of the channel's engine pick.
+- **Media works on `agy`.** gem-bot keeps the Discord download in the per-message `inbox/`, grants that directory with `--add-dir`, and gives agy the exact local paths so its multimodal `view_file` tool can inspect images, audio, video, and documents. The metered API remains the fail-open fallback if agy itself fails.
 - **Fail-open.** Any `agy` failure (timeout, empty output, spawn error) silently falls back to the metered API — the bot never goes dark because the flat-sub CLI hiccuped.
 - **Resolution order:** the channel's explicit `/gemini engine` pick → else the global `GEMMA_AGY_CHAT` env default (`1` = `agy`, unset/`0` = `api`).
 
@@ -175,7 +175,7 @@ Manage everything from inside Discord — no terminal-side JSON edits required. 
 | `/gemini trace off\|on\|collapse [#channel]` | Dedicated 🔧 tool-trace card. `collapse` schedules both final linger cleanup and a crash failsafe (`GEMINI_COLLAPSE_FAILSAFE_MS`, default 600s) |
 | `/gemini counter off\|token\|both [#channel]` | Footer counter. `both` includes cached-prefix detail when the API reports it; agy degrades to time-only |
 | `/gemini mention on\|off [#channel]` | Flip the @-mention gate without re-running `/gemini channel` |
-| `/gemini engine agy\|api\|default [#channel]` | Per-channel chat engine. `agy` = Antigravity CLI / flat sub with trajectory trace when available; `api` = metered Gemini API; `default` = clear the pick, use the `GEMMA_AGY_CHAT` env default. Media turns always use `api` |
+| `/gemini engine agy\|api\|default [#channel]` | Per-channel chat engine. `agy` = Antigravity CLI / flat sub with trajectory trace and local media ingestion through `view_file`; `api` = metered Gemini API; `default` = clear the pick, use the `GEMMA_AGY_CHAT` env default |
 | `/gemini model api [id]` | Switch the metered Gemini API model (`GEMINI_MODEL`) and auto-restart the bot. Omit `id` to show the current one. Choices: `gemini-3.6-flash` (default), `gemini-3.1-pro-preview` |
 | `/gemini model agy [agy_model]` | Switch the Antigravity CLI flat-sub model (`GEMMA_AGY_MODEL`) and auto-restart the bot. Omit `agy_model` to show the current one. Independent of `/gemini model api` — each only touches its own setting |
 | `/gemini cache on\|off [#channel]` | Toggle server-side context caching |
