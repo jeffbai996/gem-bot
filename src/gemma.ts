@@ -1484,7 +1484,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // can't make the deferred callback hit the wrong message.
       const collapsingThinking = transientThinking && replyStart > 0
       const collapsingTrace = flags.trace === 'collapse' && !!liveTraceMessage.current
-      const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000
+      const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 5_000
 
       if (collapsingThinking) {
         // SAFETY: only delete leading messages that are genuinely thinking
@@ -1531,7 +1531,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // after the linger, same as the main path.
       if (transientThinking) {
         const thoughtMsgs = activeMessages.splice(0)
-        const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000
+        const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 5_000
         const dueAt = Date.now() + lingerMs
         for (const m of thoughtMsgs) {
           deferredActions.schedule(client, { channelId: m.channelId, messageId: m.id, action: 'delete', dueAt })
