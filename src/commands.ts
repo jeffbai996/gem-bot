@@ -259,6 +259,39 @@ interface ExtraDeps {
   summarizer: { runForChannel(channelId: string): Promise<{ messageCount: number } | null> }
 }
 
+// The one settings card. /gemini settings renders it, and every setter ack
+// appends it after a one-line "what changed" — so the reply to ANY config
+// change is the same fenced block showing the channel's full resolved state,
+// instead of a prose dump of flag names and "change via …" navigation
+// (Jeff 2026-07-27 copy-edit run).
+function settingsCard(access: AccessManager, channelId: string): string {
+  const f = access.channelFlags(channelId)
+  // Engine: per-channel pick, else the GEMMA_AGY_CHAT env default.
+  const envEngine = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
+  const engine = f.engine ?? `${envEngine} (env default)`
+  // Models are env-level (not per-channel): show the one for the active engine.
+  const apiModel = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL
+  const agyModel = process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL
+  const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000
+  const failsafeMs = Math.max(60_000, Number(process.env.GEMINI_COLLAPSE_FAILSAFE_MS ?? '600000'))
+  const rows: Array<[string, string]> = [
+    ['engine', String(engine)],
+    ['api model', apiModel],
+    ['agy model', agyModel],
+    ['thinking', `${f.thinking} (default off)`],
+    ['trace', `${f.trace} (default off)`],
+    ['counter', `${f.counter} (default both)`],
+    ['cache', `${f.cache} (default true)`],
+    ['cache ttl', f.cacheTtlSec != null ? `${f.cacheTtlSec}s` : 'default'],
+    ['require @', f.requireMention ? 'yes' : 'no'],
+    ['collapse linger', `${Math.round(lingerMs / 1000)}s`],
+    ['collapse failsafe', `${Math.round(failsafeMs / 1000)}s`],
+  ]
+  const pad = Math.max(...rows.map(([k]) => k.length))
+  const body = rows.map(([k, v]) => `${k.padEnd(pad)} : ${v}`).join('\n')
+  return `⚙️ **gemini settings** — <#${channelId}>\n\`\`\`\n${body}\n\`\`\``
+}
+
   export async function executeGeminiCommand(interaction: ChatInputCommandInteraction, access: AccessManager, persona: PersonaLoader, gemini: GeminiClient, adminUserId: string | undefined, deps: ExtraDeps) {
   // Extra layer of security: only specific user ID from .env can use this, 
   // or anyone with Server Admin if no specific ID is set.
@@ -291,9 +324,8 @@ interface ExtraDeps {
       const enabled = interaction.options.getBoolean('enabled', true)
       const requireMention = interaction.options.getBoolean('require_mention', true)
       await access.setChannel(channel.id, enabled, requireMention)
-      const flags = access.channelFlags(channel.id)
       return interaction.reply({
-        content: `✅ <#${channel.id}> configured. enabled=${enabled}, requireMention=${requireMention}. other flags (thinking=${flags.thinking}, trace=${flags.trace}, counter=${flags.counter}, cache=${flags.cache}) — change via \`/gemini thinking\`, \`/gemini trace\`, \`/gemini counter\`, \`/gemini cache\` or \`/gemini mention\`. See all with \`/gemini settings\`.`,
+        content: `✅ <#${channel.id}> ${enabled ? 'enabled' : 'disabled'}\n${settingsCard(access, channel.id)}`,
         ephemeral: true
       })
     }
@@ -371,12 +403,7 @@ interface ExtraDeps {
         return interaction.reply({ content: `❌ \`thinking\` must be one of: off, on, live, collapse (got \`${mode}\`)`, ephemeral: true })
       }
       const updated = await access.setChannelFlags(channel.id, { thinking: mode as ThinkingMode })
-      const note = mode === 'live'
-        ? ' — current thought shown live, then stripped after the linger'
-        : mode === 'collapse'
-          ? ' — full trace shown live, then collapsed after the linger'
-          : ''
-      return interaction.reply({ content: `✅ <#${channel.id}> thinking = \`${updated.thinking}\`${note}.`, ephemeral: true })
+      return interaction.reply({ content: `✅ thinking → \`${updated.thinking}\`\n${settingsCard(access, channel.id)}`, ephemeral: true })
     }
 
     // /gemini trace off|on|collapse — the dedicated 🔧 Tool-trace card toggle,
@@ -394,12 +421,7 @@ interface ExtraDeps {
       }
       try {
         const updated = await access.setChannelFlags(channel.id, { trace: value as TraceMode })
-        const note = value === 'collapse'
-          ? ' — shown live, stripped after the linger'
-          : value === 'on'
-            ? ' — 🔧 Tool-trace card above each reply that ran tools'
-            : ' — no tool-trace card'
-        return interaction.reply({ content: `✅ <#${channel.id}> trace = \`${updated.trace}\`${note}.`, ephemeral: true })
+        return interaction.reply({ content: `✅ trace → \`${updated.trace}\`\n${settingsCard(access, channel.id)}`, ephemeral: true })
       } catch (e: any) {
         return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
       }
@@ -432,12 +454,7 @@ interface ExtraDeps {
         const updated = await access.setChannelFlags(channel.id, { engine: patchEngine })
         const envDefault = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
         const effective = updated.engine ?? `${envDefault} (env default)`
-        const note = value === 'agy'
-          ? 'agy (flat sub) — media-capable through view_file; falls back to the API on error'
-          : value === 'api'
-            ? 'api (metered Gemini) — bypasses agy entirely'
-            : `cleared — using the GEMMA_AGY_CHAT env default (${envDefault})`
-        return interaction.reply({ content: `✅ <#${channel.id}> chat engine = \`${effective}\` — ${note}.`, ephemeral: true })
+        return interaction.reply({ content: `✅ engine → \`${effective}\`\n${settingsCard(access, channel.id)}`, ephemeral: true })
       } catch (e: any) {
         return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
       }
@@ -457,12 +474,7 @@ interface ExtraDeps {
       }
       try {
         const updated = await access.setChannelFlags(channel.id, { counter: value as CounterMode })
-        const note = value === 'off'
-          ? 'no footer'
-          : value === 'token'
-            ? 'tokens + time (time-only on the agy engine)'
-            : 'tokens + time + cached-prefix detail (API path; time-only on agy)'
-        return interaction.reply({ content: `✅ <#${channel.id}> footer counter = \`${updated.counter}\` — ${note}.`, ephemeral: true })
+        return interaction.reply({ content: `✅ counter → \`${updated.counter}\`\n${settingsCard(access, channel.id)}`, ephemeral: true })
       } catch (e: any) {
         return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
       }
@@ -481,11 +493,8 @@ interface ExtraDeps {
         }
         try {
           const updated = await access.setChannelFlags(channel.id, { cache: enabled })
-          const ttlNote = updated.cacheTtlSec != null
-            ? `${updated.cacheTtlSec}s override`
-            : `${GeminiCacheManager.defaultTtlSec()}s default`
           return interaction.reply({
-            content: `✅ <#${channel.id}> cache → \`${enabled}\` — ${enabled ? `prefix cached server-side (~10% billing on cached portion). TTL: ${ttlNote}.` : 'caching off'}`,
+            content: `✅ cache → \`${updated.cache}\`\n${settingsCard(access, channel.id)}`,
             ephemeral: true
           })
         } catch (e: any) {
@@ -505,12 +514,10 @@ interface ExtraDeps {
         // directly.
         try {
           const patch = seconds === 0 ? { cacheTtlSec: null } : { cacheTtlSec: seconds }
-          const updated = await access.setChannelFlags(channel.id, patch as any)
-          const desc = seconds === 0
-            ? `cleared — falls back to default ${GeminiCacheManager.defaultTtlSec()}s`
-            : `${seconds}s override`
+          await access.setChannelFlags(channel.id, patch as any)
+          const desc = seconds === 0 ? 'cleared (default)' : `${seconds}s`
           return interaction.reply({
-            content: `✅ <#${channel.id}> cache TTL → ${desc}. (cache=${updated.cache})`,
+            content: `✅ cache ttl → ${desc}\n${settingsCard(access, channel.id)}`,
             ephemeral: true
           })
         } catch (e: any) {
@@ -612,32 +619,7 @@ interface ExtraDeps {
       if (!channel) {
         return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
       }
-      const f = access.channelFlags(channel.id)
-      // Engine: per-channel pick, else the GEMMA_AGY_CHAT env default.
-      const envEngine = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
-      const engine = f.engine ?? `${envEngine} (env default)`
-      // Models are env-level (not per-channel): show the one for the active engine.
-      const apiModel = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL
-      const agyModel = process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL
-      const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000
-      const failsafeMs = Math.max(60_000, Number(process.env.GEMINI_COLLAPSE_FAILSAFE_MS ?? '600000'))
-      const rows: Array<[string, string]> = [
-        ['engine', String(engine)],
-        ['api model', apiModel],
-        ['agy model', agyModel],
-        ['thinking', `${f.thinking} (default off)`],
-        ['trace', `${f.trace} (default off)`],
-        ['counter', `${f.counter} (default both)`],
-        ['cache', `${f.cache} (default true)`],
-        ['cache ttl', f.cacheTtlSec != null ? `${f.cacheTtlSec}s` : 'default'],
-        ['require @', f.requireMention ? 'yes' : 'no'],
-        ['collapse linger', `${Math.round(lingerMs / 1000)}s`],
-        ['collapse failsafe', `${Math.round(failsafeMs / 1000)}s`],
-      ]
-      const pad = Math.max(...rows.map(([k]) => k.length))
-      const body = rows.map(([k, v]) => `${k.padEnd(pad)} : ${v}`).join('\n')
-      const card = `⚙️ **gemini settings** — <#${channel.id}>\n\`\`\`\n${body}\n\`\`\``
-      return interaction.reply({ content: card, ephemeral: true })
+      return interaction.reply({ content: settingsCard(access, channel.id), ephemeral: true })
     }
 
     // /gemini mention on|off — dedicated require-@ setter, unified with /gpt and
@@ -654,7 +636,7 @@ interface ExtraDeps {
       }
       try {
         const updated = await access.setChannelFlags(channel.id, { requireMention: value === 'on' })
-        return interaction.reply({ content: `✅ <#${channel.id}> require-mention = \`${value}\` (${updated.requireMention}).`, ephemeral: true })
+        return interaction.reply({ content: `✅ require @ → \`${updated.requireMention ? 'yes' : 'no'}\`\n${settingsCard(access, channel.id)}`, ephemeral: true })
       } catch (e: any) {
         return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
       }
