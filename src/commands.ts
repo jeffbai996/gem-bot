@@ -137,7 +137,7 @@ export const geminiCommand = new SlashCommandBuilder()
   // Per-channel chat engine. agy = Antigravity CLI (flat Google sub; trajectory
   // trace/thinking restored when available); api = the metered Gemini API.
   // `default` clears the per-channel pick so the GEMMA_AGY_CHAT env default
-  // applies. Media turns always use the API regardless (agy -p is text-only).
+  // applies. agy ingests current-message media through local view_file paths.
   .addSubcommand(subcommand =>
     subcommand
       .setName('engine')
@@ -433,7 +433,7 @@ interface ExtraDeps {
         const envDefault = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
         const effective = updated.engine ?? `${envDefault} (env default)`
         const note = value === 'agy'
-          ? 'agy (flat sub) — falls back to the API on error/media turns'
+          ? 'agy (flat sub) — media-capable through view_file; falls back to the API on error'
           : value === 'api'
             ? 'api (metered Gemini) — bypasses agy entirely'
             : `cleared — using the GEMMA_AGY_CHAT env default (${envDefault})`

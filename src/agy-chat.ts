@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { readdirSync, statSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import type { GeminiContent } from './history.ts'
+import type { LocalAttachment } from './attachments.ts'
 import { killProcessTree } from './kill-tree.ts'
 import { DEFAULT_AGY_MODEL, modelEffort } from './models.ts'
 import type {
@@ -79,11 +80,15 @@ export interface AgyChatInput {
   // The same fully-assembled system prompt gemma.ts hands gemini.respond()
   // (persona + date + response-format block). We pass it through verbatim.
   systemPrompt: string
-  // gem-bot's native history shape (history.ts/formatHistory) — role + text
-  // parts. fileData (image/audio) parts are skipped: agy -p is text-only.
+  // gem-bot's native history shape (history.ts/formatHistory). Historical
+  // fileData parts cannot be flattened; current-turn media uses mediaFiles.
   history: GeminiContent[]
   userMessageText: string
   userName: string
+  // Current-turn Discord attachments downloaded into the per-message inbox.
+  // agy receives both these exact paths in the prompt and their parent
+  // directory via --add-dir, then reads the media with view_file.
+  mediaFiles?: LocalAttachment[]
   channelId?: string
   onEvent?: (event: LifecycleEvent) => void
   // Abort signal from /gemini stop (via gemma.ts's stopController). When it
@@ -98,7 +103,7 @@ export interface AgyChatInput {
 // turn — persona + recent history + the new message — into one prompt, exactly
 // how gemini.respond() is handed persona+history. Mirrors codex-chat.ts's
 // buildPrompt, adapted to gem-bot's GeminiContent (role 'user'|'model') shape.
-function buildPrompt(input: AgyChatInput): string {
+export function buildAgyPrompt(input: AgyChatInput): string {
   const transcript = input.history
     .map((c) => {
       // Only the text parts survive into the flat prompt — fileData parts are
@@ -185,6 +190,17 @@ function buildPrompt(input: AgyChatInput): string {
     '- Prefer the MCP tools (vecgrep, ibkr) over shelling out when they apply — they are one call, not a shell loop.\n' +
     'Violating this rule means the user waits 5+ minutes for a simple answer. Be fast and decisive.'
 
+  const mediaContext = input.mediaFiles?.length
+    ? [
+        '--- Discord attachments (current message) ---',
+        'These files were downloaded from the current Discord message and are available locally. ' +
+          'Use view_file on every relevant path before answering; view_file supports images, audio, video, and documents.',
+        ...input.mediaFiles.map(file =>
+          `- ${file.name} (${file.mimeType}): ${file.path}`
+        ),
+      ].join('\n')
+    : ''
+
   return [
     sysNoJson,
     '',
@@ -216,6 +232,7 @@ function buildPrompt(input: AgyChatInput): string {
       `want isn't indexed, say so rather than guessing.`,
     '--- New message ---',
     `${input.userName}: ${input.userMessageText}`,
+    mediaContext,
     '',
     // PLAIN-TEXT reply (no JSON envelope on the agy path — see sysNoJson above).
     // agy's stdout IS the reply; thinking is recovered separately from the
@@ -225,6 +242,20 @@ function buildPrompt(input: AgyChatInput): string {
   ]
     .filter(Boolean)
     .join('\n')
+}
+
+export function buildAgyArgs(additionalDirs: string[] = [], prompt = ''): string[] {
+  const watchdog = agyWatchdogPolicy()
+  const printTimeout = `${Math.max(1, Math.ceil(watchdog.printTimeoutMs / 1000))}s`
+  const grantedDirs = [...new Set([SQUAD_STORE_DIR, ...additionalDirs])]
+  return [
+    '--sandbox',
+    '--dangerously-skip-permissions',
+    ...grantedDirs.flatMap(dir => ['--add-dir', dir]),
+    '--model', agyModel(),
+    '--print-timeout', printTimeout,
+    '-p', prompt,
+  ]
 }
 
 // A RespondMetadata with every field at its empty/neutral value. The agy path
@@ -264,6 +295,7 @@ function runAgy(
   onEvent?: (e: LifecycleEvent) => void,
   trajBefore?: Map<string, number>,
   fingerprint?: string,
+  additionalDirs: string[] = [],
   signal?: AbortSignal,
 ): Promise<string> {
   const t0 = Date.now()
@@ -277,15 +309,7 @@ function runAgy(
   // is the default, and -p has no human to respond). --add-dir grants the
   // squad-store bin dir so agy can run the recall CLI.
   const watchdog = agyWatchdogPolicy()
-  const printTimeout = `${Math.max(1, Math.ceil(watchdog.printTimeoutMs / 1000))}s`
-  const args = [
-    '--sandbox',
-    '--dangerously-skip-permissions',
-    '--add-dir', SQUAD_STORE_DIR,
-    '--model', agyModel(),
-    '--print-timeout', printTimeout,
-    '-p', prompt,
-  ]
+  const args = buildAgyArgs(additionalDirs, prompt)
 
   return new Promise<string>((resolve, reject) => {
     let child
@@ -896,7 +920,8 @@ export async function respondViaAgy(
   // THIS run's transcript afterward (Operator's approach — see the block above).
   const trajBefore = snapshotAgyTrajectories()
 
-  const prompt = buildPrompt(input)
+  const prompt = buildAgyPrompt(input)
+  const mediaDirs = [...new Set((input.mediaFiles ?? []).map(file => dirname(file.path)))]
   // Pass trajBefore + the user message as fingerprint so runAgy can tail THIS
   // run's trajectory live and stream tool_call_start events as agy works.
   // Retry once on fast exits (code 1, no stderr) — root cause is agy's OAuth
@@ -905,7 +930,7 @@ export async function respondViaAgy(
   // usually enough for the server to re-authenticate before we retry.
   let text: string
   try {
-    text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText, input.signal)
+    text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText, mediaDirs, input.signal)
   } catch (firstErr: any) {
     // Retry once on a transient agy failure before giving up to the tool-less API
     // engine (Jeff 2026-06-30: agy keeps dying mid-flight with exit code 1, which
@@ -925,7 +950,7 @@ export async function respondViaAgy(
     if (!retriable) throw firstErr
     console.error(`[agy] transient failure, retrying once: ${firstErr.message.slice(0, 200)}`)
     await new Promise(r => setTimeout(r, 3000))
-    text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText, input.signal)
+    text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText, mediaDirs, input.signal)
   }
   let parsed = parse(text)
 

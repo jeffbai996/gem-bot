@@ -9,10 +9,8 @@ import os from 'os'
 export type ThinkingMode = 'off' | 'on' | 'live' | 'collapse'
 
 // Chat engine for a channel. 'api' = the metered Gemini API (full tools +
-// grounding + trace). 'agy' = route text turns through the Antigravity CLI
-// (flat Google sub; trace/thinking restored from agy's trajectory when available).
-// Media turns always use 'api'
-// regardless — agy -p is text-only.
+// grounding + trace). 'agy' = route turns through the Antigravity CLI
+// (flat Google sub; local media via view_file; trace/thinking from trajectory).
 export type ChatEngine = 'agy' | 'api'
 
 // Footer counter mode. off = no footer; token = elapsed time + tokens-if-

@@ -798,6 +798,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       applyLifecycle(message, 'ingesting').catch(() => {})
     }
 
+    const flags = access.channelFlags(message.channelId)
+    const envDefaultEngine = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
+    const resolvedEngine = flags.engine ?? envDefaultEngine
+    const useAgy = resolvedEngine === 'agy'
+
     const [history, attachmentResult, ytResult] = await Promise.all([
       buildContextHistory(message.channel as any, message.id, gemini, client.user!.id, MAX_HISTORY_TOKENS, sinceMessageId),
       processAttachments(
@@ -808,7 +813,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           size: a.size,
           contentType: a.contentType
         })),
-        GEMINI_API_KEY
+        GEMINI_API_KEY,
+        { keepLocalFiles: useAgy },
       ),
       processYouTubeUrls(message.id, message.content, GEMINI_API_KEY)
     ])
@@ -820,7 +826,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // and confirms history is flowing.
     console.error(`[history] ch=${message.channelId} contextMsgs=${history.length}`)
 
-    const allParts = [...attachmentResult.parts, ...ytResult.parts]
+    let allParts = [...attachmentResult.parts, ...ytResult.parts]
     const allSkipped = [...attachmentResult.skipped, ...ytResult.skipped]
 
     if (allSkipped.length > 0) {
@@ -828,13 +834,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       await sendReply(message, `skipped some attachments:\n${notes}`)
     }
 
-    const flags = access.channelFlags(message.channelId)
     const transientThinking = flags.thinking === 'live' || flags.thinking === 'collapse'
-
-    const envDefaultEngine = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
-    const resolvedEngine = flags.engine ?? envDefaultEngine
-    // Media ALWAYS forces the native API — agy -p can't consume image/audio.
-    const useAgy = resolvedEngine === 'agy' && allParts.length === 0
 
     const activeModel = useAgy
       ? (process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL)
@@ -1093,10 +1093,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       latestParsed = partial
     }, onLifecycleEvent, combinedSignal)
 
-    // OPTIONAL agy chat engine: route text turns through the Antigravity CLI
+    // OPTIONAL agy chat engine: route turns through the Antigravity CLI
     // (flat Google sub) instead of the metered Gemini API. Mirrors gpt-bot's
     // /gpt engine swap. On throw we fall back to the API so the bot never goes
-    // dark. Skipped when the turn carries media (agy -p is text-only).
+    // dark. Current-message attachments are exposed as local inbox paths, and
+    // agy reads them through its multimodal view_file tool.
     //
     // Engine resolution, in order:
     //   1. the channel's explicit /gemini engine pick (flags.engine), else
@@ -1121,6 +1122,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           history,
           userMessageText: userText,
           userName: message.author.username,
+          mediaFiles: attachmentResult.localFiles,
           channelId: message.channelId,
           onEvent: onLifecycleEvent,
           signal: combinedSignal,  // /gemini stop → SIGKILLs the agy process group
@@ -1140,6 +1142,14 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         // shell/read files, so this turn quietly lost those capabilities.
         console.error('[agy] chat engine failed, falling back to API:', e instanceof Error ? e.message : e)
         agyFellBack = true
+        const skippedBeforeFallback = attachmentResult.skipped.length
+        await attachmentResult.prepareApiParts()
+        allParts = [...attachmentResult.parts, ...ytResult.parts]
+        const fallbackSkipped = attachmentResult.skipped.slice(skippedBeforeFallback)
+        if (fallbackSkipped.length > 0) {
+          const notes = fallbackSkipped.map(s => `- ${s.name}: ${s.reason}`).join('\n')
+          await sendReply(message, `skipped some attachments during API fallback:\n${notes}`)
+        }
         throwIfStopped();
         ;({ parsed, meta } = await apiRespond())
       }

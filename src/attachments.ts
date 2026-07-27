@@ -48,6 +48,12 @@ export interface TextPart {
 
 export type MediaPart = InlinePart | FilePart | TextPart
 
+export interface LocalAttachment {
+  path: string
+  name: string
+  mimeType: string
+}
+
 interface SkippedAttachment {
   name: string
   reason: 'too_large' | 'unsupported_type' | 'download_failed' | 'processing_timeout' | 'ytdlp_failed' | 'ytdlp_timeout'
@@ -55,8 +61,16 @@ interface SkippedAttachment {
 
 export interface ProcessResult {
   parts: MediaPart[]
+  localFiles: LocalAttachment[]
   skipped: SkippedAttachment[]
+  // agy turns defer Gemini File API uploads. Call this only if agy fails and
+  // the turn genuinely needs to fall back to the native API.
+  prepareApiParts: () => Promise<MediaPart[]>
   cleanup: () => Promise<void>
+}
+
+export interface ProcessAttachmentOptions {
+  keepLocalFiles?: boolean
 }
 
 function stateDir(): string {
@@ -82,8 +96,6 @@ async function uploadAndWaitActive(
     file: localPath,
     config: { mimeType, displayName },
   })
-
-  fs.rm(localPath, { force: true }).catch(() => {})
 
   let retries = 0
   const MAX_RETRIES = 10
@@ -221,6 +233,7 @@ async function findTranscriptFile(outDir: string, id: string): Promise<string | 
 
 export async function processYouTubeUrls(messageId: string, content: string, _apiKey: string): Promise<ProcessResult> {
   const parts: MediaPart[] = []
+  const localFiles: LocalAttachment[] = []
   const skipped: SkippedAttachment[] = []
 
   const videoIds = new Set<string>()
@@ -228,7 +241,7 @@ export async function processYouTubeUrls(messageId: string, content: string, _ap
   for (const m of matches) videoIds.add(m[1])
 
   if (videoIds.size === 0) {
-    return { parts, skipped, cleanup: async () => {} }
+    return { parts, localFiles, skipped, prepareApiParts: async () => parts, cleanup: async () => {} }
   }
 
   const ytDir = path.join(stateDir(), 'inbox', messageId, 'yt')
@@ -265,25 +278,39 @@ export async function processYouTubeUrls(messageId: string, content: string, _ap
 
   return {
     parts,
+    localFiles,
     skipped,
+    prepareApiParts: async () => parts,
     cleanup: async () => {
       await fs.rm(ytDir, { recursive: true, force: true })
     }
   }
 }
 
-export async function processAttachments(messageId: string, inputs: InputAttachment[], apiKey: string): Promise<ProcessResult> {
+export async function processAttachments(
+  messageId: string,
+  inputs: InputAttachment[],
+  apiKey: string,
+  options: ProcessAttachmentOptions = {},
+): Promise<ProcessResult> {
   const parts: MediaPart[] = []
+  const localFiles: LocalAttachment[] = []
   const skipped: SkippedAttachment[] = []
+  const deferredApiMedia: Array<{
+    localPath: string
+    mimeType: string
+    name: string
+    url: string
+  }> = []
   const msgDir = path.join(stateDir(), 'inbox', messageId)
 
   if (inputs.length === 0) {
-    return { parts, skipped, cleanup: async () => {} }
+    return { parts, localFiles, skipped, prepareApiParts: async () => parts, cleanup: async () => {} }
   }
 
   await fs.mkdir(msgDir, { recursive: true })
 
-  const processPromises = inputs.map(async (att) => {
+  const processPromises = inputs.map(async (att, index) => {
     const mime = att.contentType ?? ''
     const isImage = ALLOWED_IMAGE_MIMES.has(mime)
     const isVideo = ALLOWED_VIDEO_MIMES.has(mime)
@@ -300,8 +327,9 @@ export async function processAttachments(messageId: string, inputs: InputAttachm
       return
     }
 
-    // Check URI Cache first for media that uses the File API
-    if ((isVideo || isAudio) && uriCache.has(att.url)) {
+    // The API path can reuse a remote File API URI without downloading again.
+    // agy needs an actual local file for view_file, so keep going when requested.
+    if (!options.keepLocalFiles && (isVideo || isAudio) && uriCache.has(att.url)) {
       parts.push({ fileData: { mimeType: mime, fileUri: uriCache.get(att.url)! } })
       return
     }
@@ -317,11 +345,29 @@ export async function processAttachments(messageId: string, inputs: InputAttachm
         return
       }
 
-      const localPath = path.join(msgDir, att.name)
+      // Discord filenames are user input. Keep them recognizable while forcing
+      // the write beneath this message's inbox directory.
+      const safeName = path.basename(att.name) || 'attachment'
+      const localPath = path.join(msgDir, `${index}-${safeName}`)
       await fs.writeFile(localPath, buf)
+      if (options.keepLocalFiles) {
+        localFiles.push({ path: localPath, name: att.name, mimeType: mime })
+      }
 
       if (isImage || isDoc) {
         parts.push({ inlineData: { mimeType: mime, data: buf.toString('base64') } })
+      } else if (uriCache.has(att.url)) {
+        parts.push({ fileData: { mimeType: mime, fileUri: uriCache.get(att.url)! } })
+      } else if (options.keepLocalFiles) {
+        // Do not touch the metered API merely because media exists. The agy
+        // path reads this local file directly; upload only if agy actually
+        // fails and gemma.ts invokes prepareApiParts().
+        deferredApiMedia.push({
+          localPath,
+          mimeType: mime,
+          name: att.name,
+          url: att.url,
+        })
       } else {
         const uri = await uploadAndWaitActive(localPath, mime, att.name, apiKey)
         if (!uri) {
@@ -338,9 +384,32 @@ export async function processAttachments(messageId: string, inputs: InputAttachm
 
   await Promise.allSettled(processPromises)
 
+  let apiPartsPrepared = false
+  const prepareApiParts = async (): Promise<MediaPart[]> => {
+    if (apiPartsPrepared) return parts
+    apiPartsPrepared = true
+    await Promise.allSettled(deferredApiMedia.map(async media => {
+      const cached = uriCache.get(media.url)
+      if (cached) {
+        parts.push({ fileData: { mimeType: media.mimeType, fileUri: cached } })
+        return
+      }
+      const uri = await uploadAndWaitActive(media.localPath, media.mimeType, media.name, apiKey)
+      if (!uri) {
+        skipped.push({ name: media.name, reason: 'processing_timeout' })
+        return
+      }
+      uriCache.set(media.url, uri)
+      parts.push({ fileData: { mimeType: media.mimeType, fileUri: uri } })
+    }))
+    return parts
+  }
+
   return {
     parts,
+    localFiles,
     skipped,
+    prepareApiParts,
     cleanup: async () => {
       await fs.rm(msgDir, { recursive: true, force: true }).catch(() => {})
     }
