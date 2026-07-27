@@ -7,6 +7,13 @@ import type { SummaryStore } from './summarization/store.ts'
 const DEFAULT_PERSONA = `You are Gemma, a Discord bot backed by Google's Gemini model. Be helpful, concise, and match the channel's tone. You can respond with text, an emoji reaction, or both.`
 const DEFAULT_PERSONA_FILE = 'GEMINI.md'
 const LEGACY_PERSONA_FILE = 'persona.md'
+const RUNTIME_CAPABILITIES = `## Bot-local runtime capabilities
+
+You can set your own Discord status. When a genuine status change is requested,
+include [[presence: <short status>]] anywhere in your reply. The bot harness
+applies it immediately, persists it across restarts, and strips the directive
+before the message is posted. Do not claim that you lack a mechanism to update
+your status; use the directive in the same reply that confirms the change.`
 
 function stateDir(): string {
   return process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
@@ -76,7 +83,7 @@ export class PersonaLoader {
     const now = new Date()
     const wallClock = `Current time: ${now.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`
 
-    const sections: string[] = [persona, wallClock]
+    const sections: string[] = [persona, wallClock, RUNTIME_CAPABILITIES]
     if (conversationSummary) {
       sections.push(`## Conversation summary (older context)\n\n${conversationSummary}`)
     }

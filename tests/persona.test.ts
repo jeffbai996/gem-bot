@@ -36,6 +36,20 @@ describe('PersonaLoader', () => {
     assert.ok(prompt.includes('Custom Gemini text here.'))
   })
 
+  test('injects the bot-local Discord presence capability', async () => {
+    await fs.writeFile(
+      path.join(stateDir, 'GEMINI.md'),
+      'I cannot update my own Discord status.',
+      'utf8',
+    )
+    const loader = new PersonaLoader()
+    await loader.load()
+    const prompt = loader.buildSystemPrompt('c1')
+
+    assert.ok(prompt.includes('[[presence: <short status>]]'))
+    assert.ok(prompt.indexOf('[[presence: <short status>]]') > prompt.indexOf('I cannot update'))
+  })
+
   test('falls back to legacy persona.md when GEMINI.md is missing', async () => {
     await fs.writeFile(path.join(stateDir, 'persona.md'), 'Legacy persona text here.', 'utf8')
     const loader = new PersonaLoader()
