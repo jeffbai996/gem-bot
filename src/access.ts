@@ -83,15 +83,13 @@ const VALID_TRACE_MODES: TraceMode[] = ['off', 'on', 'collapse']
 
 // Default rendering/behavior flags applied when a channel is first configured
 // without explicit flag overrides, and when channelFlags() is asked about an
-// unknown channel. Defaults UNIFIED across the squad bots (gem/gpt/llm) per Jeff
-// 2026-06-29: thinking=off (quiet default), trace=off, counter=both. cache
-// defaults true. The optInReply gate was removed 2026-05-02; the show_code flag
+// unknown channel. Defaults UNIFIED across the squad bots (gem/gpt/llm):
+// thinking=live, trace=collapse, counter=both. cache defaults true. The
+// optInReply gate was removed 2026-05-02; the show_code flag
 // was retired 2026-06-29 (its content folded into the trace card).
 const DEFAULT_FLAGS = {
-  thinking: 'off' as ThinkingMode,
-  // trace defaults OFF — matches gpt/llm. The 🔧 Tool-trace card (tools +
-  // web-search + code-exec) is opt-in so it doesn't spam every channel.
-  trace: 'off' as TraceMode,
+  thinking: 'live' as ThinkingMode,
+  trace: 'collapse' as TraceMode,
   counter: 'both' as CounterMode,
   cache: true,
 }
