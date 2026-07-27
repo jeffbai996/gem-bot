@@ -39,7 +39,7 @@ import { SummaryStore } from './summarization/store.ts'
 import { SummarizationScheduler } from './summarization/scheduler.ts'
 import { fetchMessagesSince, recordInFlightTurn, clearInFlightTurn, getAllInFlightTurns } from './db.ts'
 import { DeferredActions } from './deferred-actions.ts'
-import { resolveLiveUpdateInterval } from './live-update.ts'
+import { LiveProgressBuffer, resolveLiveUpdateInterval } from './live-update.ts'
 import {
   DEFAULT_LIVE_END_LINGER_MS,
   TRACE_RESULT_PAYLOAD_MAX,
@@ -776,7 +776,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // explicit full-trace collapse mode.
   let liveAgyThinking = ''
   const liveAgyThinkingTrace: string[] = []
-  let liveAgyDetail = ''
+  const liveAgyProgress = new LiveProgressBuffer()
   const liveTraceMessage: { current: Message | null } = { current: null }
   const collapseFailsafed = new Set<string>()
   const collapseFailsafeMs = Math.max(
@@ -956,7 +956,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           label: thinkingLabel, glyph: sp, dots: d,
           thinking: flags.thinking === 'off' ? '' : live,
           reasoningTrace: flags.thinking === 'collapse' ? liveThinkingTrace() : [],
-          detail: liveAgyDetail,
+          detail: liveAgyProgress.value(),
         })).catch(() => {})
       }, LIVE_UPDATE_INTERVAL_MS)
     }
@@ -1075,7 +1075,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         if (e.thinking && liveAgyThinkingTrace.at(-1) !== e.thinking) {
           liveAgyThinkingTrace.push(e.thinking)
         }
-        liveAgyDetail = e.detail
+        liveAgyProgress.push(e.detail)
       }
     }
     // Speak-mode FULL BARGE-IN. If this message is being spoken to a vc and a
@@ -1219,6 +1219,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     if (streamInterval) {
       clearInterval(streamInterval)
       streamInterval = null
+    }
+    const progressDwellRemaining = liveAgyProgress.remainingMs()
+    if (progressDwellRemaining > 0) {
+      await new Promise<void>(resolve => { setTimeout(resolve, progressDwellRemaining) })
     }
     // Kill the spinner before final rendering so it can't edit a message we're
     // about to overwrite/delete (flushStream stops it on first content, but a
