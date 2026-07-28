@@ -12,7 +12,7 @@
 // "<marker> <right-justified lineno> <content>" so Discord's ```diff colorizer
 // fires (marker at column 0) with an aligned line-number gutter.
 
-import { TRACE_ROW_MAX } from './tool-trace.ts'
+import { TRACE_ROW_MAX, truncateDisplayWidth } from './tool-trace.ts'
 
 const _HUNK_RE = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/
 const DIFF_MEGA_LINE_MAX = 300
@@ -68,9 +68,7 @@ export function renderClaudeStyleDiff(diffText: string): string {
   })
   const badge = `⎿ [+${added}, -${removed}]`
   const headerBlock = header.length
-    ? header.map(line => line.length > TRACE_ROW_MAX
-      ? line.slice(0, TRACE_ROW_MAX - 1) + '…'
-      : line).join('\n') + '\n'
+    ? header.map(line => truncateDisplayWidth(line, TRACE_ROW_MAX)).join('\n') + '\n'
     : ''
   return '```diff\n' + headerBlock + badge + '\n' + body.join('\n') + '\n```'
 }

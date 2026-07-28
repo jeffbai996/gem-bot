@@ -30,7 +30,8 @@ import { PendingEditsStore } from './reactions/pending-edits.ts'
 import { applyLifecycle } from './reactions/lifecycle.ts'
 import { activeTurns } from './active-turns.ts'
 import { ChannelTurnRunner } from './channel-turns.ts'
-import { LatestQueueMarker } from './queue-marker.ts'
+import { FAST_FORWARD_REACTION, LatestQueueMarker } from './queue-marker.ts'
+import { steeredMarker } from './steering.ts'
 import { isHardStopMessage } from './stop-command.ts'
 import type { LifecycleEvent, ToolCall, CodeExecArtifact } from './gemini.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
@@ -44,6 +45,7 @@ import {
   DEFAULT_LIVE_END_LINGER_MS,
   TRACE_RESULT_PAYLOAD_MAX,
   TRACE_ROW_MAX,
+  truncateDisplayWidth,
 } from './tool-trace.ts'
 import { extractPresenceDirective, normalizePresenceText } from './presence.ts'
 
@@ -394,7 +396,7 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
       lines.push(`  ⎿ ${badge}`)
       for (const b of body.slice(0, MAX_DIFF_BODY_LINES)) {
         let line = b
-        if (line.length > TRACE_ROW_MAX) line = line.slice(0, TRACE_ROW_MAX - 1) + '…'
+        line = truncateDisplayWidth(line, TRACE_ROW_MAX)
         lines.push(line)
       }
       if (body.length > MAX_DIFF_BODY_LINES) {
@@ -460,9 +462,7 @@ function renderTraceCard(toolCalls: ToolCall[], extras: TraceExtras = {}): strin
     ...searchTraceLines(extras.searchQueries ?? []),
     ...buildTraceLines(toolCalls),
     ...codeTraceLines(extras.codeArtifacts ?? []),
-  ].map(line => line.length > TRACE_ROW_MAX
-    ? line.slice(0, TRACE_ROW_MAX - 1) + '…'
-    : line)
+  ].map(line => truncateDisplayWidth(line, TRACE_ROW_MAX))
   const fitted: string[] = []
   let running = 0
   for (const ln of all.slice(0, TRACE_MAX_LINES)) {
@@ -1610,7 +1610,13 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       console.log(`[voice] turn superseded by barge-in (channel=${message.channelId})`)
       await stopThinkingAnim()
       applyLifecycle(message, 'silenced').catch(() => {})
-      for (const m of activeMessages) await m.delete().catch(() => {})
+      const steeredAfter = activeTurns.consumeSteered(message.channelId)
+      if (steeredAfter !== null && activeMessages.length) {
+        const last = activeMessages[activeMessages.length - 1]
+        await last.edit(`${last.content}\n${steeredMarker(steeredAfter)}`.trim()).catch(() => {})
+      } else {
+        for (const m of activeMessages) await m.delete().catch(() => {})
+      }
       if (liveTraceMessage.current) await liveTraceMessage.current.delete().catch(() => {})
       liveTraceMessage.current = null
       activeMessages = []
@@ -1770,6 +1776,19 @@ client.on('messageCreate', async (message: Message) => {
 })
 
 client.on('messageReactionAdd', async (reaction, user) => {
+  if (reaction.partial) {
+    try { await reaction.fetch() } catch { return }
+  }
+  if (user.partial) {
+    try { await user.fetch() } catch { return }
+  }
+  if (reaction.emoji.name === FAST_FORWARD_REACTION && !user.bot
+      && reaction.message.author?.id === user.id
+      && queueMarker.isLatest(reaction.message.channelId, reaction.message.id)) {
+    activeTurns.stopFor(reaction.message.channelId, { clearQueue: false })
+    await queueMarker.clear(reaction.message.channelId)
+    return
+  }
   await handleReaction(reaction, user, {
     client,
     access,

@@ -21,6 +21,7 @@ export const BARGE_GRACE_MS = 2000
 class ActiveTurns {
   private killers = new Map<string, Killer>()
   private stopped = new Set<string>()
+  private steeredAfter = new Map<string, number>()
   private startedAt = new Map<string, number>()
   private busyTool = new Map<string, BusyTool>()
   private pendingStops = new Map<string, PendingStop>()
@@ -38,6 +39,7 @@ class ActiveTurns {
     this.startedAt.delete(channelId)
     this.busyTool.delete(channelId)
     this.pendingStops.delete(channelId)
+    this.steeredAfter.delete(channelId)
     this.resolveIdleIfNeeded()
   }
 
@@ -64,7 +66,12 @@ class ActiveTurns {
   stopFor(channelId: string, opts: { clearQueue: boolean }): boolean {
     const k = this.killers.get(channelId)
     if (!k) return false
-    if (opts.clearQueue) this.stopped.add(channelId)
+    if (opts.clearQueue) {
+      this.stopped.add(channelId)
+      this.steeredAfter.delete(channelId)
+    } else {
+      this.steeredAfter.set(channelId, Date.now() - (this.startedAt.get(channelId) ?? Date.now()))
+    }
     this.pendingStops.delete(channelId)
     try { k() } catch { /* best-effort */ }
     this.killers.delete(channelId)
@@ -93,6 +100,13 @@ class ActiveTurns {
   consumeStopped(channelId: string): boolean {
     if (this.stopped.has(channelId)) { this.stopped.delete(channelId); return true }
     return false
+  }
+
+  consumeSteered(channelId: string): number | null {
+    const elapsed = this.steeredAfter.get(channelId)
+    if (elapsed === undefined) return null
+    this.steeredAfter.delete(channelId)
+    return elapsed
   }
 
   isActive(channelId: string): boolean {
