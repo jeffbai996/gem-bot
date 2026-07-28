@@ -3,6 +3,8 @@ import path from 'path'
 import os from 'os'
 import { spawn } from 'child_process'
 import { GoogleGenAI } from '@google/genai'
+import { extensionMime, extractLocalText, isLocallyExtractable, officeParserType } from './attachment-text.ts'
+import { parseOffice } from 'officeparser'
 
 const MAX_BYTES = 20 * 1024 * 1024
 // Resolve yt-dlp path at call time (not module-load) so tests can override via env
@@ -22,6 +24,14 @@ const ALLOWED_DOC_MIMES = new Set([
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/epub+zip',
+  'application/vnd.ms-word.document.macroenabled.12',
+  'application/vnd.ms-word.template.macroenabled.12',
+  'application/vnd.ms-powerpoint.presentation.macroenabled.12',
+  'application/vnd.ms-powerpoint.template.macroenabled.12',
+  'application/vnd.ms-powerpoint.slideshow.macroenabled.12',
+  'application/vnd.ms-excel.sheet.macroenabled.12',
+  'application/vnd.ms-excel.template.macroenabled.12',
   'application/vnd.oasis.opendocument.text',
   'application/vnd.oasis.opendocument.presentation',
   'application/vnd.oasis.opendocument.spreadsheet',
@@ -41,6 +51,7 @@ const DOCUMENT_EXTENSION_MIMES: Record<string, string> = {
   '.odp': 'application/vnd.oasis.opendocument.presentation',
   '.ods': 'application/vnd.oasis.opendocument.spreadsheet',
   '.pdf': 'application/pdf',
+  '.epub': 'application/epub+zip',
 }
 
 // Single set used by request-time sanitization. Anything not here gets dropped
@@ -341,13 +352,15 @@ export async function processAttachments(
     const declaredMime = att.contentType?.split(';')[0].trim().toLowerCase() ?? ''
     const mime = declaredMime && declaredMime !== 'application/octet-stream'
       ? declaredMime
-      : (DOCUMENT_EXTENSION_MIMES[path.extname(att.name).toLowerCase()] ?? declaredMime)
+      : (DOCUMENT_EXTENSION_MIMES[path.extname(att.name).toLowerCase()] ?? extensionMime(att.name) ?? declaredMime)
+    const localOfficeType = officeParserType(att.name)
+    const isLocalText = isLocallyExtractable(att.name, mime)
     const isImage = ALLOWED_IMAGE_MIMES.has(mime)
     const isVideo = ALLOWED_VIDEO_MIMES.has(mime)
     const isAudio = ALLOWED_AUDIO_MIMES.has(mime)
     const isDoc = ALLOWED_DOC_MIMES.has(mime)
 
-    if (!isImage && !isVideo && !isAudio && !isDoc) {
+    if (!isImage && !isVideo && !isAudio && !isDoc && !isLocalText && !localOfficeType) {
       skipped.push({ name: att.name, reason: 'unsupported_type' })
       return
     }
@@ -384,7 +397,13 @@ export async function processAttachments(
         localFiles.push({ path: localPath, name: att.name, mimeType: mime })
       }
 
-      if (isImage || isDoc) {
+      if (localOfficeType) {
+        const ast = await parseOffice(buf, { fileType: localOfficeType as any })
+        parts.push({ text: `[attached document: ${att.name}]\n${ast.toText().trim().slice(0, 400_000)}` })
+      } else if (isLocalText) {
+        const text = extractLocalText(buf, att.name)
+        parts.push({ text: `[attached file: ${att.name}]\n${text}` })
+      } else if (isImage || isDoc) {
         parts.push({ inlineData: { mimeType: mime, data: buf.toString('base64') } })
       } else if (uriCache.has(att.url)) {
         parts.push({ fileData: { mimeType: mime, fileUri: uriCache.get(att.url)! } })
