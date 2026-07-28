@@ -333,7 +333,7 @@ export function fmtSettingChange(label: string, value: string, previous: string)
         ? ` (was ${previous.enabled ? 'enabled' : 'disabled'} · require @ ${previous.requireMention ? 'yes' : 'no'})`
         : ''
       return interaction.reply({
-        content: `✅ <#${channel.id}> ${enabled ? 'enabled' : 'disabled'} · require @ ${requireMention ? 'yes' : 'no'}${was}\n${settingsCard(access, channel.id)}`,
+        content: `✅ <#${channel.id}> ${enabled ? 'enabled' : 'disabled'} · require @ ${requireMention ? 'yes' : 'no'}${was}\n\n${settingsCard(access, channel.id)}`,
         ephemeral: true
       })
     }
@@ -415,7 +415,7 @@ export function fmtSettingChange(label: string, value: string, previous: string)
       }
       const previous = access.channelFlags(channel.id).thinking
       const updated = await access.setChannelFlags(channel.id, { thinking: mode as ThinkingMode })
-      return interaction.reply({ content: `${fmtSettingChange('thinking', updated.thinking!, previous)}\n${settingsCard(access, channel.id)}`, ephemeral: true })
+      return interaction.reply({ content: `${fmtSettingChange('thinking', updated.thinking!, previous)}\n\n${settingsCard(access, channel.id)}`, ephemeral: true })
     }
 
     // /gemini trace off|on|collapse — the dedicated 🔧 Tool-trace card toggle,
@@ -434,7 +434,7 @@ export function fmtSettingChange(label: string, value: string, previous: string)
       try {
         const previous = access.channelFlags(channel.id).trace
         const updated = await access.setChannelFlags(channel.id, { trace: value as TraceMode })
-        return interaction.reply({ content: `${fmtSettingChange('trace', updated.trace!, previous)}\n${settingsCard(access, channel.id)}`, ephemeral: true })
+        return interaction.reply({ content: `${fmtSettingChange('trace', updated.trace!, previous)}\n\n${settingsCard(access, channel.id)}`, ephemeral: true })
       } catch (e: any) {
         return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
       }
@@ -468,7 +468,7 @@ export function fmtSettingChange(label: string, value: string, previous: string)
         const updated = await access.setChannelFlags(channel.id, { engine: patchEngine })
         const envDefault = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
         const effective = updated.engine ?? `${envDefault} (env default)`
-        return interaction.reply({ content: `${fmtSettingChange('engine', effective, previous)}\n${settingsCard(access, channel.id)}`, ephemeral: true })
+        return interaction.reply({ content: `${fmtSettingChange('engine', effective, previous)}\n\n${settingsCard(access, channel.id)}`, ephemeral: true })
       } catch (e: any) {
         return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
       }
@@ -489,7 +489,7 @@ export function fmtSettingChange(label: string, value: string, previous: string)
       try {
         const previous = access.channelFlags(channel.id).counter
         const updated = await access.setChannelFlags(channel.id, { counter: value as CounterMode })
-        return interaction.reply({ content: `${fmtSettingChange('counter', updated.counter!, previous)}\n${settingsCard(access, channel.id)}`, ephemeral: true })
+        return interaction.reply({ content: `${fmtSettingChange('counter', updated.counter!, previous)}\n\n${settingsCard(access, channel.id)}`, ephemeral: true })
       } catch (e: any) {
         return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
       }
@@ -510,7 +510,7 @@ export function fmtSettingChange(label: string, value: string, previous: string)
           const previous = String(access.channelFlags(channel.id).cache)
           const updated = await access.setChannelFlags(channel.id, { cache: enabled })
           return interaction.reply({
-            content: `${fmtSettingChange('cache', String(updated.cache), previous)}\n${settingsCard(access, channel.id)}`,
+            content: `${fmtSettingChange('cache', String(updated.cache), previous)}\n\n${settingsCard(access, channel.id)}`,
             ephemeral: true
           })
         } catch (e: any) {
@@ -536,7 +536,7 @@ export function fmtSettingChange(label: string, value: string, previous: string)
           const old = previous == null ? 'default' : `${previous}s`
           const next = seconds === 0 ? 'default' : `${seconds}s`
           return interaction.reply({
-            content: `✅ cache ttl → ${desc}${next === old ? '' : ` (was \`${old}\`)`}\n${settingsCard(access, channel.id)}`,
+            content: `✅ cache ttl → ${desc}${next === old ? '' : ` (was \`${old}\`)`}\n\n${settingsCard(access, channel.id)}`,
             ephemeral: true
           })
         } catch (e: any) {
@@ -656,7 +656,7 @@ export function fmtSettingChange(label: string, value: string, previous: string)
       try {
         const previous = access.channelFlags(channel.id).requireMention ? 'yes' : 'no'
         const updated = await access.setChannelFlags(channel.id, { requireMention: value === 'on' })
-        return interaction.reply({ content: `${fmtSettingChange('require @', updated.requireMention ? 'yes' : 'no', previous)}\n${settingsCard(access, channel.id)}`, ephemeral: true })
+        return interaction.reply({ content: `${fmtSettingChange('require @', updated.requireMention ? 'yes' : 'no', previous)}\n\n${settingsCard(access, channel.id)}`, ephemeral: true })
       } catch (e: any) {
         return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
       }
