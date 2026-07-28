@@ -14,7 +14,34 @@ const YT_METADATA_TIMEOUT_MS = 30_000
 const ALLOWED_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/heic', 'image/heif'])
 const ALLOWED_VIDEO_MIMES = new Set(['video/mp4', 'video/webm', 'video/quicktime', 'video/x-mov', 'video/avi', 'video/x-flv', 'video/mpg', 'video/mpeg', 'video/wmv', 'video/3gpp'])
 const ALLOWED_AUDIO_MIMES = new Set(['audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/webm', 'audio/ogg', 'audio/aac', 'audio/flac', 'audio/x-flac', 'audio/amr', 'audio/opus'])
-const ALLOWED_DOC_MIMES = new Set(['application/pdf', 'text/plain', 'text/html', 'text/css', 'text/javascript', 'application/javascript', 'text/x-typescript', 'text/markdown', 'text/csv', 'text/xml', 'application/rtf'])
+const ALLOWED_DOC_MIMES = new Set([
+  'application/pdf', 'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.oasis.opendocument.presentation',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'text/plain', 'text/html', 'text/css', 'text/javascript',
+  'application/javascript', 'text/x-typescript', 'text/markdown',
+  'text/csv', 'text/xml', 'application/rtf',
+])
+const DOCUMENT_EXTENSION_MIMES: Record<string, string> = {
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.dotx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.odt': 'application/vnd.oasis.opendocument.text',
+  '.odp': 'application/vnd.oasis.opendocument.presentation',
+  '.ods': 'application/vnd.oasis.opendocument.spreadsheet',
+  '.pdf': 'application/pdf',
+}
 
 // Single set used by request-time sanitization. Anything not here gets dropped
 // before the request hits Gemini — prevents a `video/text/timestamp` style
@@ -311,7 +338,10 @@ export async function processAttachments(
   await fs.mkdir(msgDir, { recursive: true })
 
   const processPromises = inputs.map(async (att, index) => {
-    const mime = att.contentType ?? ''
+    const declaredMime = att.contentType?.split(';')[0].trim().toLowerCase() ?? ''
+    const mime = declaredMime && declaredMime !== 'application/octet-stream'
+      ? declaredMime
+      : (DOCUMENT_EXTENSION_MIMES[path.extname(att.name).toLowerCase()] ?? declaredMime)
     const isImage = ALLOWED_IMAGE_MIMES.has(mime)
     const isVideo = ALLOWED_VIDEO_MIMES.has(mime)
     const isAudio = ALLOWED_AUDIO_MIMES.has(mime)

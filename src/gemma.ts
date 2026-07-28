@@ -53,6 +53,25 @@ const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gem
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
 const LIVE_UPDATE_INTERVAL_MS = resolveLiveUpdateInterval(process.env.GEM_LIVE_UPDATE_INTERVAL_MS)
 const deferredActions = new DeferredActions(path.join(STATE_DIR, 'deferred-actions.json'))
+const SKIP_REASON_LABELS: Record<string, string> = {
+  too_large: 'too large',
+  unsupported_type: 'unsupported file type',
+  download_failed: 'download failed',
+  processing_timeout: 'processing timed out',
+  ytdlp_failed: 'YouTube import failed',
+  ytdlp_timeout: 'YouTube import timed out',
+}
+
+export function formatSkippedAttachments(
+  skipped: Array<{ name: string, reason: string }>,
+  duringFallback = false,
+): string {
+  const title = duringFallback ? '📎 Some files couldn’t survive API fallback' : '📎 Some files weren’t attached'
+  const rows = skipped.map(({ name, reason }) =>
+    `> **${name.replaceAll('*', '\\*')}** · ${SKIP_REASON_LABELS[reason] ?? reason.replaceAll('_', ' ')}`
+  )
+  return [title, ...rows].join('\n')
+}
 const PRESENCE_FILE = path.join(STATE_DIR, 'presence.json')
 const DEFAULT_PRESENCE_TEXT = '📡 waiting on gemini 4'
 
@@ -872,8 +891,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     const allSkipped = [...attachmentResult.skipped, ...ytResult.skipped]
 
     if (allSkipped.length > 0) {
-      const notes = allSkipped.map(s => `- ${s.name}: ${s.reason}`).join('\n')
-      await sendReply(message, `skipped some attachments:\n${notes}`)
+      await sendReply(message, formatSkippedAttachments(allSkipped))
     }
 
     const transientThinking = flags.thinking === 'live' || flags.thinking === 'collapse'
@@ -1190,8 +1208,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         allParts = [...attachmentResult.parts, ...ytResult.parts]
         const fallbackSkipped = attachmentResult.skipped.slice(skippedBeforeFallback)
         if (fallbackSkipped.length > 0) {
-          const notes = fallbackSkipped.map(s => `- ${s.name}: ${s.reason}`).join('\n')
-          await sendReply(message, `skipped some attachments during API fallback:\n${notes}`)
+          await sendReply(message, formatSkippedAttachments(fallbackSkipped, true))
         }
         throwIfStopped();
         ;({ parsed, meta } = await apiRespond())
