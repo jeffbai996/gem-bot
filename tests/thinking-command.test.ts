@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { geminiCommand } from '../src/commands.ts'
+import { fmtSettingChange, geminiCommand } from '../src/commands.ts'
+
+test('setting acknowledgements show a changed previous value only', () => {
+  assert.equal(fmtSettingChange('thinking', 'collapse', 'live'), '✅ thinking → `collapse` (was `live`)')
+  assert.equal(fmtSettingChange('thinking', 'live', 'live'), '✅ thinking → `live`')
+})
 
 test('/gemini thinking exposes distinct live and collapse modes', () => {
   const command = geminiCommand.toJSON()

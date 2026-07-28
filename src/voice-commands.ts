@@ -7,7 +7,7 @@
 import { SlashCommandBuilder, SlashCommandSubcommandsOnlyBuilder, ChatInputCommandInteraction, GuildMember } from 'discord.js'
 import type { VoiceManager } from './voice.ts'
 import type { PersonaLoader } from './persona.ts'
-import { VOICE_CHOICES, setVoicePref } from './voice-pref.ts'
+import { getVoicePref, VOICE_CHOICES, setVoicePref } from './voice-pref.ts'
 
 // Voice now lives UNDER /gemini as a `voice` subcommand group (de-collide from
 // other bots' top-level /voice). This attaches `/gemini voice <call|speak|leave|
@@ -90,6 +90,7 @@ export async function executeVoiceCommand(
 async function handleType(interaction: ChatInputCommandInteraction): Promise<void> {
   const voice = interaction.options.getString('voice', true)
   const choice = VOICE_CHOICES.find(v => v.value === voice)
+  const previous = getVoicePref()
   try {
     setVoicePref(voice)
   } catch (e: any) {
@@ -97,7 +98,7 @@ async function handleType(interaction: ChatInputCommandInteraction): Promise<voi
     return
   }
   await interaction.reply({
-    content: `🎚️ voice → **${voice}**${choice ? ` (${choice.blurb})` : ''}. Applies to speak + call — takes effect on the next reply/call, no restart.`,
+    content: `🎚️ voice → **${voice}**${previous === voice ? '' : ` (was **${previous}**)`}${choice ? ` · ${choice.blurb}` : ''} · next reply/call`,
     ephemeral: true,
   })
 }
