@@ -5,6 +5,7 @@ import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
 import http from 'http'
+import { zipSync, strToU8 } from 'fflate'
 
 const testDir = path.join(os.tmpdir(), `gemma-attachments-test-${process.pid}`)
 
@@ -148,6 +149,25 @@ describe('processAttachments', () => {
     await cleanup()
     srv.close()
     await assert.rejects(() => fs.access(msgDir))
+  })
+
+  test('extracts notebooks and ZIP text members into Gemini text parts', async () => {
+    const notebook = Buffer.from(JSON.stringify({ cells: [{ cell_type: 'code', source: ['answer = 42'] }] }))
+    const zip = Buffer.from(zipSync({ 'notes/readme.md': strToU8('gemma archive text') }))
+    for (const [name, bytes, expected] of [
+      ['work.ipynb', notebook, /answer = 42/],
+      ['bundle.zip', zip, /gemma archive text/],
+    ] as const) {
+      const srv = await startServer((_, res) => { res.writeHead(200); res.end(bytes) })
+      const result = await processAttachments(`msg-${name}`, [{
+        url: `${srv.url}/${name}`, name, size: bytes.length, contentType: 'application/octet-stream',
+      }], 'test-api-key')
+      srv.close()
+      assert.ok(isText(result.parts[0]))
+      assert.match(result.parts[0].text, expected)
+      assert.deepEqual(result.skipped, [])
+      await result.cleanup()
+    }
   })
 })
 
