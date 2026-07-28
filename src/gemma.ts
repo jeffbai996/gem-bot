@@ -31,7 +31,7 @@ import { applyLifecycle } from './reactions/lifecycle.ts'
 import { activeTurns } from './active-turns.ts'
 import { ChannelTurnRunner } from './channel-turns.ts'
 import { FAST_FORWARD_REACTION, LatestQueueMarker } from './queue-marker.ts'
-import { steeredMarker } from './steering.ts'
+import { renderSteeredMessage } from './steering.ts'
 import { isHardStopMessage } from './stop-command.ts'
 import type { LifecycleEvent, ToolCall, CodeExecArtifact } from './gemini.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
@@ -1630,7 +1630,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       const steeredAfter = activeTurns.consumeSteered(message.channelId)
       if (steeredAfter !== null && activeMessages.length) {
         const last = activeMessages[activeMessages.length - 1]
-        await last.edit(`${last.content}\n${steeredMarker(steeredAfter)}`.trim()).catch(() => {})
+        await last.edit(renderSteeredMessage(last.content, steeredAfter)).catch(() => {})
       } else {
         for (const m of activeMessages) await m.delete().catch(() => {})
       }
