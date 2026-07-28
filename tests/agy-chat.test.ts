@@ -6,6 +6,7 @@ import {
   agyWatchdogPolicy,
   normalizeAgyThinkingChunk,
   parseAgyTrajectoryText,
+  agySpawnEnv,
 } from '../src/agy-chat.ts'
 
 describe('agy media bridge', () => {
@@ -161,5 +162,29 @@ describe('parseAgyTrajectoryText live narration', () => {
     }))
 
     assert.equal(parsed.liveProgress, 'I will search the command implementation.')
+  })
+})
+
+describe('agy spawn env hygiene', () => {
+  test('agy never inherits gemma’s discord token or gemini key', () => {
+    // Regression: dotenv puts both into process.env, spawn copied the lot, and
+    // agy logged its environment into ~/.gemini/.../brain/ -- 27 plaintext files
+    // (Jeff 2026-07-27). agy authenticates off the flat subscription and needs
+    // neither, so they must never reach the child.
+    process.env.DISCORD_BOT_TOKEN = 'tok123'
+    process.env.GEMINI_API_KEY = 'AQ.secret'
+    const env = agySpawnEnv({ SQUAD_STORE_URL: 'http://127.0.0.1:5005' })
+    assert.equal(env.DISCORD_BOT_TOKEN, undefined)
+    assert.equal(env.GEMINI_API_KEY, undefined)
+    // ...while everything agy genuinely needs still gets through.
+    assert.equal(env.SQUAD_STORE_URL, 'http://127.0.0.1:5005')
+    assert.equal(env.PATH, process.env.PATH)
+  })
+
+  test('stripping secrets does not mutate gemma’s own environment', () => {
+    // The bot still needs its token to stay on Discord -- delete from the COPY.
+    process.env.DISCORD_BOT_TOKEN = 'tok123'
+    agySpawnEnv()
+    assert.equal(process.env.DISCORD_BOT_TOKEN, 'tok123')
   })
 })

@@ -33,6 +33,26 @@ class AgyChatError extends Error {
 // codex one: build prompt → run → return the text.
 const AGY_BIN = process.env.GEMMA_AGY_BIN || '/home/jbai/.local/bin/agy'
 
+// agy inherits gemma's env so it can find SQUAD_STORE_URL, GEMMA_AGY_* etc.
+// But dotenv loads DISCORD_BOT_TOKEN and GEMINI_API_KEY into process.env at
+// startup, so `{...process.env}` handed agy gemma's live Discord token and a
+// billable API key. agy logs its environment into its own session transcripts
+// under ~/.gemini/antigravity-cli/brain/, which meant both secrets sat in
+// plaintext on disk across 27 files (Jeff 2026-07-27).
+//
+// agy authenticates off the flat Google subscription and never needs either
+// one -- verified by running it with both unset. So they are stripped from the
+// child env rather than the whole env being whitelisted, which would silently
+// break every future GEMMA_AGY_* knob someone adds.
+const SECRETS_NEVER_PASSED_TO_AGY = ['DISCORD_BOT_TOKEN', 'GEMINI_API_KEY'] as const
+
+export const agySpawnEnv = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...extra }
+  for (const k of SECRETS_NEVER_PASSED_TO_AGY) delete env[k]
+  return env
+}
+
+
 // Resolve lazily, after gemma.ts loads the state-dir .env. Module-level env
 // capture happened before dotenv.config() under ESM, which meant `/gemini model
 // agy` rewrote the right file but the restarted process quietly kept the code
@@ -318,7 +338,7 @@ function runAgy(
         detached: true, // own process group so the backstop can SIGKILL the whole tree
         // SQUAD_STORE_URL tells the squad-store CLI where the loopback Flask
         // store lives, so agy's recall hits it directly (mirrors codex-chat.ts).
-        env: { ...process.env, SQUAD_STORE_URL },
+        env: agySpawnEnv({ SQUAD_STORE_URL }),
         stdio: ['ignore', 'pipe', 'pipe'],
       })
     } catch (e: any) {
@@ -879,7 +899,7 @@ export function warmAgy(): void {
     '--print-timeout', '20s',
     '-p', 'Reply with just the word READY and nothing else. Do not use any tools.',
   ], {
-    env: { ...process.env, SQUAD_STORE_URL },
+    env: agySpawnEnv({ SQUAD_STORE_URL }),
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let errOut = ''
