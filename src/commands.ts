@@ -292,6 +292,10 @@ function settingsCard(access: AccessManager, channelId: string): string {
   return `⚙️ **gemini settings** — <#${channelId}>\n\`\`\`\n${body}\n\`\`\``
 }
 
+export function fmtSettingChange(label: string, value: string, previous: string): string {
+  return `✅ ${label} → \`${value}\`${value === previous ? '' : ` (was \`${previous}\`)`}`
+}
+
   export async function executeGeminiCommand(interaction: ChatInputCommandInteraction, access: AccessManager, persona: PersonaLoader, gemini: GeminiClient, adminUserId: string | undefined, deps: ExtraDeps) {
   // Extra layer of security: only specific user ID from .env can use this, 
   // or anyone with Server Admin if no specific ID is set.
@@ -402,8 +406,9 @@ function settingsCard(access: AccessManager, channelId: string): string {
       if (!['off', 'on', 'live', 'collapse'].includes(mode)) {
         return interaction.reply({ content: `❌ \`thinking\` must be one of: off, on, live, collapse (got \`${mode}\`)`, ephemeral: true })
       }
+      const previous = access.channelFlags(channel.id).thinking
       const updated = await access.setChannelFlags(channel.id, { thinking: mode as ThinkingMode })
-      return interaction.reply({ content: `✅ thinking → \`${updated.thinking}\`\n${settingsCard(access, channel.id)}`, ephemeral: true })
+      return interaction.reply({ content: `${fmtSettingChange('thinking', updated.thinking!, previous)}\n${settingsCard(access, channel.id)}`, ephemeral: true })
     }
 
     // /gemini trace off|on|collapse — the dedicated 🔧 Tool-trace card toggle,
@@ -420,8 +425,9 @@ function settingsCard(access: AccessManager, channelId: string): string {
         return interaction.reply({ content: `❌ \`trace\` must be one of: off, on, collapse (got \`${value}\`)`, ephemeral: true })
       }
       try {
+        const previous = access.channelFlags(channel.id).trace
         const updated = await access.setChannelFlags(channel.id, { trace: value as TraceMode })
-        return interaction.reply({ content: `✅ trace → \`${updated.trace}\`\n${settingsCard(access, channel.id)}`, ephemeral: true })
+        return interaction.reply({ content: `${fmtSettingChange('trace', updated.trace!, previous)}\n${settingsCard(access, channel.id)}`, ephemeral: true })
       } catch (e: any) {
         return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
       }
@@ -451,10 +457,11 @@ function settingsCard(access: AccessManager, channelId: string): string {
       try {
         // 'default' → null sentinel clears the per-channel pick.
         const patchEngine = value === 'default' ? null : (value as ChatEngine)
+        const previous = access.channelFlags(channel.id).engine ?? (process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api')
         const updated = await access.setChannelFlags(channel.id, { engine: patchEngine })
         const envDefault = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
         const effective = updated.engine ?? `${envDefault} (env default)`
-        return interaction.reply({ content: `✅ engine → \`${effective}\`\n${settingsCard(access, channel.id)}`, ephemeral: true })
+        return interaction.reply({ content: `${fmtSettingChange('engine', effective, previous)}\n${settingsCard(access, channel.id)}`, ephemeral: true })
       } catch (e: any) {
         return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
       }
@@ -473,8 +480,9 @@ function settingsCard(access: AccessManager, channelId: string): string {
         return interaction.reply({ content: `❌ \`counter\` must be one of: off, token, both (got \`${value}\`)`, ephemeral: true })
       }
       try {
+        const previous = access.channelFlags(channel.id).counter
         const updated = await access.setChannelFlags(channel.id, { counter: value as CounterMode })
-        return interaction.reply({ content: `✅ counter → \`${updated.counter}\`\n${settingsCard(access, channel.id)}`, ephemeral: true })
+        return interaction.reply({ content: `${fmtSettingChange('counter', updated.counter!, previous)}\n${settingsCard(access, channel.id)}`, ephemeral: true })
       } catch (e: any) {
         return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
       }
@@ -492,9 +500,10 @@ function settingsCard(access: AccessManager, channelId: string): string {
           return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
         }
         try {
+          const previous = String(access.channelFlags(channel.id).cache)
           const updated = await access.setChannelFlags(channel.id, { cache: enabled })
           return interaction.reply({
-            content: `✅ cache → \`${updated.cache}\`\n${settingsCard(access, channel.id)}`,
+            content: `${fmtSettingChange('cache', String(updated.cache), previous)}\n${settingsCard(access, channel.id)}`,
             ephemeral: true
           })
         } catch (e: any) {
@@ -635,8 +644,9 @@ function settingsCard(access: AccessManager, channelId: string): string {
         return interaction.reply({ content: `❌ \`mention\` must be on | off (got \`${value}\`)`, ephemeral: true })
       }
       try {
+        const previous = access.channelFlags(channel.id).requireMention ? 'yes' : 'no'
         const updated = await access.setChannelFlags(channel.id, { requireMention: value === 'on' })
-        return interaction.reply({ content: `✅ require @ → \`${updated.requireMention ? 'yes' : 'no'}\`\n${settingsCard(access, channel.id)}`, ephemeral: true })
+        return interaction.reply({ content: `${fmtSettingChange('require @', updated.requireMention ? 'yes' : 'no', previous)}\n${settingsCard(access, channel.id)}`, ephemeral: true })
       } catch (e: any) {
         return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
       }
