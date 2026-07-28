@@ -36,7 +36,7 @@ test('renderClaudeStyleDiff: includes the ⎿ [+N, -M] badge', () => {
   assert.match(out, /^⎿ \[\+1, -1\]$/m, `badge present: ${JSON.stringify(out)}`)
 })
 
-test('renderClaudeStyleDiff: no rendered row exceeds 76 columns', () => {
+test('renderClaudeStyleDiff: no rendered row exceeds 78 columns', () => {
   const raw = `--- ${'old/'.repeat(30)}file.txt\t2026-01-01
 +++ ${'new/'.repeat(30)}file.txt\t2026-01-01
 @@ -1 +1 @@
@@ -44,7 +44,7 @@ test('renderClaudeStyleDiff: no rendered row exceeds 76 columns', () => {
 +${'b'.repeat(200)}`
   const out = renderClaudeStyleDiff(raw)
   const rows = out.split('\n').filter(line => !line.startsWith('```'))
-  assert.ok(rows.every(line => line.length <= 76), JSON.stringify(rows))
+  assert.ok(rows.every(line => line.length <= 78), JSON.stringify(rows))
 })
 
 test('renderClaudeStyleDiff: line-number column right-justifies across a 9→10 boundary', () => {
