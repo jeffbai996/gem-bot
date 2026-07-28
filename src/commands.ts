@@ -327,9 +327,13 @@ export function fmtSettingChange(label: string, value: string, previous: string)
       const channel = interaction.options.getChannel('channel', true)
       const enabled = interaction.options.getBoolean('enabled', true)
       const requireMention = interaction.options.getBoolean('require_mention', true)
+      const previous = access.channelConfig(channel.id)
       await access.setChannel(channel.id, enabled, requireMention)
+      const was = previous
+        ? ` (was ${previous.enabled ? 'enabled' : 'disabled'} · require @ ${previous.requireMention ? 'yes' : 'no'})`
+        : ''
       return interaction.reply({
-        content: `✅ <#${channel.id}> ${enabled ? 'enabled' : 'disabled'}\n${settingsCard(access, channel.id)}`,
+        content: `✅ <#${channel.id}> ${enabled ? 'enabled' : 'disabled'} · require @ ${requireMention ? 'yes' : 'no'}${was}\n${settingsCard(access, channel.id)}`,
         ephemeral: true
       })
     }
@@ -374,6 +378,9 @@ export function fmtSettingChange(label: string, value: string, previous: string)
 
       const stateDir = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
       const envPath = path.join(stateDir, '.env')
+      const previousModel = targetEngine === 'agy'
+        ? (process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL)
+        : (process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL)
       try {
         await rewriteEnvVar(envPath, envKey, newModel)
       } catch (e: any) {
@@ -386,7 +393,7 @@ export function fmtSettingChange(label: string, value: string, previous: string)
       // is still alive. The detached `bash -c 'sleep ... && systemctl restart'`
       // outlives this process; systemd brings us back up reading the new env.
       await interaction.reply({
-        content: `🔁 **${targetEngine}** model set to \`${newModel}\` (${envKey}). Restarting in ~1.5s — back in a few seconds with the new model loaded.`,
+        content: `🔁 **${targetEngine}** model → \`${newModel}\`${newModel === previousModel ? '' : ` (was \`${previousModel}\`)`} · restarting`,
         ephemeral: true,
       })
       scheduleSelfRestart('gemma', 1500)
@@ -523,10 +530,13 @@ export function fmtSettingChange(label: string, value: string, previous: string)
         // directly.
         try {
           const patch = seconds === 0 ? { cacheTtlSec: null } : { cacheTtlSec: seconds }
+          const previous = access.channelFlags(channel.id).cacheTtlSec
           await access.setChannelFlags(channel.id, patch as any)
           const desc = seconds === 0 ? 'cleared (default)' : `${seconds}s`
+          const old = previous == null ? 'default' : `${previous}s`
+          const next = seconds === 0 ? 'default' : `${seconds}s`
           return interaction.reply({
-            content: `✅ cache ttl → ${desc}\n${settingsCard(access, channel.id)}`,
+            content: `✅ cache ttl → ${desc}${next === old ? '' : ` (was \`${old}\`)`}\n${settingsCard(access, channel.id)}`,
             ephemeral: true
           })
         } catch (e: any) {
