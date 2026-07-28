@@ -1,6 +1,6 @@
 import { describe, test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { processAttachments, processYouTubeUrls, parseVttTranscript, type InputAttachment, type MediaPart, type InlinePart, type TextPart } from '../src/attachments.ts'
+import { isAllowedMime, processAttachments, processYouTubeUrls, parseVttTranscript, type InputAttachment, type MediaPart, type InlinePart, type TextPart } from '../src/attachments.ts'
 import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
@@ -27,6 +27,12 @@ function isText(p: MediaPart): p is TextPart {
 }
 
 describe('processAttachments', () => {
+  test('accepts Gemini document and Office MIME types', () => {
+    assert.equal(isAllowedMime('application/pdf'), true)
+    assert.equal(isAllowedMime('application/vnd.openxmlformats-officedocument.wordprocessingml.document'), true)
+    assert.equal(isAllowedMime('application/vnd.openxmlformats-officedocument.presentationml.presentation'), true)
+    assert.equal(isAllowedMime('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'), true)
+  })
   beforeEach(async () => {
     process.env.DISCORD_STATE_DIR = testDir
     await fs.rm(testDir, { recursive: true, force: true })
