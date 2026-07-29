@@ -40,7 +40,7 @@ test('rejects a quota response without usable groups', () => {
   assert.throws(() => parseAgyQuotaSummary({ error: { message: 'denied' } }), /denied/i)
 })
 
-test('formats Discord quota bars with used percent and reset countdown', () => {
+test('formats quota headers outside fenced bars and omits the footer', () => {
   const rendered = formatAgyLimits(
     [
       {
@@ -60,8 +60,17 @@ test('formats Discord quota bars with used percent and reset countdown', () => {
     Date.parse('2026-07-29T20:50:53Z'),
   )
 
-  assert.match(rendered, /Gemini Models/)
-  assert.match(rendered, /9% used · 91% left/)
-  assert.match(rendered, /resets in 6d 6h/)
-  assert.match(rendered, /Gemini Flash, Gemini Pro/)
+  assert.equal(
+    rendered,
+    [
+      '⏱️ **agy limits**',
+      '',
+      '**Gemini Models**',
+      'Gemini Flash, Gemini Pro',
+      '```',
+      'weekly: █░░░░░░░░░   9%  · 91% left · resets in 6d 6h',
+      '```',
+    ].join('\n'),
+  )
+  assert.doesNotMatch(rendered, /Buckets are shared/)
 })
