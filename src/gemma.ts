@@ -43,6 +43,7 @@ import { DeferredActions } from './deferred-actions.ts'
 import { LiveProgressBuffer, resolveLiveUpdateInterval } from './live-update.ts'
 import {
   DEFAULT_LIVE_END_LINGER_MS,
+  formatAggregateTraceMarker,
   TRACE_RESULT_PAYLOAD_MAX,
   TRACE_ROW_MAX,
   truncateDigest,
@@ -358,7 +359,7 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
   // Keep the last N calls (most recent = most relevant); note how many were dropped.
   const dropped = Math.max(0, toolCalls.length - MAX_TRACE_CALLS)
   const capped = dropped ? toolCalls.slice(-MAX_TRACE_CALLS) : toolCalls
-  if (dropped) lines.push(`+ ● …(+${dropped} earlier call${dropped === 1 ? '' : 's'})`)
+  if (dropped) lines.push(formatAggregateTraceMarker(dropped))
   // Edits (with diffs) first: the diff is the payload and must not get starved by
   // a long list of shell rows below it, which the card's length cap then truncates
   // to a couple lines (gpt-bot's ordering). Order within each group preserved.
