@@ -45,6 +45,7 @@ import {
   DEFAULT_LIVE_END_LINGER_MS,
   TRACE_RESULT_PAYLOAD_MAX,
   TRACE_ROW_MAX,
+  truncateDigest,
   truncateDisplayWidth,
 } from './tool-trace.ts'
 import { extractPresenceDirective, normalizePresenceText } from './presence.ts'
@@ -293,21 +294,13 @@ function argDigest(args: Record<string, unknown>, maxLen = 84): string {
     const v = (args as Record<string, unknown>)[key]
     if (typeof v === 'string') {
       let s = v.trim().replace(/\n/g, ' ')
-      if (s.length > maxLen) {
-        if (maxLen <= 1) return maxLen > 0 ? '…' : ''
-        s = s.slice(0, maxLen - 1) + '…'
-      }
-      return s
+      return truncateDigest(s, maxLen)
     }
   }
   let s: string
   try { s = JSON.stringify(args) } catch { s = String(args) }
   s = s.replace(/\n/g, ' ')
-  if (s.length > maxLen) {
-    if (maxLen <= 1) return maxLen > 0 ? '…' : ''
-    s = s.slice(0, maxLen - 1) + '…'
-  }
-  return s
+  return truncateDigest(s, maxLen)
 }
 
 // mcp__server__ns__tool -> tool (last segment). Mirrors _ticker_line's shortener.
