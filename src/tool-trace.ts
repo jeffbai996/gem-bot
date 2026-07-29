@@ -26,4 +26,9 @@ export function truncateDisplayWidth(value: string, maxWidth: number): string {
   }
   return out + '…'
 }
+
+export function truncateDigest(value: string, maxLength: number): string {
+  return value.length > maxLength ? value.slice(0, Math.max(0, maxLength)) : value
+}
+
 export const DEFAULT_LIVE_END_LINGER_MS = 10_000
