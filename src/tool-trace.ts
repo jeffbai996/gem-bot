@@ -16,15 +16,20 @@ export function displayWidth(value: string): number {
 
 export function truncateDisplayWidth(value: string, maxWidth: number): string {
   if (displayWidth(value) <= maxWidth) return value
+  return truncateDisplayWidthClean(value, maxWidth - 1) + '…'
+}
+
+export function truncateDisplayWidthClean(value: string, maxWidth: number): string {
+  if (displayWidth(value) <= maxWidth) return value
   let out = ''
   let width = 0
   for (const { segment } of graphemes.segment(value)) {
     const next = displayWidth(segment)
-    if (width + next > maxWidth - 1) break
+    if (width + next > maxWidth) break
     out += segment
     width += next
   }
-  return out + '…'
+  return out
 }
 
 export function truncateDigest(value: string, maxLength: number): string {
