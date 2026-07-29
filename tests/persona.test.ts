@@ -50,6 +50,22 @@ describe('PersonaLoader', () => {
     assert.ok(prompt.indexOf('[[presence: <short status>]]') > prompt.indexOf('I cannot update'))
   })
 
+  test('injects the already-loaded Discord history contract after persona claims', async () => {
+    await fs.writeFile(
+      path.join(stateDir, 'GEMINI.md'),
+      'Channel history does not auto-load. Ask for a pasted transcript or handoff.',
+      'utf8',
+    )
+    const loader = new PersonaLoader()
+    await loader.load()
+    const prompt = loader.buildSystemPrompt('c1')
+
+    assert.ok(prompt.includes('Recent Discord channel history is already loaded'))
+    assert.ok(prompt.includes('Use that visible history first'))
+    assert.ok(prompt.includes('Only ask the user to paste context'))
+    assert.ok(prompt.indexOf('Recent Discord channel history is already loaded') > prompt.indexOf('does not auto-load'))
+  })
+
   test('falls back to legacy persona.md when GEMINI.md is missing', async () => {
     await fs.writeFile(path.join(stateDir, 'persona.md'), 'Legacy persona text here.', 'utf8')
     const loader = new PersonaLoader()

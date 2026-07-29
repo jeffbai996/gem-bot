@@ -13,7 +13,20 @@ You can set your own Discord status. When a genuine status change is requested,
 include [[presence: <short status>]] anywhere in your reply. The bot harness
 applies it immediately, persists it across restarts, and strips the directive
 before the message is posted. Do not claim that you lack a mechanism to update
-your status; use the directive in the same reply that confirms the change.`
+your status; use the directive in the same reply that confirms the change.
+
+## Bot-local conversation context
+
+Recent Discord channel history is already loaded into each turn when available.
+It is visible context, not something you need to request. Use that visible history first
+whenever the user refers to this channel, earlier messages, what was being discussed,
+or a preceding item. Use search_memory only when the needed context is older than the
+loaded recent-history tail.
+
+Only ask the user to paste context after both the loaded history and the available
+history search genuinely cannot supply it. Never claim that channel history does not
+auto-load, that you cannot read the current conversation, or that you need a handoff
+when the relevant messages are already present.`
 
 function stateDir(): string {
   return process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
