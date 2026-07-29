@@ -1480,15 +1480,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       finalFullReply += `\n\n-# ${tokenStr}${safetyStr}`
     }
 
-    // Engine-fallback badge (Jeff 2026-06-29). When an agy turn degraded to the
-    // API engine, say so — the API path has no shell/filesystem, so the user
-    // should know this reply came from the limited engine (and that agy is
-    // having trouble). Shown regardless of the counter flag: a capability
-    // degrade is not optional bookkeeping. Appended on its own line so it reads
-    // as a distinct status note, not part of the token footer.
+    // Engine-fallback badge. When an agy turn degrades to the API engine, keep
+    // the user-facing notice terse and name both engines plainly.
     if (agyFellBack) {
       finalFullReply = finalFullReply.replace(/\s+$/, '')
-      finalFullReply += `\n\n-# ↩️ agy unavailable — answered on the API engine (no shell/files this turn)`
+      finalFullReply += `\n\n-# ⚠️ antigravity unavailable - used Gemini API to answer`
     }
 
     if (meta.finishReason === 'MAX_TOKENS') {
