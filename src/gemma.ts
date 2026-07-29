@@ -49,6 +49,7 @@ import {
 } from './tool-trace.ts'
 import { extractPresenceDirective, normalizePresenceText } from './presence.ts'
 import { GemStats } from './stats.ts'
+import { editImages, isImageEditRequest } from './image-generation.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
@@ -1178,7 +1179,22 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // 2026-06-29).
     let agyFellBack = false
 
-    if (useAgy) {
+    if (isImageEditRequest(userText, allParts)) {
+      const generated = await editImages(GEMINI_API_KEY, userText, allParts)
+      parsed = { react: null, thinking: null, reply: 'Done — image edit attached.' }
+      meta = {
+        groundingSources: [],
+        codeArtifacts: [],
+        usage: null,
+        finishReason: 'STOP',
+        flaggedSafety: [],
+        searchQueries: [],
+        nativeThoughts: null,
+        toolCalls: [],
+        searchEntryPointHtml: null,
+        writtenFiles: generated,
+      }
+    } else if (useAgy) {
       try {
         throwIfStopped();
         ({ parsed, meta } = await respondViaAgy({
