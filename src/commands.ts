@@ -1,7 +1,14 @@
 import { SlashCommandBuilder, PermissionFlagsBits, ChatInputCommandInteraction, TextChannel } from 'discord.js'
 import path from 'node:path'
 import os from 'node:os'
-import { AccessManager, type ThinkingMode, type ChatEngine, type CounterMode, type TraceMode } from './access.ts'
+import {
+  AccessManager,
+  type ChannelConfig,
+  type ThinkingMode,
+  type ChatEngine,
+  type CounterMode,
+  type TraceMode,
+} from './access.ts'
 import { PersonaLoader } from './persona.ts'
 import { GeminiClient } from './gemini.ts'
 import { GeminiCacheManager } from './cache.ts'
@@ -303,6 +310,26 @@ export function fmtSettingChange(label: string, value: string, previous: string)
   return `✅ ${label} → \`${value}\`${value === previous ? '' : ` (was \`${previous}\`)`}`
 }
 
+export function fmtChannelChange(
+  channelId: string,
+  enabled: boolean,
+  requireMention: boolean,
+  previous?: Pick<ChannelConfig, 'enabled' | 'requireMention'>,
+): string {
+  const current = [
+    `\`enabled\` ${enabled ? 'yes' : 'no'}`,
+    `\`require @\` ${requireMention ? 'yes' : 'no'}`,
+  ]
+  if (!previous) {
+    return `✅ <#${channelId}> configured\n${current.join('\n')}`
+  }
+  return [
+    `✅ <#${channelId}> updated`,
+    `\`enabled\` ${previous.enabled ? 'yes' : 'no'} → ${enabled ? 'yes' : 'no'}`,
+    `\`require @\` ${previous.requireMention ? 'yes' : 'no'} → ${requireMention ? 'yes' : 'no'}`,
+  ].join('\n')
+}
+
   export async function executeGeminiCommand(interaction: ChatInputCommandInteraction, access: AccessManager, persona: PersonaLoader, gemini: GeminiClient, adminUserId: string | undefined, deps: ExtraDeps) {
   // Extra layer of security: only specific user ID from .env can use this, 
   // or anyone with Server Admin if no specific ID is set.
@@ -336,11 +363,8 @@ export function fmtSettingChange(label: string, value: string, previous: string)
       const requireMention = interaction.options.getBoolean('require_mention', true)
       const previous = access.channelConfig(channel.id)
       await access.setChannel(channel.id, enabled, requireMention)
-      const was = previous
-        ? ` (was ${previous.enabled ? 'enabled' : 'disabled'} · require @ ${previous.requireMention ? 'yes' : 'no'})`
-        : ''
       return interaction.reply({
-        content: `✅ <#${channel.id}> ${enabled ? 'enabled' : 'disabled'} · require @ ${requireMention ? 'yes' : 'no'}${was}\n\n${settingsCard(access, channel.id)}`,
+        content: `${fmtChannelChange(channel.id, enabled, requireMention, previous)}\n\n${settingsCard(access, channel.id)}`,
         ephemeral: true
       })
     }

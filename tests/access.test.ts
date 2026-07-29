@@ -174,8 +174,8 @@ describe('AccessManager', () => {
     })
     mgr = new AccessManager()
     await mgr.load()
-    assert.deepEqual(mgr.channelFlags('C1'), { thinking: 'on', trace: 'collapse', counter: 'both', cache: true, cacheTtlSec: null, engine: null })
-    assert.deepEqual(mgr.channelFlags('C2'), { thinking: 'off', trace: 'collapse', counter: 'off', cache: false, cacheTtlSec: null, engine: null })
+    assert.deepEqual(mgr.channelFlags('C1'), { thinking: 'on', trace: 'collapse', counter: 'both', cache: true, cacheTtlSec: null, engine: null, requireMention: false })
+    assert.deepEqual(mgr.channelFlags('C2'), { thinking: 'off', trace: 'collapse', counter: 'off', cache: false, cacheTtlSec: null, engine: null, requireMention: false })
   })
 
   test('legacy auto thinking coerces to off on read', async () => {
@@ -221,7 +221,7 @@ describe('AccessManager', () => {
     await writeAccess({ users: {}, channels: {} })
     mgr = new AccessManager()
     await mgr.load()
-    assert.deepEqual(mgr.channelFlags('unknown'), { thinking: 'live', trace: 'collapse', counter: 'both', cache: true, cacheTtlSec: null, engine: null })
+    assert.deepEqual(mgr.channelFlags('unknown'), { thinking: 'live', trace: 'collapse', counter: 'both', cache: true, cacheTtlSec: null, engine: null, requireMention: false })
   })
 
   test('setChannel preserves optional flags when provided', async () => {
@@ -284,6 +284,18 @@ describe('AccessManager', () => {
     assert.equal(parsed.channels.C1.thinking, 'on')
     assert.equal(parsed.channels.C1.requireMention, true)  // preserved
     assert.equal(parsed.channels.C1.enabled, true)         // preserved       // preserved
+  })
+
+  test('channelFlags reports the saved requireMention value', async () => {
+    const mgr = new AccessManager()
+    await mgr.load()
+    await mgr.setChannel('C1', true, false)
+
+    assert.equal(mgr.channelFlags('C1').requireMention, false)
+
+    await mgr.setChannelFlags('C1', { requireMention: true })
+
+    assert.equal(mgr.channelFlags('C1').requireMention, true)
   })
 
   test('setChannelFlags patches one flag without disturbing others', async () => {

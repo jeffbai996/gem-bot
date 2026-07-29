@@ -318,7 +318,8 @@ export class AccessManager {
       cache: channel?.cache ?? DEFAULT_FLAGS.cache,
       cacheTtlSec: channel?.cacheTtlSec ?? null,
       // null = no per-channel pick → callsite falls back to GEMMA_AGY_CHAT.
-      engine: channel?.engine ?? null
+      engine: channel?.engine ?? null,
+      requireMention: channel?.requireMention ?? false,
     }
   }
 }

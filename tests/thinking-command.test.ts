@@ -1,11 +1,22 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { fmtSettingChange, geminiCommand } from '../src/commands.ts'
+import { fmtChannelChange, fmtSettingChange, geminiCommand } from '../src/commands.ts'
 
 test('setting acknowledgements show a changed previous value only', () => {
   assert.equal(fmtSettingChange('thinking', 'collapse', 'live'), '✅ thinking → `collapse` (was `live`)')
   assert.equal(fmtSettingChange('thinking', 'live', 'live'), '✅ thinking → `live`')
+})
+
+test('channel acknowledgement separates the before and after state', () => {
+  assert.equal(
+    fmtChannelChange('123', true, true, { enabled: true, requireMention: false }),
+    '✅ <#123> updated\n`enabled` yes → yes\n`require @` no → yes',
+  )
+  assert.equal(
+    fmtChannelChange('123', true, false),
+    '✅ <#123> configured\n`enabled` yes\n`require @` no',
+  )
 })
 
 test('/gemini thinking exposes distinct live and collapse modes', () => {
