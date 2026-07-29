@@ -126,7 +126,7 @@ describe('AccessManager', () => {
     const f = mgr.channelFlags('C1')
     assert.equal(f.thinking, 'live')
     assert.equal(f.trace, 'collapse')
-    assert.equal(f.counter, 'both')
+    assert.equal(f.counter, 'off')
     assert.equal(f.cache, true)
   })
 
@@ -221,7 +221,7 @@ describe('AccessManager', () => {
     await writeAccess({ users: {}, channels: {} })
     mgr = new AccessManager()
     await mgr.load()
-    assert.deepEqual(mgr.channelFlags('unknown'), { thinking: 'live', trace: 'collapse', counter: 'both', cache: true, cacheTtlSec: null, engine: null, requireMention: false })
+    assert.deepEqual(mgr.channelFlags('unknown'), { thinking: 'live', trace: 'collapse', counter: 'off', cache: true, cacheTtlSec: null, engine: null, requireMention: false })
   })
 
   test('setChannel preserves optional flags when provided', async () => {
@@ -241,7 +241,7 @@ describe('AccessManager', () => {
     const f = mgr.channelFlags('C1')
     assert.equal(f.thinking, 'live')
     assert.equal(f.trace, 'collapse')
-    assert.equal(f.counter, 'both')
+    assert.equal(f.counter, 'off')
     assert.equal(f.cache, true)
   })
 
