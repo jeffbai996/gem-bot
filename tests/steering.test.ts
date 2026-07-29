@@ -9,6 +9,6 @@ test('formats steering and caps wide trace text', () => {
     renderSteeredMessage('💭 **Thinking...**\nChecking the queue.', 5_000),
     '↪ **Steered after 5s**\nChecking the queue.',
   )
-  const line = truncateDisplayWidth('a'.repeat(75) + '中文', TRACE_ROW_MAX)
+  const line = truncateDisplayWidth('a'.repeat(TRACE_ROW_MAX - 3) + '中文', TRACE_ROW_MAX)
   assert.equal(displayWidth(line), TRACE_ROW_MAX)
 })

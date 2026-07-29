@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { renderClaudeStyleDiff, reformatUnifiedDiffs } from '../src/diff-format.ts'
+import { TRACE_ROW_MAX } from '../src/tool-trace.ts'
 
 // The exact shape agy pastes: `diff -u` output with file headers + timestamps,
 // an @@ hunk, and +/- lines. (Jeff 2026-07-01 — match the Claude bots' diff.)
@@ -36,7 +37,7 @@ test('renderClaudeStyleDiff: includes the ⎿ [+N, -M] badge', () => {
   assert.match(out, /^⎿ \[\+1, -1\]$/m, `badge present: ${JSON.stringify(out)}`)
 })
 
-test('renderClaudeStyleDiff: no rendered row exceeds 78 columns', () => {
+test('renderClaudeStyleDiff: no rendered row exceeds the trace fence', () => {
   const raw = `--- ${'old/'.repeat(30)}file.txt\t2026-01-01
 +++ ${'new/'.repeat(30)}file.txt\t2026-01-01
 @@ -1 +1 @@
@@ -44,7 +45,7 @@ test('renderClaudeStyleDiff: no rendered row exceeds 78 columns', () => {
 +${'b'.repeat(200)}`
   const out = renderClaudeStyleDiff(raw)
   const rows = out.split('\n').filter(line => !line.startsWith('```'))
-  assert.ok(rows.every(line => line.length <= 78), JSON.stringify(rows))
+  assert.ok(rows.every(line => line.length <= TRACE_ROW_MAX), JSON.stringify(rows))
 })
 
 test('renderClaudeStyleDiff: line-number column right-justifies across a 9→10 boundary', () => {

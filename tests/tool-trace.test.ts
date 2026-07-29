@@ -6,8 +6,8 @@ import {
   TRACE_ROW_MAX,
 } from '../src/tool-trace.ts'
 
-test('tool trace rows fit the 78-column Discord fence', () => {
-  assert.equal(TRACE_ROW_MAX, 78)
-  assert.equal(`+ ● shell(${'x'.repeat(67)})`.length, TRACE_ROW_MAX)
+test('tool trace rows fit the 80-column Discord fence', () => {
+  assert.equal(TRACE_ROW_MAX, 80)
+  assert.equal(`+ ● shell(${'x'.repeat(TRACE_ROW_MAX - 11)})`.length, TRACE_ROW_MAX)
   assert.equal(`  ⎿ ${'x'.repeat(TRACE_RESULT_PAYLOAD_MAX)}`.length, TRACE_ROW_MAX)
 })
