@@ -294,7 +294,7 @@ function settingsCard(access: AccessManager, channelId: string): string {
     ['agy model', agyModel],
     ['thinking', `${f.thinking} (default live)`],
     ['trace', `${f.trace} (default collapse)`],
-    ['counter', `${f.counter} (default both)`],
+    ['counter', `${f.counter} (default off)`],
     ['cache', `${f.cache} (default true)`],
     ['cache ttl', f.cacheTtlSec != null ? `${f.cacheTtlSec}s` : 'default'],
     ['require @', f.requireMention ? 'yes' : 'no'],
