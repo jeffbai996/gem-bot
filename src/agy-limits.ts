@@ -101,6 +101,13 @@ function quotaBar(remainingFraction: number): string {
   return `${'█'.repeat(usedCells)}${'░'.repeat(cells - usedCells)}`
 }
 
+function quotaLabel(bucket: AgyQuotaBucket): string {
+  const window = bucket.window.trim().toLowerCase()
+  if (window === 'weekly') return 'weekly:'
+  if (/^five[- ]?hour$/.test(window) || window === '5h') return '5-hour:'
+  return `${bucket.displayName.replace(/\s+limit$/i, '').toLowerCase()}:`
+}
+
 function resetCountdown(resetTime: string | null, nowMs: number): string {
   if (!resetTime) return 'reset unknown'
   const resetMs = Date.parse(resetTime)
@@ -120,22 +127,22 @@ function resetCountdown(resetTime: string | null, nowMs: number): string {
 
 export function formatAgyLimits(groups: AgyQuotaGroup[], nowMs = Date.now()): string {
   const lines = ['⏱️ **agy limits**', '']
-  for (const group of groups) {
+  groups.forEach((group, groupIndex) => {
+    if (groupIndex > 0) lines.push('')
     lines.push(`**${group.displayName}**`)
     if (group.description) {
       lines.push(group.description.replace(/^Models within this group:\s*/i, ''))
     }
+    const quotaLines: string[] = []
     for (const bucket of group.buckets) {
       const left = Math.round(bucket.remainingFraction * 100)
       const used = 100 - left
-      lines.push(
-        `\`${quotaBar(bucket.remainingFraction)}\` **${bucket.displayName}**`,
-        `${used}% used · ${left}% left · ${resetCountdown(bucket.resetTime, nowMs)}`,
+      quotaLines.push(
+        `${quotaLabel(bucket).padEnd(7)} ${quotaBar(bucket.remainingFraction)} ${String(used).padStart(3)}%  · ${left}% left · ${resetCountdown(bucket.resetTime, nowMs)}`,
       )
     }
-    lines.push('')
-  }
-  lines.push('_Buckets are shared by the models listed in each group._')
+    lines.push('```', ...quotaLines, '```')
+  })
   return lines.join('\n')
 }
 
