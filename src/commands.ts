@@ -15,6 +15,7 @@ import {
   DEFAULT_GEMINI_MODEL,
   isValidAgyModel,
 } from './models.ts'
+import { formatStats, type GemStats } from './stats.ts'
 
 export const geminiCommand = new SlashCommandBuilder()
   .setName('gemini')
@@ -225,6 +226,11 @@ export const geminiCommand = new SlashCommandBuilder()
   )
   .addSubcommand(subcommand =>
     subcommand
+      .setName('stats')
+      .setDescription('Show cumulative usage and runtime stats')
+  )
+  .addSubcommand(subcommand =>
+    subcommand
       .setName('mention')
       .setDescription('Require an @-mention before responding in this channel: on | off.')
       .addStringOption(option => option
@@ -257,6 +263,7 @@ function formatRelative(seconds: number): string {
 interface ExtraDeps {
   summaryStore: { upsert(channelId: string, summary: string, lastMessageId: string): void }
   summarizer: { runForChannel(channelId: string): Promise<{ messageCount: number } | null> }
+  stats: GemStats
 }
 
 // The one settings card. /gemini settings renders it, and every setter ack
@@ -639,6 +646,10 @@ export function fmtSettingChange(label: string, value: string, previous: string)
         return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
       }
       return interaction.reply({ content: settingsCard(access, channel.id), ephemeral: true })
+    }
+
+    if (subcommand === 'stats') {
+      return interaction.reply({ content: formatStats(deps.stats.snapshot()), ephemeral: true })
     }
 
     // /gemini mention on|off — dedicated require-@ setter, unified with /gpt and
