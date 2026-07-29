@@ -47,6 +47,7 @@ import {
   TRACE_ROW_MAX,
   truncateDigest,
   truncateDisplayWidth,
+  truncateDisplayWidthClean,
 } from './tool-trace.ts'
 import { extractPresenceDirective, normalizePresenceText } from './presence.ts'
 import { GemStats } from './stats.ts'
@@ -477,7 +478,9 @@ function renderTraceCard(toolCalls: ToolCall[], extras: TraceExtras = {}): strin
     ...searchTraceLines(extras.searchQueries ?? []),
     ...buildTraceLines(toolCalls),
     ...codeTraceLines(extras.codeArtifacts ?? []),
-  ].map(line => truncateDisplayWidth(line, TRACE_ROW_MAX))
+  ].map(line => /^[+-] ● /.test(line)
+    ? truncateDisplayWidthClean(line, TRACE_ROW_MAX)
+    : truncateDisplayWidth(line, TRACE_ROW_MAX))
   const fitted: string[] = []
   let running = 0
   for (const ln of all.slice(0, TRACE_MAX_LINES)) {

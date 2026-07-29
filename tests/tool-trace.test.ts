@@ -2,9 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  displayWidth,
   TRACE_RESULT_PAYLOAD_MAX,
   TRACE_ROW_MAX,
   truncateDigest,
+  truncateDisplayWidthClean,
 } from '../src/tool-trace.ts'
 
 test('tool trace rows fit the 80-column Discord fence', () => {
@@ -17,4 +19,11 @@ test('truncated tool arguments end cleanly without an ellipsis', () => {
   assert.equal(truncateDigest('abcdefgh', 5), 'abcde')
   assert.equal(truncateDigest('abc', 5), 'abc')
   assert.equal(truncateDigest('abc', 0), '')
+})
+
+test('final tool-call row truncation does not restore an ellipsis', () => {
+  const row = `+ ● Read(${'x'.repeat(TRACE_ROW_MAX)})`
+  const rendered = truncateDisplayWidthClean(row, TRACE_ROW_MAX)
+  assert.equal(displayWidth(rendered), TRACE_ROW_MAX)
+  assert.ok(!rendered.endsWith('…'))
 })
