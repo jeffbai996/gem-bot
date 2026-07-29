@@ -403,7 +403,7 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
     let argPart = ''
     if (hasArgs) {
       // Budget the whole rendered header, including marker, name, parens, and
-      // timing/failure suffix. Discord's diff fence wraps beyond 76 columns.
+      // timing/failure suffix. Discord's diff fence wraps beyond TRACE_ROW_MAX columns.
       const budget = TRACE_ROW_MAX - 4 - name.length - 2 - tailStr.length
       const digest = argDigest(displayArgs, budget)
       argPart = digest ? `(${digest})` : ''
