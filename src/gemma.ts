@@ -48,11 +48,13 @@ import {
   truncateDisplayWidth,
 } from './tool-trace.ts'
 import { extractPresenceDirective, normalizePresenceText } from './presence.ts'
+import { GemStats } from './stats.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
 const LIVE_UPDATE_INTERVAL_MS = resolveLiveUpdateInterval(process.env.GEM_LIVE_UPDATE_INTERVAL_MS)
 const deferredActions = new DeferredActions(path.join(STATE_DIR, 'deferred-actions.json'))
+const stats = new GemStats(path.join(STATE_DIR, 'global-stats.json'))
 const SKIP_REASON_LABELS: Record<string, string> = {
   too_large: 'too large',
   unsupported_type: 'unsupported file type',
@@ -680,6 +682,7 @@ client.on('interactionCreate', async (interaction) => {
   await executeGeminiCommand(interaction, access, persona, gemini, adminId, {
     summaryStore,
     summarizer,
+    stats,
   })
 })
 
@@ -1232,6 +1235,15 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       applyBasePresence(presenceUpdate.presence)
     }
     const respondElapsedMs = Date.now() - respondT0
+    const actualEngine = useAgy && !agyFellBack ? 'agy' : 'api'
+    stats.record({
+      engine: actualEngine,
+      model: actualEngine === 'agy'
+        ? (process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL)
+        : (process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL),
+      elapsedMs: respondElapsedMs,
+      usage: meta.usage,
+    })
 
     if (streamInterval) {
       clearInterval(streamInterval)
