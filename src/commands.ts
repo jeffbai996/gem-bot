@@ -23,6 +23,7 @@ import {
   isValidAgyModel,
 } from './models.ts'
 import { formatStats, type GemStats } from './stats.ts'
+import { fetchAgyLimits, formatAgyLimits } from './agy-limits.ts'
 
 export const geminiCommand = new SlashCommandBuilder()
   .setName('gemini')
@@ -235,6 +236,11 @@ export const geminiCommand = new SlashCommandBuilder()
     subcommand
       .setName('stats')
       .setDescription('Show cumulative usage and runtime stats')
+  )
+  .addSubcommand(subcommand =>
+    subcommand
+      .setName('limits')
+      .setDescription('Show live Antigravity subscription limits')
   )
   .addSubcommand(subcommand =>
     subcommand
@@ -674,6 +680,19 @@ export function fmtChannelChange(
 
     if (subcommand === 'stats') {
       return interaction.reply({ content: formatStats(deps.stats.snapshot()), ephemeral: true })
+    }
+
+    if (subcommand === 'limits') {
+      await interaction.deferReply({ ephemeral: true })
+      try {
+        const groups = await fetchAgyLimits()
+        return interaction.editReply({ content: formatAgyLimits(groups) })
+      } catch (e: any) {
+        console.error('[agy-limits] failed:', e)
+        return interaction.editReply({
+          content: `❌ Could not read agy limits: ${e?.message ?? e}`,
+        })
+      }
     }
 
     // /gemini mention on|off — dedicated require-@ setter, unified with /gpt and
