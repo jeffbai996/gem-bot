@@ -3,14 +3,16 @@ import test from 'node:test'
 
 import {
   displayWidth,
+  formatAggregateTraceMarker,
   TRACE_RESULT_PAYLOAD_MAX,
   TRACE_ROW_MAX,
   truncateDigest,
   truncateDisplayWidthClean,
 } from '../src/tool-trace.ts'
+import { agyToolDisplayName } from '../src/agy-chat.ts'
 
-test('tool trace rows fit the 80-column Discord fence', () => {
-  assert.equal(TRACE_ROW_MAX, 80)
+test('tool trace rows fit the 87-column Discord fence', () => {
+  assert.equal(TRACE_ROW_MAX, 87)
   assert.equal(`+ ● shell(${'x'.repeat(TRACE_ROW_MAX - 11)})`.length, TRACE_ROW_MAX)
   assert.equal(`  ⎿ ${'x'.repeat(TRACE_RESULT_PAYLOAD_MAX)}`.length, TRACE_ROW_MAX)
 })
@@ -26,4 +28,17 @@ test('final tool-call row truncation does not restore an ellipsis', () => {
   const rendered = truncateDisplayWidthClean(row, TRACE_ROW_MAX)
   assert.equal(displayWidth(rendered), TRACE_ROW_MAX)
   assert.ok(!rendered.endsWith('…'))
+})
+
+test('agy tool display truncation does not bake in an ellipsis', () => {
+  const rendered = agyToolDisplayName('view_file', {
+    AbsolutePath: `/tmp/${'x'.repeat(100)}`,
+  })
+  assert.match(rendered, /^Read\(.+\)$/)
+  assert.ok(!rendered.includes('…'))
+})
+
+test('aggregate call marker is not styled as a tool invocation', () => {
+  assert.equal(formatAggregateTraceMarker(1), '…(+1 earlier call)')
+  assert.equal(formatAggregateTraceMarker(28), '…(+28 earlier calls)')
 })

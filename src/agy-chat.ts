@@ -577,7 +577,7 @@ const AGY_TOOL_SPEC: Record<string, { verb: string; argKey?: string; basename?: 
   browser_take_screenshot: { verb: 'Screenshot' },
 }
 
-function agyToolDisplayName(
+export function agyToolDisplayName(
   name: string,
   args: Record<string, unknown> | undefined
 ): string {
@@ -635,7 +635,7 @@ function agyToolDisplayName(
         if (innerSpec.basename) detail = detail.replace(/\/+$/, '').split('/').pop() || detail
         const maxDetailLen = 62 - verb.length
         if (detail.length > maxDetailLen) {
-          detail = detail.slice(0, Math.max(0, maxDetailLen - 1)) + '…'
+          detail = detail.slice(0, Math.max(0, maxDetailLen))
         }
         return `${verb}(${detail})`
       }
@@ -659,7 +659,7 @@ function agyToolDisplayName(
       // So detail.length <= 76 - 4 - 8 - spec.verb.length - 2 = 62 - spec.verb.length.
       const maxDetailLen = 62 - spec.verb.length
       if (detail.length > maxDetailLen) {
-        detail = detail.slice(0, Math.max(0, maxDetailLen - 1)) + '…'
+        detail = detail.slice(0, Math.max(0, maxDetailLen))
       }
     }
   }
