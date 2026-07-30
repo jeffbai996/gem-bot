@@ -1,8 +1,8 @@
 // Tool-call rows use the available Discord desktop width; result payloads use a tighter
 // independent budget because Discord renders their indented rows wider.
 // row is capped to it via truncateDisplayWidth, so wide glyphs count as 2.
-export const TRACE_ROW_MAX = 87
-export const TRACE_RESULT_PAYLOAD_MAX = 84
+export const TRACE_ROW_MAX = 76
+export const TRACE_RESULT_PAYLOAD_MAX = 73
 const TRACE_BODY_CHAR_BUDGET = 1800
 const SECRET_RE = /[A-Za-z0-9_\-]{32,256}/g
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
