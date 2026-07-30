@@ -145,6 +145,9 @@ describe('AccessManager', () => {
     // collapse
     await mgr.setChannelFlags('C1', { trace: 'collapse' })
     assert.equal(mgr.channelFlags('C1').trace, 'collapse')
+    // live
+    await mgr.setChannelFlags('C1', { trace: 'live' })
+    assert.equal(mgr.channelFlags('C1').trace, 'live')
     // patching trace must not disturb other flags
     assert.equal(mgr.channelFlags('C1').thinking, 'live')
   })
@@ -158,7 +161,7 @@ describe('AccessManager', () => {
     await mgr.load()
     await assert.rejects(
       () => mgr.setChannelFlags('C1', { trace: 'maybe' as any }),
-      /trace.*off.*on.*collapse/
+      /trace.*off.*on.*live.*collapse/
     )
   })
 

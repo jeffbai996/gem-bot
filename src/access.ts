@@ -21,12 +21,10 @@ export type ChatEngine = 'agy' | 'api'
 // the reasoning block rides the `thinking` mode.
 export type CounterMode = 'off' | 'token' | 'both'
 
-// Tool-trace card mode. off = no card (default — opt-in, like gpt-bot); on =
-// post a 🔧 **Tool trace** card ABOVE the reply and keep it; collapse = post it
-// live then delete after the reply lands. The card is the SINGLE trace surface:
-// tool calls + web-search + code-execution (the old show_code inline dump was
-// folded in here 2026-06-29).
-export type TraceMode = 'off' | 'on' | 'collapse'
+// Tool-trace mode. off = none; on = keep every paginated trace card; live =
+// keep one rolling window; collapse = paginate the full trace live, then delete
+// it after the reply. Tool calls + web search + code execution share this surface.
+export type TraceMode = 'off' | 'on' | 'live' | 'collapse'
 
 export interface ChannelConfig {
   enabled: boolean
@@ -79,7 +77,7 @@ function normThinking(v: unknown): ThinkingMode {
 }
 const VALID_ENGINES: ChatEngine[] = ['agy', 'api']
 const VALID_COUNTER_MODES: CounterMode[] = ['off', 'token', 'both']
-const VALID_TRACE_MODES: TraceMode[] = ['off', 'on', 'collapse']
+const VALID_TRACE_MODES: TraceMode[] = ['off', 'on', 'live', 'collapse']
 
 // Default rendering/behavior flags applied when a channel is first configured
 // without explicit flag overrides, and when channelFlags() is asked about an
@@ -278,7 +276,7 @@ export class AccessManager {
       throw new Error(`invalid counter "${patch.counter}" — must be one of: off, token, both`)
     }
     if (patch.trace !== undefined && !VALID_TRACE_MODES.includes(patch.trace)) {
-      throw new Error(`invalid trace "${patch.trace}" — must be one of: off, on, collapse`)
+      throw new Error(`invalid trace "${patch.trace}" — must be one of: off, on, live, collapse`)
     }
     this.data.channels[channelId] = {
       ...existing,

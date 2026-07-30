@@ -586,8 +586,16 @@ export interface RespondResult {
 export type LifecycleEvent =
   | { type: 'searching' }
   | { type: 'native_thinking' }
-  | { type: 'tool_call_start', name: string }
-  | { type: 'tool_call_end', name: string, failed: boolean }
+  | { type: 'tool_call_start', name: string, args?: Record<string, unknown> }
+  | {
+      type: 'tool_call_end'
+      name: string
+      failed: boolean
+      args?: Record<string, unknown>
+      durationMs?: number
+      resultPreview?: string
+      diff?: string
+    }
   // Antigravity exposes a public action narration on each planner step plus
   // occasional substantive reasoning summaries. Keep them separate so the
   // live card replaces one snapshot in place instead of accumulating a wall.
@@ -1075,7 +1083,7 @@ export class GeminiClient {
       // dispatch — gives the user visible feedback that something tool-y
       // is in flight, instead of a quiet several-second pause.
       if (onEvent) {
-        try { onEvent({ type: 'tool_call_start', name: fnName }) }
+        try { onEvent({ type: 'tool_call_start', name: fnName, args: fnArgs }) }
         catch (err) { console.error('[onEvent]', err) }
       }
       const t0 = Date.now()
@@ -1089,7 +1097,16 @@ export class GeminiClient {
       }
       const durationMs = Date.now() - t0
       if (onEvent) {
-        try { onEvent({ type: 'tool_call_end', name: fnName, failed }) }
+        try {
+          onEvent({
+            type: 'tool_call_end',
+            name: fnName,
+            failed,
+            args: fnArgs,
+            durationMs,
+            resultPreview: previewToolResult(result),
+          })
+        }
         catch (err) { console.error('[onEvent]', err) }
       }
       toolCalls.push({

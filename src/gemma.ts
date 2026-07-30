@@ -43,7 +43,7 @@ import { DeferredActions } from './deferred-actions.ts'
 import { LiveProgressBuffer, resolveLiveUpdateInterval } from './live-update.ts'
 import {
   DEFAULT_LIVE_END_LINGER_MS,
-  formatAggregateTraceMarker,
+  renderTraceCards,
   TRACE_RESULT_PAYLOAD_MAX,
   TRACE_ROW_MAX,
   truncateDigest,
@@ -314,12 +314,6 @@ function shortToolName(name: string): string {
   return name
 }
 
-// Redact credential-looking runs before a trace hits Discord. A file-edit diff
-// can contain the contents of an env/auth file, so a 32+ char id-shaped token in
-// a diff body could otherwise leak a key. Same SECRET_RE as gpt-bot.
-const SECRET_RE = /[A-Za-z0-9_\-]{32,256}/g
-function redactSecrets(text: string): string { return text.replace(SECRET_RE, '<REDACTED>') }
-
 // Unified diff -> Claude-style: a [+adds, -dels] badge + the changed lines
 // (red '-' / green '+', context plain), minus the git '@@' / file-header noise.
 // Ported from gpt-bot/src/gpt.ts so the trace card can render file-edit diffs.
@@ -339,34 +333,20 @@ function formatDiff(unified: string): { badge: string; body: string[] } {
 // gpt-bot has a per-channel `/gpt trace off|on|collapse` that posts a standalone
 // `🔧 **Tool trace**` card ABOVE the reply: a ```diff```-fenced list of tool
 // calls, one `+ ● shortName(argDigest) [Nms]` line per call (green via the diff
-// `+`), `- ● ... FAILED [Nms]` (red) on failure. It's the SINGLE trace surface:
+// `+`), `- ● ... FAILED [Nms]` (red) on failure. It's the unified trace surface:
 // tool calls + web-search + code-execution (show_code's old inline blocks were
 // folded in here 2026-06-29). Reuses gem's argDigest/shortToolName.
-// gem's ToolCall has no diff/resultLines fields (simpler than gpt's), so this is
-// the trimmed assembler: header row + optional `⎿ resultPreview` line per call.
-const TRACE_BODY_CHAR_BUDGET = 1900
-const TRACE_MAX_LINES = 50
 // Width of the ⎿ result-preview row. Was chopped to 10 (misread of "reduce ~10"),
 // which made every preview useless — restored to a readable width.
 const TRACE_RESULT_PREVIEW_MAX = Number(process.env.GEM_OUT_W ?? TRACE_RESULT_PAYLOAD_MAX)
-// Cap the number of tool-call rows so a long turn's trace stays a preview, not a
-// wall — the last N calls plus a "+N earlier" marker. Parity with gpt/llm-bot.
-const MAX_TRACE_CALLS = Number(process.env.GEM_MAX_TRACE_CALLS ?? 11)
-const MAX_DIFF_BODY_LINES = Number(process.env.GEM_MAX_DIFF_BODY_LINES ?? 12)
 
-function buildTraceLines(toolCalls: ToolCall[]): string[] {
+type RenderableToolCall = ToolCall & { running?: boolean }
+
+function buildTraceLines(toolCalls: RenderableToolCall[]): string[] {
   const lines: string[] = []
-  // Keep the last N calls (most recent = most relevant); note how many were dropped.
-  const dropped = Math.max(0, toolCalls.length - MAX_TRACE_CALLS)
-  const capped = dropped ? toolCalls.slice(-MAX_TRACE_CALLS) : toolCalls
-  if (dropped) lines.push(formatAggregateTraceMarker(dropped))
-  // Edits (with diffs) first: the diff is the payload and must not get starved by
-  // a long list of shell rows below it, which the card's length cap then truncates
-  // to a couple lines (gpt-bot's ordering). Order within each group preserved.
-  const ordered = [...capped.filter(c => c.diff), ...capped.filter(c => !c.diff)]
-  for (const call of ordered) {
+  for (const call of toolCalls) {
     const prefix = call.failed ? '- ● ' : '+ ● '
-    const tail = call.failed ? ' FAILED' : ''
+    const tail = call.running ? '...' : call.failed ? ' FAILED' : ''
     // Timing badge. Two regimes so we kill the agy noise without losing native
     // precision: native tool calls carry sub-second ms timing that's genuinely
     // useful → show `[Nms]` for anything under 1s. agy's timing is coarse
@@ -406,18 +386,15 @@ function buildTraceLines(toolCalls: ToolCall[]): string[] {
 
     lines.push(`${prefix}${name}${argPart}${tailStr}`)
     if (call.diff) {
-      // File edit: a `⎿ [+N, -M]` summary line then the changed lines (red '-' /
-      // green '+'), redacted, capped at 24 body lines. The body lines keep their
+      // File edit: a `⎿ [+N, -M]` summary line then every changed line (red '-' /
+      // green '+'). Pagination bounds each Discord message; the body lines keep their
       // own +/- markers so Discord's diff highlighter colors them.
       const { badge, body } = formatDiff(call.diff)
       lines.push(`  ⎿ ${badge}`)
-      for (const b of body.slice(0, MAX_DIFF_BODY_LINES)) {
+      for (const b of body) {
         let line = b
         line = truncateDisplayWidth(line, TRACE_ROW_MAX)
         lines.push(line)
-      }
-      if (body.length > MAX_DIFF_BODY_LINES) {
-        lines.push(`... (${body.length - MAX_DIFF_BODY_LINES} more lines)`)
       }
     } else if (call.resultPreview) {
       let rp = call.resultPreview.replace(/\n/g, ' ')
@@ -471,33 +448,17 @@ function codeTraceLines(arts: CodeExecArtifact[]): string[] {
   return lines
 }
 
-function renderTraceCard(toolCalls: ToolCall[], extras: TraceExtras = {}): string {
+function buildAllTraceLines(toolCalls: ToolCall[], extras: TraceExtras = {}): string[] {
   // Order: web-searches → tool calls → code-execution. Searches are usually the
   // first thing the model does (grounding), code-exec the last (compute on what
   // it found), so this reads chronologically enough without per-row timestamps.
-  const all = [
+  return [
     ...searchTraceLines(extras.searchQueries ?? []),
     ...buildTraceLines(toolCalls),
     ...codeTraceLines(extras.codeArtifacts ?? []),
   ].map(line => /^[+-] ● /.test(line)
     ? truncateDisplayWidthClean(line, TRACE_ROW_MAX)
     : truncateDisplayWidth(line, TRACE_ROW_MAX))
-  const fitted: string[] = []
-  let running = 0
-  for (const ln of all.slice(0, TRACE_MAX_LINES)) {
-    const cost = ln.length + (fitted.length ? 1 : 0)
-    if (running + cost > TRACE_BODY_CHAR_BUDGET) break
-    fitted.push(ln); running += cost
-  }
-  const dropped = all.length - fitted.length
-  if (dropped > 0) fitted.push(`... (${dropped} more lines)`)
-  // Redact credential-looking runs (a file-edit diff body can carry env/auth
-  // contents) before the card hits Discord.
-  // NOT quote-blocked (Jeff 2026-06-30): the trace is its own labeled ```diff```
-  // card and reads cleaner standing alone — wrapping it in a > quote nested the
-  // code fence inside a gray quote bar, which looked broken. Only the 💭 thinking
-  // block stays quote-wrapped.
-  return '🔧 **Tool trace**\n```diff\n' + redactSecrets(fitted.join('\n')) + '\n```'
 }
 
 process.on('SIGHUP', async () => {
@@ -776,7 +737,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // alongside a new error reply (seen 2026-05-01: thought_signature crash
   // left a dangling Thinking... message above the actual error).
   let activeMessages: Message[] = []
-  const liveToolCalls: Array<{ name: string; running: boolean; failed?: boolean }> = []
+  const liveToolCalls: RenderableToolCall[] = []
   // This speak-mode turn's abort signal (set below if we're speaking to a vc).
   // Declared out here so the catch/finally can read it for barge-in cleanup.
   let turnSignal: AbortSignal | undefined
@@ -797,7 +758,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   let liveAgyThinking = ''
   const liveAgyThinkingTrace: string[] = []
   const liveAgyProgress = new LiveProgressBuffer()
-  const liveTraceMessage: { current: Message | null } = { current: null }
+  let liveTraceMessages: Message[] = []
   const collapseFailsafed = new Set<string>()
   const collapseFailsafeMs = Math.max(
     60_000,
@@ -896,6 +857,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     }
 
     const transientThinking = flags.thinking === 'live' || flags.thinking === 'collapse'
+    const transientTrace = flags.trace === 'live' || flags.trace === 'collapse'
 
     const activeModel = useAgy
       ? (process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL)
@@ -934,28 +896,32 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         ? liveAgyThinkingTrace
         : latestParsed.thinking ? [latestParsed.thinking] : []
 
-    const liveTraceCard = (): string => {
-      if (flags.trace === 'off' || liveToolCalls.length === 0) return ''
-      const lines = liveToolCalls.map(c => {
-        const prefix = c.failed ? '- ● ' : '+ ● '
-        const suffix = c.running ? '...' : (c.failed ? ' FAILED' : '')
-        return `${prefix}${shortToolName(c.name)}${suffix}`
-      })
-      return '🔧 **Tool trace**\n```diff\n' + lines.join('\n') + '\n```'
+    const liveTraceCards = (): string[] => {
+      if (flags.trace === 'off' || liveToolCalls.length === 0) return []
+      return renderTraceCards(buildTraceLines(liveToolCalls), flags.trace)
+    }
+
+    const syncTraceMessages = async (cards: string[]) => {
+      for (let i = 0; i < cards.length; i++) {
+        const current = liveTraceMessages[i]
+        if (current) {
+          if (current.content !== cards[i]) await current.edit(cards[i]).catch(() => {})
+          continue
+        }
+        const sent = await sendRawMessage(message, cards[i])
+        if (!sent) continue
+        liveTraceMessages[i] = sent
+        if (transientTrace) scheduleCollapseFailsafe(sent, 'trace')
+      }
+      for (const stale of liveTraceMessages.slice(cards.length)) {
+        await stale.delete().catch(() => {})
+      }
+      liveTraceMessages = liveTraceMessages.slice(0, cards.length)
     }
 
     const flushLiveTrace = async () => {
-      const card = liveTraceCard()
-      if (!card) return
-      if (liveTraceMessage.current) {
-        if (liveTraceMessage.current.content !== card) {
-          await liveTraceMessage.current.edit(card).catch(() => {})
-      }
-      return
+      await syncTraceMessages(liveTraceCards())
     }
-    liveTraceMessage.current = await sendRawMessage(message, card)
-    if (flags.trace === 'collapse') scheduleCollapseFailsafe(liveTraceMessage.current, 'trace')
-  }
 
     const startSpinner = () => {
       if (thinkingAnim) return
@@ -1077,14 +1043,25 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       } else if (e.type === 'tool_call_start') {
         activeToolCount += 1
         applyLifecycle(message, 'tooling').catch(() => {})
-        liveToolCalls.push({ name: e.name, running: true })
+        liveToolCalls.push({
+          name: e.name,
+          args: e.args ?? {},
+          durationMs: 0,
+          resultPreview: '',
+          failed: false,
+          running: true,
+        })
         flushStream().catch(() => {})
       } else if (e.type === 'tool_call_end') {
         activeToolCount = Math.max(0, activeToolCount - 1)
-        const call = liveToolCalls.find(c => c.name === e.name && c.running)
+        const call = [...liveToolCalls].reverse().find(c => c.name === e.name && c.running)
         if (call) {
           call.running = false
           call.failed = e.failed
+          call.args = e.args ?? call.args
+          call.durationMs = e.durationMs ?? call.durationMs
+          call.resultPreview = e.resultPreview ?? call.resultPreview
+          call.diff = e.diff
         }
         flushStream().catch(() => {})
       } else if (e.type === 'agy_progress') {
@@ -1344,15 +1321,17 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // gating as before (`flags.thinking !== 'off'`, collapse/never modes).
     let thinkingMessage = ''
 
-    // 🔧 Tool-trace card — the single per-channel trace surface, gated by the
-    // `trace` flag (off|on|collapse). Renders tool calls + web-searches +
-    // code-execution as ONE isolated card above the reply, never inside the answer
+    // 🔧 Tool trace — the per-channel trace surface, gated by the
+    // `trace` flag (off|on|live|collapse). Renders tool calls + web searches +
+    // code execution as isolated paginated cards above the reply, never inside the answer
     // body. Keeping trace out of finalFullReply prevents a partial live card from
     // surviving as a dangling footer when chunking/edit ordering gets weird.
     const traceExtras = { searchQueries: meta.searchQueries, codeArtifacts: meta.codeArtifacts }
     const showTrace = flags.trace !== 'off'
       && (meta.toolCalls.length > 0 || meta.searchQueries.length > 0 || meta.codeArtifacts.length > 0)
-    const finalTraceCard = showTrace ? renderTraceCard(meta.toolCalls, traceExtras) : ''
+    const finalTraceCards = showTrace
+      ? renderTraceCards(buildAllTraceLines(meta.toolCalls, traceExtras), flags.trace)
+      : []
 
     // Native thinking summaries from gemini-3 thinking models (parts with
     // `thought: true`). Distinct from `parsed.thinking` (our JSON-wrapper
@@ -1508,6 +1487,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     if (meta.finishReason === 'SAFETY') terminalState = 'blocked'
     else if (meta.finishReason === 'MAX_TOKENS') terminalState = 'truncated'
     applyLifecycle(message, terminalState).catch(() => {})
+    await syncTraceMessages(finalTraceCards)
 
     if (finalFullReply) {
       // Two-message render (Jeff 2026-06-28): the 💭/🧠 reasoning becomes its own
@@ -1523,21 +1503,6 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // and any excess streaming messages are deleted at the end. Splitting into
       // two separate send loops would have re-introduced the duplicate-on-failed-
       // delete bug that the edit-in-place approach exists to prevent.
-      if (finalTraceCard) {
-        const traceMsg = liveTraceMessage.current
-        if (traceMsg) {
-          if (traceMsg.content !== finalTraceCard) {
-            await traceMsg.edit(finalTraceCard).catch(() => {})
-          }
-        } else {
-          liveTraceMessage.current = await sendRawMessage(message, finalTraceCard)
-        }
-      } else if (liveTraceMessage.current) {
-        const traceMsg = liveTraceMessage.current
-        await traceMsg.delete().catch(() => {})
-        liveTraceMessage.current = null
-      }
-
       const thinkingPieces = thinkingMessage ? chunk(thinkingMessage, 2000, 'newline').filter(p => p.trim() !== '') : []
       const replyPieces = finalFullReply ? chunk(finalFullReply, 2000, 'newline').filter(p => p.trim() !== '') : []
       const pieces = [...thinkingPieces, ...replyPieces]
@@ -1569,11 +1534,9 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       //     (indices 0..replyStart-1), leaving just the reply below. No more
       //     regex-stripping a combined string — the thought is its own message now,
       //     so we just remove it.
-      //   • trace:collapse → DELETE the separate trace card entirely.
       // Snapshot the messages we touch so a later turn mutating activeMessages
       // can't make the deferred callback hit the wrong message.
       const collapsingThinking = transientThinking && replyStart > 0
-      const collapsingTrace = flags.trace === 'collapse' && !!liveTraceMessage.current
       const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || DEFAULT_LIVE_END_LINGER_MS
 
       if (collapsingThinking) {
@@ -1596,13 +1559,6 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         }
       }
 
-      if (collapsingTrace) {
-        const traceMsg = liveTraceMessage.current
-        liveTraceMessage.current = null
-        if (traceMsg) {
-          deferredActions.schedule(client, { channelId: traceMsg.channelId, messageId: traceMsg.id, action: 'delete', dueAt: Date.now() + lingerMs })
-        }
-      }
     } else if (thinkingMessage) {
       // React-only turn (empty reply) that STILL produced reasoning: don't orphan
       // or drop the thinking. Render thinkingMessage into the placeholder/messages
@@ -1632,6 +1588,21 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       for (const m of activeMessages) await m.delete().catch(() => {})
     }
 
+    if (transientTrace && liveTraceMessages.length) {
+      const traceMessages = liveTraceMessages
+      liveTraceMessages = []
+      const dueAt = Date.now()
+        + (Number(process.env.GEMINI_THOUGHT_LINGER_MS) || DEFAULT_LIVE_END_LINGER_MS)
+      for (const traceMessage of traceMessages) {
+        deferredActions.schedule(client, {
+          channelId: traceMessage.channelId,
+          messageId: traceMessage.id,
+          action: 'delete',
+          dueAt,
+        })
+      }
+    }
+
     await Promise.all([attachmentResult.cleanup(), ytResult.cleanup()])
 
     // Fire-and-forget: kick off conversation summarization if the channel
@@ -1655,8 +1626,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       } else {
         for (const m of activeMessages) await m.delete().catch(() => {})
       }
-      if (liveTraceMessage.current) await liveTraceMessage.current.delete().catch(() => {})
-      liveTraceMessage.current = null
+      for (const traceMessage of liveTraceMessages) {
+        await traceMessage.delete().catch(() => {})
+      }
+      liveTraceMessages = []
       activeMessages = []
       return
     }
@@ -1694,8 +1667,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         for (const extra of activeMessages.slice(1)) {
           await extra.delete().catch(() => {})
         }
-        if (liveTraceMessage.current) await liveTraceMessage.current.delete().catch(() => {})
-        liveTraceMessage.current = null
+        for (const traceMessage of liveTraceMessages) {
+          await traceMessage.delete().catch(() => {})
+        }
+        liveTraceMessages = []
       } else {
         await sendReply(message, msg)
       }

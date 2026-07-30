@@ -130,15 +130,16 @@ export const geminiCommand = new SlashCommandBuilder()
   .addSubcommand(subcommand =>
     subcommand
       .setName('trace')
-      .setDescription('Tool-trace card for this channel: off | on | collapse.')
+      .setDescription('Tool trace: off | on | live | collapse.')
       .addStringOption(option => option
         .setName('value')
-        .setDescription('off | on (keep the card) | collapse (show then strip after the linger)')
+        .setDescription('off | on | live | collapse')
         .setRequired(true)
         .addChoices(
           { name: 'off — no tool-trace card (default)', value: 'off' },
-          { name: 'on — keep the 🔧 Tool-trace card', value: 'on' },
-          { name: 'collapse — show it, then strip after the linger', value: 'collapse' },
+          { name: 'on — keep the full paginated trace', value: 'on' },
+          { name: 'live — one rolling trace window', value: 'live' },
+          { name: 'collapse — full trace, delete after the reply', value: 'collapse' },
         )
       )
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
@@ -459,8 +460,8 @@ export function fmtChannelChange(
       if (!channel) {
         return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
       }
-      if (!['off', 'on', 'collapse'].includes(value)) {
-        return interaction.reply({ content: `❌ \`trace\` must be one of: off, on, collapse (got \`${value}\`)`, ephemeral: true })
+      if (!['off', 'on', 'live', 'collapse'].includes(value)) {
+        return interaction.reply({ content: `❌ \`trace\` must be one of: off, on, live, collapse (got \`${value}\`)`, ephemeral: true })
       }
       try {
         const previous = access.channelFlags(channel.id).trace
