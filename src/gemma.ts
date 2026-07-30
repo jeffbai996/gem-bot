@@ -53,7 +53,6 @@ import {
 import { extractPresenceDirective, normalizePresenceText } from './presence.ts'
 import { GemStats } from './stats.ts'
 import { editImages, isImageEditRequest } from './image-generation.ts'
-import { buildCompletionReceipt } from './completion-receipt.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
@@ -1414,12 +1413,6 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     if (meta.groundingSources.length > 0 && parsed.reply) {
       const sourcesBody = formatGroundingSources(meta.groundingSources, 5)
       if (sourcesBody) finalFullReply += '\n\n-# ↳ sources: ' + sourcesBody
-    }
-
-    const receipt = buildCompletionReceipt(meta.toolCalls, meta.writtenFiles)
-    if (receipt) {
-      finalFullReply = finalFullReply.replace(/\s+$/, '')
-      finalFullReply += `\n\n${receipt}`
     }
 
     // Verbose ops footer — token usage + response time. Format:
