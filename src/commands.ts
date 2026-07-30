@@ -245,14 +245,10 @@ export const geminiCommand = new SlashCommandBuilder()
   .addSubcommand(subcommand =>
     subcommand
       .setName('mention')
-      .setDescription('Require an @-mention before responding in this channel: on | off.')
-      .addStringOption(option => option
-        .setName('value').setDescription('on | off').setRequired(true)
-        .addChoices(
-          { name: 'on — only respond when @-mentioned', value: 'on' },
-          { name: 'off — respond to all messages', value: 'off' },
-        )
-      )
+      // Arg-less TOGGLE. The setting is binary, so making the user pick
+      // on|off from a menu is a pointless extra tap — the command can just
+      // read the current value and flip it (Jeff 2026-07-29).
+      .setDescription('Toggle whether an @-mention is required before responding in this channel.')
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
   )
   .addSubcommand(subcommand =>
@@ -293,7 +289,6 @@ function settingsCard(access: AccessManager, channelId: string): string {
   const apiModel = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL
   const agyModel = process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL
   const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000
-  const failsafeMs = Math.max(60_000, Number(process.env.GEMINI_COLLAPSE_FAILSAFE_MS ?? '600000'))
   const rows: Array<[string, string]> = [
     ['engine', String(engine)],
     ['api model', apiModel],
@@ -305,7 +300,6 @@ function settingsCard(access: AccessManager, channelId: string): string {
     ['cache ttl', f.cacheTtlSec != null ? `${f.cacheTtlSec}s` : 'default'],
     ['require @', f.requireMention ? 'yes' : 'no'],
     ['collapse linger', `${Math.round(lingerMs / 1000)}s`],
-    ['collapse failsafe', `${Math.round(failsafeMs / 1000)}s`],
   ]
   const pad = Math.max(...rows.map(([k]) => k.length))
   const body = rows.map(([k, v]) => `${k.padEnd(pad)} : ${v}`).join('\n')
@@ -699,17 +693,14 @@ export function fmtChannelChange(
     // /llm (replaces the old `/gemini set flag:require_mention` path, which stays
     // for back-compat but is no longer the documented way).
     if (subcommand === 'mention') {
-      const value = interaction.options.getString('value', true).trim().toLowerCase()
       const channel = interaction.options.getChannel('channel') ?? interaction.channel
       if (!channel) {
         return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
       }
-      if (!['on', 'off'].includes(value)) {
-        return interaction.reply({ content: `❌ \`mention\` must be on | off (got \`${value}\`)`, ephemeral: true })
-      }
       try {
-        const previous = access.channelFlags(channel.id).requireMention ? 'yes' : 'no'
-        const updated = await access.setChannelFlags(channel.id, { requireMention: value === 'on' })
+        const wasOn = !!access.channelFlags(channel.id).requireMention
+        const previous = wasOn ? 'yes' : 'no'
+        const updated = await access.setChannelFlags(channel.id, { requireMention: !wasOn })
         return interaction.reply({ content: `${fmtSettingChange('require @', updated.requireMention ? 'yes' : 'no', previous)}\n\n${settingsCard(access, channel.id)}`, ephemeral: true })
       } catch (e: any) {
         return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
