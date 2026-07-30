@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   displayWidth,
   formatAggregateTraceMarker,
+  renderTraceCards,
   TRACE_RESULT_PAYLOAD_MAX,
   TRACE_ROW_MAX,
   truncateDigest,
@@ -42,4 +43,32 @@ test('agy tool display truncation does not bake in an ellipsis', () => {
 test('aggregate call marker is not styled as a tool invocation', () => {
   assert.equal(formatAggregateTraceMarker(1), '…(+1 earlier call)')
   assert.equal(formatAggregateTraceMarker(28), '…(+28 earlier calls)')
+})
+
+test('full traces paginate every row instead of dropping overflow', () => {
+  const lines = Array.from(
+    { length: 60 },
+    (_, i) => `+ ● shell(command-${i}-${'x '.repeat(32)})`,
+  )
+  const cards = renderTraceCards(lines, 'collapse')
+
+  assert.ok(cards.length > 1)
+  assert.match(cards[0], /command-0-/)
+  assert.match(cards.at(-1) ?? '', /command-59-/)
+  assert.doesNotMatch(cards.join('\n'), /earlier calls|more lines/)
+  assert.ok(cards.every(card => card.length <= 2000))
+})
+
+test('live traces keep exactly one rolling code-block window', () => {
+  const lines = Array.from(
+    { length: 60 },
+    (_, i) => `+ ● shell(command-${i}-${'x '.repeat(32)})`,
+  )
+  const cards = renderTraceCards(lines, 'live')
+
+  assert.equal(cards.length, 1)
+  assert.match(cards[0], /^🔧 \*\*Tool trace\*\*\n```diff/)
+  assert.match(cards[0], /command-59-/)
+  assert.doesNotMatch(cards[0], /command-0-/)
+  assert.ok(cards[0].length <= 2000)
 })

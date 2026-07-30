@@ -163,6 +163,25 @@ describe('parseAgyTrajectoryText live narration', () => {
 
     assert.equal(parsed.liveProgress, 'I will search the command implementation.')
   })
+
+  test('preserves a complete write_to_file diff for paginated trace rendering', () => {
+    const content = Array.from({ length: 80 }, (_, i) => `line ${i}`).join('\n')
+    const parsed = parseAgyTrajectoryText(JSON.stringify({
+      step_index: 2,
+      source: 'MODEL',
+      type: 'PLANNER_RESPONSE',
+      content: 'I will write the file.',
+      tool_calls: [{
+        name: 'write_to_file',
+        args: { AbsolutePath: '/workspace/report.txt', CodeContent: content },
+      }],
+    }))
+
+    assert.equal(parsed.tools.length, 1)
+    assert.match(parsed.tools[0].diff ?? '', /\+line 0/)
+    assert.match(parsed.tools[0].diff ?? '', /\+line 79/)
+    assert.doesNotMatch(parsed.tools[0].diff ?? '', /more lines/)
+  })
 })
 
 describe('agy spawn env hygiene', () => {

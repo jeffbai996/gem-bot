@@ -670,19 +670,13 @@ export function agyToolDisplayName(
 // full new file content (`CodeContent`) but no diff and no prior content, so the
 // best faithful render is an all-additions diff: every content line prefixed `+`,
 // the way a Claude-style new-file write shows. Returns null when there's no usable
-// content (so the call falls back to a plain trace row). Capped to keep the trace
-// card small — the renderer also caps body lines, this is a cheap early bound.
-const AGY_DIFF_MAX_LINES = 40
+// content (so the call falls back to a plain trace row). Full trace modes paginate
+// the complete edit; the rolling live mode selects one bounded window later.
 function agyWriteDiff(args: Record<string, unknown> | undefined): string | null {
   if (!args || typeof args !== 'object') return null
   const content = (args as Record<string, unknown>).CodeContent
   if (typeof content !== 'string' || !content.trim()) return null
-  const raw = content.replace(/\n+$/, '').split('\n')
-  const lines = raw.slice(0, AGY_DIFF_MAX_LINES).map(l => '+' + l)
-  if (raw.length > AGY_DIFF_MAX_LINES) {
-    lines.push(`+... (${raw.length - AGY_DIFF_MAX_LINES} more lines)`)
-  }
-  return lines.join('\n')
+  return content.replace(/\n+$/, '').split('\n').map(line => '+' + line).join('\n')
 }
 
 // Snapshot {trajectory_path -> mtimeMs} under the brain dir BEFORE launching agy,
@@ -1036,7 +1030,7 @@ export async function respondViaAgy(
       // the trajectory — these are completed calls — so failed:false.)
       for (const { name, durationMs, diff } of traj.tools) {
         input.onEvent?.({ type: 'tool_call_start', name })
-        input.onEvent?.({ type: 'tool_call_end', name, failed: false })
+        input.onEvent?.({ type: 'tool_call_end', name, failed: false, durationMs, diff })
         toolCalls.push({ name, args: {}, durationMs, resultPreview: '', failed: false, ...(diff ? { diff } : {}) })
       }
       writtenFiles = traj.writtenFiles
