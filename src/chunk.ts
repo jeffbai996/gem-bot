@@ -16,7 +16,8 @@ export function chunk(text: string, limit: number = 2000, mode: 'length' | 'newl
     // closing backticks at the end. To be absolutely safe and prevent exceeding the
     // Discord 2000-character limit, we use a conservative 50-character buffer if limit is large.
     // For small limits (e.g. in tests), we fall back to a smaller buffer to avoid negative limits.
-    const buffer = limit > 100 ? 50 : (inCodeBlock ? 4 : 0)
+    const needsFenceRoom = inCodeBlock || text.slice(0, limit).includes('```')
+    const buffer = limit > 100 ? 50 : (needsFenceRoom ? 8 : 0)
     const effectiveLimit = limit - buffer
     
     let splitAt = -1
@@ -61,6 +62,10 @@ export function chunk(text: string, limit: number = 2000, mode: 'length' | 'newl
       
       const langPrefix = activeCodeLanguage ? activeCodeLanguage : ''
       nextChunkStart = '```' + langPrefix + '\n' + nextChunkStart
+      // The synthetic opener is fed through the parser on the next pass. Reset
+      // state here so that opener establishes the block instead of incorrectly
+      // toggling an already-open state closed on page two.
+      inCodeBlock = false
     }
 
     chunks.push(currentChunk)

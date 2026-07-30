@@ -37,4 +37,16 @@ describe('Chunking Logic', () => {
     assert.equal(result[1], 'A'.repeat(20))
     assert.equal(result[2], 'A'.repeat(10))
   })
+
+  it('keeps a fenced block closed and reopened across every chunk', () => {
+    const text = `\`\`\`diff\n${Array.from({ length: 30 }, (_, i) => `+ row ${i}`).join('\n')}\n\`\`\``
+    const result = chunk(text, 80)
+
+    assert.ok(result.length >= 4)
+    for (const piece of result) {
+      assert.ok(piece.length <= 80)
+      assert.match(piece, /^```diff\n/)
+      assert.match(piece, /\n```$/)
+    }
+  })
 })
