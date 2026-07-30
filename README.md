@@ -48,6 +48,19 @@ The reasoning, tool-trace, and token/time footer surfaces are toggleable per cha
 
 ## Features
 
+### Token telemetry
+
+Gem can put a compact usage badge under every reply:
+
+> ` ↑ 14,200 · ↓ 310 · ⚡ 11,840 · ◷ 4.2s `
+
+- `↑` is prompt/input tokens, `↓` is response/output tokens, `⚡` is the cached-prefix portion billed at the cached rate, and `◷` is wall-clock response time.
+- `/gemini counter token` shows input, output, and time. `/gemini counter both` adds cached-prefix usage when Gemini reports it; `/gemini counter off` removes the badge. The setting is per channel.
+- Antigravity does not expose token usage, so `token` and `both` degrade cleanly to a time-only badge on `agy` turns instead of inventing numbers.
+- `/gemini stats` shows persistent cumulative telemetry across restarts and channels: total/today turns, API input/output/cache tokens, engine and model counts, aggregate runtime, and current-process uptime. Daily buckets use Pacific time and retain the latest 45 days.
+
+The per-reply counter answers “what did this turn cost?” while `/gemini stats` answers “what has this bot been doing?” The footer uses exact comma-separated counts rather than rounded `K` values so cost and cache-hit math stays auditable.
+
 ### Tools the model can use mid-reply
 
 - **Native Gemini tools** — `googleSearch` and `codeExecution` fire automatically when the model decides to. The bot drops `codeExecution` from the tool list when the request payload contains audio or video — Gemini's codeExecution mime allowlist is stricter than the model's video-understanding allowlist, and `.mov` / `.mp4` files with embedded timed-text tracks 400 the entire request otherwise.
@@ -174,6 +187,7 @@ Manage everything from inside Discord — no terminal-side JSON edits required. 
 | `/gemini thinking off\|on\|collapse [#channel]` | When/how to render the 💭 thinking block. `off` = no block (default); `on` = keep it; `collapse` = show it then delete after the linger |
 | `/gemini trace off\|on\|collapse [#channel]` | Dedicated 🔧 tool-trace card. `collapse` schedules both final linger cleanup and a crash failsafe (`GEMINI_COLLAPSE_FAILSAFE_MS`, default 600s) |
 | `/gemini counter off\|token\|both [#channel]` | Footer counter. `both` includes cached-prefix detail when the API reports it; agy degrades to time-only |
+| `/gemini stats` | Persistent token, cache, engine, model, runtime, and uptime totals |
 | `/gemini mention on\|off [#channel]` | Flip the @-mention gate without re-running `/gemini channel` |
 | `/gemini engine agy\|api\|default [#channel]` | Per-channel chat engine. `agy` = Antigravity CLI / flat sub with trajectory trace and local media ingestion through `view_file`; `api` = metered Gemini API; `default` = clear the pick, use the `GEMMA_AGY_CHAT` env default |
 | `/gemini model api [id]` | Switch the metered Gemini API model (`GEMINI_MODEL`) and auto-restart the bot. Omit `id` to show the current one. Choices: `gemini-3.6-flash` (default), `gemini-3.1-pro-preview` |
