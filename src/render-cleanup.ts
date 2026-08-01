@@ -14,7 +14,12 @@ export function stripToolTraceCard(t: string): string {
       || /^[+-]\s*●\s+/.test(bare)
       || /^\s*⎿\s+/.test(bare)
       || /^\.\.\. \(\d+ more lines\)$/.test(bare)
-      || /^[+-](?!#)/.test(bare)
+      // Raw diff lines, but NOT markdown bullets. A diff marker butts straight
+      // up against its content (`-old`, `+new`); a bullet always has a space
+      // after the dash (`- point one`). Matching `- ` too ate an entire reply
+      // whenever a dash-bulleted answer followed a trace card, since the scan
+      // ran past the trace and consumed the real content as trace body.
+      || /^[+-](?![#\s])/.test(bare)
   }
 
   const lines = t.split('\n')
