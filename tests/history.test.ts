@@ -180,6 +180,44 @@ reply`
     assert.equal(stripToolTraceCard(input), 'reply')
   })
 
+  test('keeps a dash-bulleted answer that follows an unfenced trace card', () => {
+    // Regression: the trace-body matcher treated any `-`/`+` line as diff
+    // content, so the scan ran off the end of the trace and ate the answer.
+    // The reply reached Discord as "(Empty response)".
+    const input = `🔧 Tool trace
++ ● Read(pyproject.toml)
+  ⎿ 40 lines
+
+- **Version single-sourcing**: check README against pyproject
+- **Analysis retention**: look for a rotation rule`
+
+    assert.equal(stripToolTraceCard(input), `- **Version single-sourcing**: check README against pyproject
+- **Analysis retention**: look for a rotation rule`)
+  })
+
+  test('keeps a dash-bulleted answer directly under a numbered trace header', () => {
+    const input = `**Tool trace 2/2**
+
+- first point
+- second point`
+
+    assert.equal(stripToolTraceCard(input), `- first point
+- second point`)
+  })
+
+  test('still strips real diff content inside a fenced trace card', () => {
+    const input = `🔧 **Tool trace**
+\`\`\`diff
++new line
+-old line
+- ● Bash FAILED
+\`\`\`
+
+actual answer`
+
+    assert.equal(stripToolTraceCard(input), 'actual answer')
+  })
+
   test('strips leaked trace cards from bot history', () => {
     const input = `🔧 **Tool trace 2/2**
 \`\`\`diff
