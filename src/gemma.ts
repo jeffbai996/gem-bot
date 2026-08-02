@@ -1035,13 +1035,13 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // gemini.ts emits start/end pairs per dispatch.
     let activeToolCount = 0
     const onLifecycleEvent = (e: LifecycleEvent) => {
-      if (activeTurns.stopIfPending(message.channelId)) return
-      if (e.type === 'native_thinking') {
-        applyLifecycle(message, 'native_thinking').catch(() => {})
-      } else if (e.type === 'searching') {
-        applyLifecycle(message, 'searching').catch(() => {})
-      } else if (e.type === 'tool_call_start') {
+      // A tool start is a safe boundary immediately BEFORE dispatch. Once the
+      // tool is running, partial text/thinking events must not abort it; the
+      // matching end event clears busy state and performs any pending steer.
+      if (e.type === 'tool_call_start') {
+        if (activeTurns.stopIfPending(message.channelId)) return
         activeToolCount += 1
+        activeTurns.setBusy(message.channelId, 'shell')
         applyLifecycle(message, 'tooling').catch(() => {})
         liveToolCalls.push({
           name: e.name,
@@ -1052,7 +1052,9 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           running: true,
         })
         flushStream().catch(() => {})
-      } else if (e.type === 'tool_call_end') {
+        return
+      }
+      if (e.type === 'tool_call_end') {
         activeToolCount = Math.max(0, activeToolCount - 1)
         const call = [...liveToolCalls].reverse().find(c => c.name === e.name && c.running)
         if (call) {
@@ -1064,6 +1066,14 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           call.diff = e.diff
         }
         flushStream().catch(() => {})
+        if (activeToolCount === 0) activeTurns.clearBusy(message.channelId)
+        return
+      }
+      if (activeTurns.stopIfPending(message.channelId)) return
+      if (e.type === 'native_thinking') {
+        applyLifecycle(message, 'native_thinking').catch(() => {})
+      } else if (e.type === 'searching') {
+        applyLifecycle(message, 'searching').catch(() => {})
       } else if (e.type === 'agy_progress') {
         // Picked up by the next spinner tick; coalescing here keeps the Discord
         // edit cadence bounded even when the trajectory writes several steps.
@@ -1181,6 +1191,12 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           onEvent: onLifecycleEvent,
           signal: combinedSignal,  // /gemini stop → SIGKILLs the agy process group
         }, parseResponse))
+        // Antigravity exposes tool starts from its trajectory, but completion is
+        // only authoritative once the blocking CLI call returns. Close that busy
+        // window here, then honor steering before launching a continuation.
+        activeToolCount = 0
+        activeTurns.clearBusy(message.channelId)
+        throwIfStopped()
         for (let continuation = 1;
           continuation <= 3 && requiresAgyContinuation(userText, parsed.reply ?? '');
           continuation++) {
@@ -1202,6 +1218,9 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
             onEvent: onLifecycleEvent,
             signal: combinedSignal,
           }, parseResponse)
+          activeToolCount = 0
+          activeTurns.clearBusy(message.channelId)
+          throwIfStopped()
           parsed = {
             ...resumed.parsed,
             thinking: [previous.parsed.thinking, resumed.parsed.thinking].filter(Boolean).join('\n\n') || null,
@@ -1218,6 +1237,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
             + 'a promise of future work instead of a completed result. No further work is running.'
         }
       } catch (e) {
+        // The CLI operation is over even on failure. Release its safety guard
+        // before deciding whether this was steering or a real fallback case.
+        activeToolCount = 0
+        activeTurns.clearBusy(message.channelId)
         // /gemini stop killed the agy turn — do NOT fall back to the API (that
         // would answer anyway, defeating the stop). Re-throw as an AbortError so
         // it hits the clean-exit handler below (deletes the placeholder, silences

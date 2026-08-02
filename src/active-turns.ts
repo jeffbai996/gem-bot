@@ -52,6 +52,8 @@ class ActiveTurns {
   /** The destructive tool finished — safe to barge again. */
   clearBusy(channelId: string): void {
     this.busyTool.set(channelId, null)
+    // Tool completion is the safe handoff boundary steering was waiting for.
+    this.stopIfPending(channelId)
   }
 
   /** /gemini stop: kill the in-flight turn + mark the channel stopped so the queue
@@ -74,10 +76,10 @@ class ActiveTurns {
     }
     this.pendingStops.delete(channelId)
     try { k() } catch { /* best-effort */ }
-    this.killers.delete(channelId)
-    this.startedAt.delete(channelId)
+    // Aborting generation only begins teardown. Keep the turn registered until
+    // handleUserMessage's finally calls done(), otherwise the queue/restart path
+    // observes a false-idle window while rendering and cleanup are still active.
     this.busyTool.delete(channelId)
-    this.resolveIdleIfNeeded()
     return true
   }
 
@@ -93,6 +95,9 @@ class ActiveTurns {
   stopIfPending(channelId: string): boolean {
     const pending = this.pendingStops.get(channelId)
     if (!pending) return false
+    // Partial text and thinking events can arrive while a tool is executing.
+    // They are not safe interruption points; tool completion calls clearBusy().
+    if (this.busyTool.get(channelId)) return false
     return this.stopFor(channelId, pending)
   }
 
