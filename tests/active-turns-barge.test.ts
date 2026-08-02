@@ -42,11 +42,13 @@ test('stopFor(clearQueue:false) kills without marking stopped; stop() marks stop
   assert.equal(activeTurns.stopFor(c1, { clearQueue: false }), true)
   assert.equal(killed, true, 'killer fired')
   assert.equal(activeTurns.consumeStopped(c1), false, 'barge keeps the queue')
+  activeTurns.done(c1)
 
   const c2 = cid()
   activeTurns.register(c2, () => {})
   assert.equal(activeTurns.stop(c2), true)
   assert.equal(activeTurns.consumeStopped(c2), true, 'user stop clears the queue')
+  activeTurns.done(c2)
 })
 
 test('done() clears liveness so a finished turn can never be barged', () => {
@@ -86,8 +88,32 @@ test('deferStopFor: records a pending barge without killing until boundary', () 
   assert.equal(activeTurns.isActive(c), true)
   assert.equal(activeTurns.stopIfPending(c), true)
   assert.equal(killed, true)
-  assert.equal(activeTurns.isActive(c), false)
+  assert.equal(activeTurns.isActive(c), true, 'teardown still owns the channel')
   assert.equal(activeTurns.consumeStopped(c), false, 'barge keeps the queue')
+  activeTurns.done(c)
+})
+
+test('deferred barge waits for an active tool and fires when the tool ends', () => {
+  const c = cid()
+  let killed = false
+  activeTurns.register(c, () => { killed = true })
+  activeTurns.setBusy(c, 'shell')
+  assert.equal(activeTurns.deferStopFor(c, { clearQueue: false }), true)
+  assert.equal(activeTurns.stopIfPending(c), false, 'partial output is not safe mid-tool')
+  assert.equal(killed, false)
+  activeTurns.clearBusy(c)
+  assert.equal(killed, true, 'tool completion is the safe steering boundary')
+  assert.equal(activeTurns.consumeSteered(c) !== null, true)
+  activeTurns.done(c)
+})
+
+test('aborting starts teardown but the turn remains active until done', () => {
+  const c = cid()
+  activeTurns.register(c, () => {})
+  assert.equal(activeTurns.stopFor(c, { clearQueue: false }), true)
+  assert.equal(activeTurns.isActive(c), true, 'abort is not the end of async teardown')
+  activeTurns.done(c)
+  assert.equal(activeTurns.isActive(c), false)
 })
 
 test('deferStopFor(clearQueue:true): pending user stop clears queue at boundary', () => {
