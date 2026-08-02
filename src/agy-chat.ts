@@ -46,6 +46,21 @@ const AGY_BIN = process.env.GEMMA_AGY_BIN || '/home/jbai/.local/bin/agy'
 // break every future GEMMA_AGY_* knob someone adds.
 const SECRETS_NEVER_PASSED_TO_AGY = ['DISCORD_BOT_TOKEN', 'GEMINI_API_KEY'] as const
 
+const ACTIONABLE_WORK_RE =
+  /\b(?:add|attack|audit|build|change|commit|debug|delete|deploy|diagnose|eliminate|fix|implement|install|investigate|make|patch|push|rebuild|reload|remove|repair|restart|revert|root[- ]cause|run|ship|test|trace|update|verify|work on)\b/i
+const SHORT_WORK_APPROVAL_RE = /^\s*(?:do it|go|let(?:'|’)s go|proceed)\b/i
+const WORK_PROMISE_RE =
+  /\b(?:(?:i(?:'m|’m| am)|and am)\s+(?:actively\s+)?(?:auditing|building|changing|checking|committing|continuing|debugging|deploying|diagnosing|fixing|implementing|investigating|patching|pushing|rebuilding|reloading|repairing|restarting|reverting|root[- ]causing|running|shipping|testing|tracing|updating|verifying|working)|i(?:'ll|’ll| will)\s+(?:audit|build|change|check|commit|continue|debug|deploy|diagnose|fix|implement|investigate|patch|push|rebuild|reload|repair|restart|revert|run|ship|test|trace|update|verify|work)|(?:then|next)\s+i(?:'ll|’ll| will)\b)/i
+const TERMINAL_OUTCOME_RE =
+  /\b(?:blocked|cannot continue|can't continue|could not continue)\b/i
+
+/** Detect an agentic turn that exited on work narration instead of an outcome. */
+export function requiresAgyContinuation(userMessage: string, reply: string): boolean {
+  if (!ACTIONABLE_WORK_RE.test(userMessage) && !SHORT_WORK_APPROVAL_RE.test(userMessage)) return false
+  if (TERMINAL_OUTCOME_RE.test(reply)) return false
+  return WORK_PROMISE_RE.test(reply)
+}
+
 export const agySpawnEnv = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = { ...process.env, ...extra }
   for (const k of SECRETS_NEVER_PASSED_TO_AGY) delete env[k]
