@@ -13,8 +13,8 @@ test('live update interval keeps the gpt-style 1.5-second cadence', () => {
   assert.equal(resolveLiveUpdateInterval('nope'), 1500)
 })
 
-test('completed live thinking lingers for ten seconds by default', () => {
-  assert.equal(DEFAULT_LIVE_END_LINGER_MS, 10_000)
+test('completed live thinking lingers for thirty seconds by default', () => {
+  assert.equal(DEFAULT_LIVE_END_LINGER_MS, 30_000)
 })
 
 test('public action narration gets paragraph-scale read time', () => {

@@ -132,4 +132,4 @@ export function renderTraceCards(rawLines: string[], mode: TraceDisplayMode): st
   })
 }
 
-export const DEFAULT_LIVE_END_LINGER_MS = 10_000
+export const DEFAULT_LIVE_END_LINGER_MS = 30_000
