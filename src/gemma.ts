@@ -9,7 +9,7 @@ import { PersonaLoader } from './persona.ts'
 import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
 import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources, parseResponse, formatSystemPrompt, type ParsedResponse } from './gemini.ts'
-import { requiresAgyContinuation, respondViaAgy, warmAgy } from './agy-chat.ts'
+import { respondViaAgy, warmAgy } from './agy-chat.ts'
 import { composeLiveThinkingCard, composeThinkingCard } from './live-headline.ts'
 import {
   DEFAULT_AGY_MODEL,
@@ -1193,49 +1193,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         }, parseResponse))
         // Antigravity exposes tool starts from its trajectory, but completion is
         // only authoritative once the blocking CLI call returns. Close that busy
-        // window here, then honor steering before launching a continuation.
+        // window here before honoring steering.
         activeToolCount = 0
         activeTurns.clearBusy(message.channelId)
         throwIfStopped()
-        for (let continuation = 1;
-          continuation <= 3 && requiresAgyContinuation(userText, parsed.reply ?? '');
-          continuation++) {
-          console.error(`[agy-continuity] resuming channel=${message.channelId} attempt=${continuation}`)
-          liveAgyProgress.push('That was narration, not completion. Continuing the same task now.')
-          await flushStream()
-          const previous = { parsed, meta }
-          const resumed = await respondViaAgy({
-            systemPrompt: fullSystemPrompt,
-            history,
-            userMessageText:
-              'Harness continuity check: your previous response ended by promising ongoing or future work. '
-              + `Original request: ${userText}\nPrevious response: ${previous.parsed.reply ?? '(empty)'}\n\n`
-              + 'Continue the original request now. Do not return another progress-only final response; '
-              + 'finish the implementation, verification, and deployment, or report a concrete blocker.',
-            userName: message.author.username,
-            mediaFiles: attachmentResult.localFiles,
-            channelId: message.channelId,
-            onEvent: onLifecycleEvent,
-            signal: combinedSignal,
-          }, parseResponse)
-          activeToolCount = 0
-          activeTurns.clearBusy(message.channelId)
-          throwIfStopped()
-          parsed = {
-            ...resumed.parsed,
-            thinking: [previous.parsed.thinking, resumed.parsed.thinking].filter(Boolean).join('\n\n') || null,
-          }
-          meta = {
-            ...resumed.meta,
-            toolCalls: [...previous.meta.toolCalls, ...resumed.meta.toolCalls],
-            writtenFiles: [...(previous.meta.writtenFiles ?? []), ...(resumed.meta.writtenFiles ?? [])],
-          }
-        }
-        if (requiresAgyContinuation(userText, parsed.reply ?? '')) {
-          parsed.reply =
-            'Blocked: the continuity guard resumed this task three times, but each run still ended with '
-            + 'a promise of future work instead of a completed result. No further work is running.'
-        }
       } catch (e) {
         // The CLI operation is over even on failure. Release its safety guard
         // before deciding whether this was steering or a real fallback case.

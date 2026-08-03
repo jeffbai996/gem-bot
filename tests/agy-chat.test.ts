@@ -7,36 +7,7 @@ import {
   normalizeAgyThinkingChunk,
   parseAgyTrajectoryText,
   agySpawnEnv,
-  requiresAgyContinuation,
 } from '../src/agy-chat.ts'
-
-describe('agy continuity guard', () => {
-  test('actionable turns cannot end with future-work narration', () => {
-    assert.equal(requiresAgyContinuation(
-      'Audit all four issues and fix what is broken.',
-      "I'll run through the codebase to audit all 4 and report back what's solid vs what needs fixing before touching any code.",
-    ), true)
-    assert.equal(requiresAgyContinuation(
-      'Proceed.',
-      'I restored the setting and am reloading and verifying it now.',
-    ), true)
-  })
-
-  test('completed work, blockers, and hypothetical advice remain final', () => {
-    assert.equal(requiresAgyContinuation(
-      'Fix the channel gate.',
-      'Fixed and live. Tests pass and the service restarted.',
-    ), false)
-    assert.equal(requiresAgyContinuation(
-      'Fix the channel gate.',
-      'Blocked: Discord rejected the permission change and owner authorization is required.',
-    ), false)
-    assert.equal(requiresAgyContinuation(
-      'Explain the deploy flow.',
-      "After tests pass, I'll normally push and restart the service.",
-    ), false)
-  })
-})
 
 describe('agy media bridge', () => {
   test('tells agy to inspect local Discord attachments with view_file', () => {
