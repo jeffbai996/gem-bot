@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { formatReplyContext, resolveReplyContext } from '../src/reply-context.ts'
+import { formatPinContext, formatReplyContext, resolvePinContext, resolveReplyContext } from '../src/reply-context.ts'
 
 describe('reply context', () => {
   test('includes referenced text and attachment metadata', async () => {
@@ -26,5 +26,20 @@ describe('reply context', () => {
       reference: { messageId: 'gone' },
       async fetchReference() { throw new Error('gone') },
     }), null)
+  })
+
+  test('renders a pin system message with the pinned message body', async () => {
+    const message = {
+      type: 6,
+      reference: { messageId: 'pinned' },
+      async fetchReference() {
+        return {
+          id: 'pinned', author: { id: 'alice', username: 'alice', bot: false },
+          content: 'pin this', attachments: new Map(),
+        }
+      },
+    }
+    assert.equal(await resolveReplyContext(message), null)
+    assert.match(formatPinContext(await resolvePinContext(message)), /pin this/)
   })
 })
