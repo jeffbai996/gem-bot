@@ -13,7 +13,7 @@ export function liveProgressDwellMs(
   capMs = DEFAULT_PROGRESS_DWELL_CAP_MS,
 ): number {
   const clean = text.trim()
-  if (clean.length < 240 && !clean.includes('\n')) return 0
+  if (!clean) return 0
   const words = clean.split(/\s+/).filter(Boolean).length
   return Math.min(
     Math.max(0, capMs),
@@ -23,33 +23,26 @@ export function liveProgressDwellMs(
 
 export class LiveProgressBuffer {
   private current = ''
-  private pending = ''
+  private rendered = ''
   private holdUntil = 0
 
   push(text: string, now = Date.now()): void {
     const clean = text.trim()
     if (!clean) return
-    if (!this.current || now >= this.holdUntil) {
-      this.activate(clean, now)
-      return
-    }
-    this.pending = clean
+    if (clean === this.current) return
+    this.current = clean
+    this.holdUntil = 0
   }
 
   value(now = Date.now()): string {
-    if (this.pending && now >= this.holdUntil) {
-      this.activate(this.pending, now)
+    if (this.current !== this.rendered) {
+      this.rendered = this.current
+      this.holdUntil = now + liveProgressDwellMs(this.current)
     }
     return this.current
   }
 
   remainingMs(now = Date.now()): number {
     return Math.max(0, this.holdUntil - now)
-  }
-
-  private activate(text: string, now: number): void {
-    this.current = text
-    this.pending = ''
-    this.holdUntil = now + liveProgressDwellMs(text)
   }
 }
