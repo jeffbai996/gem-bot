@@ -5,6 +5,7 @@ import os from 'os'
 import dotenv from 'dotenv'
 import { AccessManager } from './access.ts'
 import { isAddressedToAnotherBot } from './mention-gate.ts'
+import { formatReplyContext, resolveReplyContext } from './reply-context.ts'
 import { PersonaLoader } from './persona.ts'
 import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
@@ -679,11 +680,18 @@ const SPOKEN_MODE_INSTRUCTION = `
 // called per inbound message BEFORE the turn queue — that way a queued/batched
 // message is still embedded even though only the batch carrier reaches the
 // generation path in handleUserMessage.
-function ingestAndGate(message: Message): boolean {
+async function ingestAndGate(message: Message): Promise<boolean> {
   if (message.author.bot || !client.user) return false
 
+  const replyContext = await resolveReplyContext(message)
   const isMention = message.mentions.users.has(client.user.id)
-  if (isAddressedToAnotherBot(client.user.id, message.mentions.users.values())) return false
+    || replyContext?.authorId === client.user.id
+  if (isAddressedToAnotherBot(
+    client.user.id,
+    message.mentions.users.values(),
+    message.content,
+    replyContext ? { id: replyContext.authorId, bot: replyContext.authorIsBot } : null,
+  )) return false
   const gate = access.canHandle({
     channelId: message.channelId,
     userId: message.author.id,
@@ -816,7 +824,12 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // that lasts the few seconds processAttachments / processYouTubeUrls
     // typically take. Per Jeff's request youtube ingestion is grouped under
     // attachment processing rather than getting a separate emoji.
-    const hasIngest = message.attachments.size > 0 || /youtu/i.test(message.content)
+    const replyContext = await resolveReplyContext(message)
+    const currentAttachments = [...message.attachments.values()]
+    const inputAttachments = currentAttachments.length > 0
+      ? currentAttachments
+      : replyContext?.attachments ?? []
+    const hasIngest = inputAttachments.length > 0 || /youtu/i.test(message.content)
     if (hasIngest) {
       applyLifecycle(message, 'ingesting').catch(() => {})
     }
@@ -830,7 +843,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       buildContextHistory(message.channel as any, message.id, gemini, client.user!.id, MAX_HISTORY_TOKENS, sinceMessageId),
       processAttachments(
         message.id,
-        [...message.attachments.values()].map<InputAttachment>(a => ({
+        inputAttachments.map<InputAttachment>(a => ({
           url: a.url,
           name: a.name,
           size: a.size,
@@ -1026,9 +1039,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     streamInterval = setInterval(() => { flushStream() }, 2000)
 
     const baseText = opts.combinedText ?? message.content
+    const quotedReplyText = opts.combinedText === undefined ? formatReplyContext(replyContext) : ''
+    const contextualText = [quotedReplyText, baseText].filter(Boolean).join('\n\n')
     const userText = opts.expansion
-      ? `[The user wants you to expand on your previous reply with more depth and detail.]\n\n${baseText}`
-      : baseText
+      ? `[The user wants you to expand on your previous reply with more depth and detail.]\n\n${contextualText}`
+      : contextualText
 
     const respondT0 = Date.now()
     // Track active in-flight tool calls so we know when 🔧 should drop.
@@ -1730,7 +1745,10 @@ const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
     const withAtt = [...messages].reverse().find(message => message.attachments.size > 0)
     const carrier = withAtt ?? messages[messages.length - 1]
     const carrierItem = batch.find(item => item.message.id === carrier.id) ?? batch[batch.length - 1]
-    const combined = messages.map(message => message.content).filter(Boolean).join('\n')
+    const combined = (await Promise.all(messages.map(async message => {
+      const replyText = formatReplyContext(await resolveReplyContext(message))
+      return [replyText, message.content].filter(Boolean).join('\n\n')
+    }))).filter(Boolean).join('\n')
     await queueMarker.clear(channelId)
     await handleUserMessage(
       carrier,
@@ -1748,7 +1766,7 @@ async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<
   // produces a placeholder, so it must not be queued or batched — just embed
   // it (done inside ingestAndGate) and drop it. Only gated-IN messages flow
   // into the serializer below.
-  if (!ingestAndGate(message)) return
+  if (!(await ingestAndGate(message))) return
 
   const cid = message.channelId
   const outcome = await channelTurns.submit(cid, { message, opts })
@@ -1781,7 +1799,7 @@ client.on('messageCreate', async (message: Message) => {
     // thinking/trace edits while still preventing long turns from holding the
     // channel hostage.
     if (channelTurns.isRunning(message.channelId) && activeTurns.canRequestBarge(message.channelId)) {
-      if (!ingestAndGate(message)) return
+      if (!(await ingestAndGate(message))) return
       activeTurns.deferStopFor(message.channelId, { clearQueue: false })
       channelTurns.enqueue(message.channelId, { message, opts: {} })
       void queueMarker.mark(message.channelId, message)
