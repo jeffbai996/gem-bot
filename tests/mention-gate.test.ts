@@ -21,4 +21,19 @@ describe('isAddressedToAnotherBot', () => {
   test('does not treat a human-only mention as bot addressing', () => {
     assert.equal(isAddressedToAnotherBot('gemma', [{ id: 'jeff', bot: false }]), false)
   })
+
+  test('uses the referenced author when reply-ping is disabled', () => {
+    assert.equal(isAddressedToAnotherBot('gemma', [], 'follow up', {
+      id: 'gemma', bot: true,
+    }), false)
+    assert.equal(isAddressedToAnotherBot('gemma', [], 'follow up', {
+      id: 'gpt', bot: true,
+    }), true)
+  })
+
+  test('an explicit foreign mention overrides a synthetic self reply mention', () => {
+    assert.equal(isAddressedToAnotherBot('gemma', [
+      { id: 'gemma', bot: true }, { id: 'wife', bot: false },
+    ], '<@123456> hello', { id: 'gemma', bot: true }), true)
+  })
 })
