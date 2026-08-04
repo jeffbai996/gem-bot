@@ -5,7 +5,7 @@ import os from 'os'
 import dotenv from 'dotenv'
 import { AccessManager } from './access.ts'
 import { isAddressedToAnotherBot } from './mention-gate.ts'
-import { formatReplyContext, resolveReplyContext } from './reply-context.ts'
+import { formatPinContext, formatReplyContext, resolvePinContext, resolveReplyContext } from './reply-context.ts'
 import { PersonaLoader } from './persona.ts'
 import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
@@ -825,10 +825,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // typically take. Per Jeff's request youtube ingestion is grouped under
     // attachment processing rather than getting a separate emoji.
     const replyContext = await resolveReplyContext(message)
+    const pinContext = await resolvePinContext(message)
     const currentAttachments = [...message.attachments.values()]
     const inputAttachments = currentAttachments.length > 0
       ? currentAttachments
-      : replyContext?.attachments ?? []
+      : replyContext?.attachments ?? pinContext?.message?.attachments ?? []
     const hasIngest = inputAttachments.length > 0 || /youtu/i.test(message.content)
     if (hasIngest) {
       applyLifecycle(message, 'ingesting').catch(() => {})
@@ -1746,8 +1747,11 @@ const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
     const carrier = withAtt ?? messages[messages.length - 1]
     const carrierItem = batch.find(item => item.message.id === carrier.id) ?? batch[batch.length - 1]
     const combined = (await Promise.all(messages.map(async message => {
+      const item = batch.find(candidate => candidate.message.id === message.id)
+      if (item?.opts.combinedText !== undefined) return item.opts.combinedText
       const replyText = formatReplyContext(await resolveReplyContext(message))
-      return [replyText, message.content].filter(Boolean).join('\n\n')
+      const pinText = formatPinContext(await resolvePinContext(message))
+      return [replyText, pinText, message.content].filter(Boolean).join('\n\n')
     }))).filter(Boolean).join('\n')
     await queueMarker.clear(channelId)
     await handleUserMessage(
@@ -1769,7 +1773,11 @@ async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<
   if (!(await ingestAndGate(message))) return
 
   const cid = message.channelId
-  const outcome = await channelTurns.submit(cid, { message, opts })
+  const pinText = formatPinContext(await resolvePinContext(message))
+  const effectiveOpts = pinText && opts.combinedText === undefined
+    ? { ...opts, combinedText: pinText }
+    : opts
+  const outcome = await channelTurns.submit(cid, { message, opts: effectiveOpts })
   if (outcome === 'queued') {
     void queueMarker.mark(cid, message)
   }
