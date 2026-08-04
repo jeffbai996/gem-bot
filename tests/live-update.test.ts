@@ -18,18 +18,19 @@ test('completed live thinking lingers for thirty seconds by default', () => {
 })
 
 test('public action narration gets paragraph-scale read time', () => {
-  assert.equal(liveProgressDwellMs('short status'), 0)
+  assert.equal(liveProgressDwellMs(''), 0)
+  assert.equal(liveProgressDwellMs('short status'), 10_000)
   assert.equal(liveProgressDwellMs('first line\nsecond line'), 10_000)
   assert.equal(liveProgressDwellMs('word '.repeat(50)), 15_000)
   assert.equal(liveProgressDwellMs('word '.repeat(100)), 30_000)
 })
 
-test('live progress coalesces updates while the visible paragraph dwells', () => {
+test('new narration replaces the visible paragraph immediately', () => {
   const progress = new LiveProgressBuffer()
   progress.push('first line\nsecond line', 1_000)
   progress.push('intermediate replacement\nstill working', 5_000)
   progress.push('latest replacement\nstill working', 8_000)
 
-  assert.equal(progress.value(9_000), 'first line\nsecond line')
-  assert.equal(progress.value(11_000), 'latest replacement\nstill working')
+  assert.equal(progress.value(9_000), 'latest replacement\nstill working')
+  assert.equal(progress.remainingMs(9_000), 10_000)
 })
