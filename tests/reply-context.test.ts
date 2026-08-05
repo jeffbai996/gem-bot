@@ -49,19 +49,21 @@ describe('reply context', () => {
   test('renders thread creation and starter system messages as useful context', async () => {
     const created = {
       id: 'system', type: 18, content: 'starter text', channelId: 'parent',
-      reference: { channelId: 'thread' }, thread: { id: 'thread', name: 'project room', parentId: 'parent' },
+      reference: { channelId: 'thread' }, thread: { id: 'thread', name: 'project room', parentId: 'parent', appliedTags: ['tag-one'] },
       async fetchReference() { throw new Error('not a reply') },
     }
     assert.equal(await resolveReplyContext(created), null)
     assert.match(formatThreadContext(await resolveThreadContext(created)), /project room/)
+    assert.match(formatThreadContext(await resolveThreadContext(created)), /tag-one/)
 
     const starter = {
       id: 'starter', type: 21, content: '', channelId: 'thread',
-      channel: { name: 'project room', parentId: 'parent' }, reference: { messageId: 'source', channelId: 'parent' },
+      channel: { name: 'project room', parentId: 'parent', appliedTags: ['tag-two'] }, reference: { messageId: 'source', channelId: 'parent' },
       async fetchReference() { return { id: 'source', author: { id: 'alice', username: 'alice', bot: false }, content: 'original idea', attachments: new Map([['x', { name: 'plan.pdf', url: 'https://example.invalid/plan.pdf', size: 55, contentType: 'application/pdf' }]]) } },
     }
     const context = await resolveThreadContext(starter)
     assert.match(formatThreadContext(context), /original idea/)
+    assert.match(formatThreadContext(context), /tag-two/)
     assert.equal(context?.source?.attachments[0]?.name, 'plan.pdf')
   })
 })

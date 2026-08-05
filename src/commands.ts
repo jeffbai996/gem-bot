@@ -24,6 +24,7 @@ import {
 } from './models.ts'
 import { formatStats, type GemStats } from './stats.ts'
 import { fetchAgyLimits, formatAgyLimits } from './agy-limits.ts'
+import { buildPoll } from './discord-poll.ts'
 
 export const geminiCommand = new SlashCommandBuilder()
   .setName('gemini')
@@ -54,6 +55,13 @@ export const geminiCommand = new SlashCommandBuilder()
       .setName('persona')
       .setDescription('Hot-swap the bot persona')
       .addStringOption(option => option.setName('filename').setDescription('The persona filename (e.g. GEMINI.md)').setRequired(true))
+  )
+  .addSubcommand(subcommand => subcommand
+    .setName('poll').setDescription('Post a native Discord poll')
+    .addStringOption(o => o.setName('question').setDescription('Poll question').setRequired(true))
+    .addStringOption(o => o.setName('options').setDescription('2–10 choices: 🍣 Sushi | 🌮 Tacos').setRequired(true))
+    .addIntegerOption(o => o.setName('hours').setDescription('Duration in hours (default 24)').setMinValue(1).setMaxValue(768))
+    .addBooleanOption(o => o.setName('multiple').setDescription('Allow multiple selections'))
   )
   // Switch the GEMINI_MODEL env var and auto-restart so the new model takes
   // effect. Choices are pinned to known-good IDs — Gemini's model namespace
@@ -374,6 +382,14 @@ export function fmtChannelChange(
       const filename = interaction.options.getString('filename', true)
       await persona.load(filename)
       return interaction.reply({ content: `✅ Persona swapped to \`${filename}\`.`, ephemeral: true })
+    }
+
+    if (subcommand === 'poll') {
+      if (!interaction.channel?.isSendable()) return interaction.reply({ content: '❌ This channel cannot accept polls.', ephemeral: true })
+      const poll = buildPoll(interaction.options.getString('question', true), interaction.options.getString('options', true), interaction.options.getInteger('hours') ?? 24, interaction.options.getBoolean('multiple') ?? false)
+      await interaction.deferReply({ ephemeral: true })
+      const posted = await interaction.channel.send({ poll })
+      return interaction.editReply(`✅ Poll posted · ${posted.url}`)
     }
 
     // /gemini model api|agy — subcommandGroup means getSubcommandGroup()

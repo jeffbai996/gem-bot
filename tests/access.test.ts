@@ -443,20 +443,21 @@ describe('AccessManager', () => {
     })
   })
 
-  test('thread inherits parent policy and flags until explicitly overridden', async () => {
+  test('thread is deaf until explicitly enabled but inherits parent flags', async () => {
     await writeAccess({ users: {}, channels: {} })
     mgr = new AccessManager()
     await mgr.load()
     await mgr.allowUser('U1')
     await mgr.setChannel('PARENT', true, false, { thinking: 'collapse', trace: 'live' })
 
-    assert.equal(mgr.canHandle({ channelId: 'THREAD', parentChannelId: 'PARENT', userId: 'U1', isMention: false }), true)
-    assert.equal(mgr.canReact('U1', 'THREAD', 'PARENT'), true)
+    assert.equal(mgr.canHandle({ channelId: 'THREAD', parentChannelId: 'PARENT', userId: 'U1', isMention: false }), false)
+    assert.equal(mgr.canReact('U1', 'THREAD', 'PARENT'), false)
     assert.equal(mgr.channelFlags('THREAD').thinking, 'collapse')
     assert.equal(mgr.channelFlags('THREAD').trace, 'live')
-    const inheritedOverride = await mgr.setChannelFlags('THREAD', { trace: 'off' })
+    const inheritedOverride = await mgr.setChannelFlags('THREAD', { trace: 'off' }, 'PARENT')
     assert.equal(inheritedOverride.thinking, 'collapse')
     assert.equal(inheritedOverride.trace, 'off')
+    assert.equal(mgr.canReact('U1', 'THREAD', 'PARENT'), false)
 
     await mgr.setChannel('THREAD', true, true, { thinking: 'off', trace: 'off' })
     assert.equal(mgr.canHandle({ channelId: 'THREAD', parentChannelId: 'PARENT', userId: 'U1', isMention: false }), false)

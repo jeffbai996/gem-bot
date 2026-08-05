@@ -12,6 +12,7 @@ import {
 import { PersonaLoader } from './persona.ts'
 import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
+import { extractRichMedia, formatRichContext } from './discord-rich-input.ts'
 import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources, parseResponse, formatSystemPrompt, type ParsedResponse } from './gemini.ts'
 import { respondViaAgy, warmAgy } from './agy-chat.ts'
 import { composeLiveThinkingCard, composeThinkingCard } from './live-headline.ts'
@@ -835,7 +836,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     const pinContext = await resolvePinContext(message)
     const threadContext = await resolveThreadContext(message)
     const parentChannelId = message.channel.isThread() ? message.channel.parentId : null
-    const currentAttachments = [...message.attachments.values()]
+    const currentAttachments = [...message.attachments.values(), ...extractRichMedia(message)]
     const inputAttachments = currentAttachments.length > 0
       ? currentAttachments
       : replyContext?.attachments ?? pinContext?.message?.attachments ?? threadContext?.source?.attachments ?? []
@@ -1052,7 +1053,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     const baseText = opts.combinedText ?? message.content
     const quotedReplyText = opts.combinedText === undefined ? formatReplyContext(replyContext) : ''
     const threadText = opts.combinedText === undefined ? formatThreadContext(threadContext) : ''
-    const contextualText = [quotedReplyText, threadText, baseText].filter(Boolean).join('\n\n')
+    const richText = opts.combinedText === undefined ? formatRichContext(message) : ''
+    const contextualText = [quotedReplyText, threadText, richText, baseText].filter(Boolean).join('\n\n')
     const userText = opts.expansion
       ? `[The user wants you to expand on your previous reply with more depth and detail.]\n\n${contextualText}`
       : contextualText
@@ -1757,7 +1759,7 @@ const QUEUE_SETTLE_MS = Number(process.env.GEM_QUEUE_SETTLE_MS) || 0
 const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
   async (channelId, batch) => {
     const messages = batch.map(item => item.message)
-    const withAtt = [...messages].reverse().find(message => message.attachments.size > 0)
+    const withAtt = [...messages].reverse().find(message => message.attachments.size > 0 || extractRichMedia(message).length > 0)
     const carrier = withAtt ?? messages[messages.length - 1]
     const carrierItem = batch.find(item => item.message.id === carrier.id) ?? batch[batch.length - 1]
     const combined = (await Promise.all(messages.map(async message => {
@@ -1766,7 +1768,8 @@ const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
       const replyText = formatReplyContext(await resolveReplyContext(message))
       const pinText = formatPinContext(await resolvePinContext(message))
       const threadText = formatThreadContext(await resolveThreadContext(message))
-      return [replyText, pinText, threadText, message.content].filter(Boolean).join('\n\n')
+      const richText = formatRichContext(message)
+      return [replyText, pinText, threadText, richText, message.content].filter(Boolean).join('\n\n')
     }))).filter(Boolean).join('\n')
     void queueMarker.clear(channelId)
     await handleUserMessage(
@@ -1790,9 +1793,10 @@ async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<
   const cid = message.channelId
   const pinText = formatPinContext(await resolvePinContext(message))
   const threadText = formatThreadContext(await resolveThreadContext(message))
-  const systemText = pinText || threadText
+  const richText = formatRichContext(message)
+  const systemText = [pinText, threadText, richText].filter(Boolean).join('\n\n')
   const effectiveOpts = systemText && opts.combinedText === undefined
-    ? { ...opts, combinedText: systemText }
+    ? { ...opts, combinedText: [systemText, message.content].filter(Boolean).join('\n\n') }
     : opts
   const outcome = await channelTurns.submit(cid, { message, opts: effectiveOpts })
   if (outcome === 'queued') {
