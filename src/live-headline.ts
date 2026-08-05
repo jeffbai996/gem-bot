@@ -101,5 +101,5 @@ export function composeThinkingCard(opts: {
     ? narrationTrace.map(part => part.trim()).filter(Boolean).join('\n\n')
     : compactLiveDetail(detail)
   const reasoning = trace.length ? `\n${trace.join('\n')}` : brainLine(thinking)
-  return `💭 ${glyph} **${label}${dots}**${reasoning}${cleanDetail ? `\n💬 ***Narrating…***\n${cleanDetail}` : ''}`
+  return `💭 ${glyph} **${label}${dots}**${reasoning}${cleanDetail ? `\n${cleanDetail}` : ''}`
 }

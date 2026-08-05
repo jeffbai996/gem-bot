@@ -34,3 +34,12 @@ test('new narration replaces the visible paragraph immediately', () => {
   assert.equal(progress.value(9_000), 'latest replacement\nstill working')
   assert.equal(progress.remainingMs(9_000), 10_000)
 })
+
+test('empty hidden updates cannot evict visible narration', () => {
+  const progress = new LiveProgressBuffer()
+  progress.push('visible narration', 1_000)
+  assert.equal(progress.value(1_000), 'visible narration')
+  progress.push('', 2_000)
+  assert.equal(progress.value(2_000), 'visible narration')
+  assert.equal(progress.remainingMs(2_000), 9_000)
+})
