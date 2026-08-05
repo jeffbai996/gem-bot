@@ -5,7 +5,10 @@ import os from 'os'
 import dotenv from 'dotenv'
 import { AccessManager } from './access.ts'
 import { isAddressedToAnotherBot } from './mention-gate.ts'
-import { formatPinContext, formatReplyContext, resolvePinContext, resolveReplyContext } from './reply-context.ts'
+import {
+  formatPinContext, formatReplyContext, formatThreadContext,
+  resolvePinContext, resolveReplyContext, resolveThreadContext,
+} from './reply-context.ts'
 import { PersonaLoader } from './persona.ts'
 import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
@@ -684,6 +687,7 @@ async function ingestAndGate(message: Message): Promise<boolean> {
   if (message.author.bot || !client.user) return false
 
   const replyContext = await resolveReplyContext(message)
+  const parentChannelId = message.channel.isThread() ? message.channel.parentId : null
   const isMention = message.mentions.users.has(client.user.id)
     || replyContext?.authorId === client.user.id
   if (isAddressedToAnotherBot(
@@ -694,6 +698,7 @@ async function ingestAndGate(message: Message): Promise<boolean> {
   )) return false
   const gate = access.canHandle({
     channelId: message.channelId,
+    parentChannelId,
     userId: message.author.id,
     isMention
   })
@@ -702,7 +707,7 @@ async function ingestAndGate(message: Message): Promise<boolean> {
   // Independent of `gate` (which requires mention) so the bot learns from passive
   // conversation. Throttle: at most one embed per (channel, user) per
   // GEMINI_EMBED_COOLDOWN_MS (default 3s) to cap cost on a busy channel.
-  if (access.isAllowedAndEnabled(message.author.id, message.channelId)
+  if (access.isAllowedAndEnabled(message.author.id, message.channelId, parentChannelId)
       && message.content.trim()
       && shouldEmbed(message.channelId, message.author.id)) {
     gemini.embed(message.content)
@@ -827,16 +832,18 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // attachment processing rather than getting a separate emoji.
     const replyContext = await resolveReplyContext(message)
     const pinContext = await resolvePinContext(message)
+    const threadContext = await resolveThreadContext(message)
+    const parentChannelId = message.channel.isThread() ? message.channel.parentId : null
     const currentAttachments = [...message.attachments.values()]
     const inputAttachments = currentAttachments.length > 0
       ? currentAttachments
-      : replyContext?.attachments ?? pinContext?.message?.attachments ?? []
+      : replyContext?.attachments ?? pinContext?.message?.attachments ?? threadContext?.source?.attachments ?? []
     const hasIngest = inputAttachments.length > 0 || /youtu/i.test(message.content)
     if (hasIngest) {
       applyLifecycle(message, 'ingesting').catch(() => {})
     }
 
-    const flags = access.channelFlags(message.channelId)
+    const flags = access.channelFlags(message.channelId, parentChannelId)
     const envDefaultEngine = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
     const resolvedEngine = flags.engine ?? envDefaultEngine
     const useAgy = resolvedEngine === 'agy'
@@ -1043,7 +1050,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     const baseText = opts.combinedText ?? message.content
     const quotedReplyText = opts.combinedText === undefined ? formatReplyContext(replyContext) : ''
-    const contextualText = [quotedReplyText, baseText].filter(Boolean).join('\n\n')
+    const threadText = opts.combinedText === undefined ? formatThreadContext(threadContext) : ''
+    const contextualText = [quotedReplyText, threadText, baseText].filter(Boolean).join('\n\n')
     const userText = opts.expansion
       ? `[The user wants you to expand on your previous reply with more depth and detail.]\n\n${contextualText}`
       : contextualText
@@ -1756,7 +1764,8 @@ const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
       if (item?.opts.combinedText !== undefined) return item.opts.combinedText
       const replyText = formatReplyContext(await resolveReplyContext(message))
       const pinText = formatPinContext(await resolvePinContext(message))
-      return [replyText, pinText, message.content].filter(Boolean).join('\n\n')
+      const threadText = formatThreadContext(await resolveThreadContext(message))
+      return [replyText, pinText, threadText, message.content].filter(Boolean).join('\n\n')
     }))).filter(Boolean).join('\n')
     void queueMarker.clear(channelId)
     await handleUserMessage(
@@ -1779,8 +1788,10 @@ async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<
 
   const cid = message.channelId
   const pinText = formatPinContext(await resolvePinContext(message))
-  const effectiveOpts = pinText && opts.combinedText === undefined
-    ? { ...opts, combinedText: pinText }
+  const threadText = formatThreadContext(await resolveThreadContext(message))
+  const systemText = pinText || threadText
+  const effectiveOpts = systemText && opts.combinedText === undefined
+    ? { ...opts, combinedText: systemText }
     : opts
   const outcome = await channelTurns.submit(cid, { message, opts: effectiveOpts })
   if (outcome === 'queued') {
@@ -1790,7 +1801,8 @@ async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<
 
 client.on('messageCreate', async (message: Message) => {
   if (shuttingDown) return
-  if (!message.author.bot && access.isAllowedAndEnabled(message.author.id, message.channelId)) {
+  const parentChannelId = message.channel.isThread() ? message.channel.parentId : null
+  if (!message.author.bot && access.isAllowedAndEnabled(message.author.id, message.channelId, parentChannelId)) {
     // Lone ❌ / X message: hard-kill the in-flight turn and swallow the message.
     // This must run before barge/queue handling, otherwise "X" becomes just
     // another queued prompt and only "works" after the turn finally unwinds.

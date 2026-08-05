@@ -60,6 +60,7 @@ export interface AccessFile {
 
 export interface CanHandleInput {
   channelId: string
+  parentChannelId?: string | null
   userId: string
   isMention: boolean
 }
@@ -174,11 +175,15 @@ export class AccessManager {
     await fs.writeFile(this.file, JSON.stringify(this.data, null, 2), 'utf8')
   }
 
-  canHandle({ channelId, userId, isMention }: CanHandleInput): boolean {
+  private resolveChannel(channelId: string, parentChannelId?: string | null): ChannelConfig | undefined {
+    return this.data.channels[channelId] ?? (parentChannelId ? this.data.channels[parentChannelId] : undefined)
+  }
+
+  canHandle({ channelId, parentChannelId, userId, isMention }: CanHandleInput): boolean {
     const user = this.data.users[userId]
     if (!user?.allowed) return false
 
-    const channel = this.data.channels[channelId]
+    const channel = this.resolveChannel(channelId, parentChannelId)
     if (!channel?.enabled) return false
 
     if (channel.requireMention && !isMention) return false
@@ -188,10 +193,10 @@ export class AccessManager {
 
   // Reactions don't have a mention concept; they only require the user
   // to be allowlisted and the channel to be enabled.
-  canReact(userId: string, channelId: string): boolean {
+  canReact(userId: string, channelId: string, parentChannelId?: string | null): boolean {
     const user = this.data.users[userId]
     if (!user?.allowed) return false
-    const channel = this.data.channels[channelId]
+    const channel = this.resolveChannel(channelId, parentChannelId)
     if (!channel?.enabled) return false
     return true
   }
@@ -199,8 +204,8 @@ export class AccessManager {
   // Same predicate as canReact, exposed for the background memory-ingestion
   // path which embeds passive (non-mention) messages from allowed users in
   // enabled channels — independent of canHandle's requireMention gate.
-  isAllowedAndEnabled(userId: string, channelId: string): boolean {
-    return this.canReact(userId, channelId)
+  isAllowedAndEnabled(userId: string, channelId: string, parentChannelId?: string | null): boolean {
+    return this.canReact(userId, channelId, parentChannelId)
   }
 
   // Channel-independent user gate. A slash command like /voice isn't tied to a
@@ -260,9 +265,10 @@ export class AccessManager {
   // Throws if the channel isn't configured yet — admins should run /gemini channel first.
   async setChannelFlags(
     channelId: string,
-    patch: Partial<ChannelFlags>
+    patch: Partial<ChannelFlags>,
+    parentChannelId?: string | null,
   ): Promise<ChannelConfig> {
-    const existing = this.data.channels[channelId]
+    const existing = this.resolveChannel(channelId, parentChannelId)
     if (!existing) {
       throw new Error(`channel ${channelId} not configured — run /gemini channel first`)
     }
@@ -300,14 +306,14 @@ export class AccessManager {
     return this.data.channels[channelId]
   }
 
-  channelConfig(channelId: string): ChannelConfig | undefined {
-    return this.data.channels[channelId]
+  channelConfig(channelId: string, parentChannelId?: string | null): ChannelConfig | undefined {
+    return this.resolveChannel(channelId, parentChannelId)
   }
 
   // Per-channel rendering flags. Returns defaults for unknown channels and
   // for old configs that don't have these fields yet.
-  channelFlags(channelId: string): ChannelFlags {
-    const channel = this.data.channels[channelId]
+  channelFlags(channelId: string, parentChannelId?: string | null): ChannelFlags {
+    const channel = this.resolveChannel(channelId, parentChannelId)
     return {
       // normThinking coerces legacy never/always/auto → off/on/off.
       thinking: normThinking(channel?.thinking ?? DEFAULT_FLAGS.thinking),
