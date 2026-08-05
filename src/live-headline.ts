@@ -84,6 +84,7 @@ export function composeThinkingCard(opts: {
   thinking?: string
   reasoningTrace?: string[]
   detail?: string
+  narrationTrace?: string[]
 }): string {
   const {
     label,
@@ -92,10 +93,13 @@ export function composeThinkingCard(opts: {
     thinking = '',
     reasoningTrace = [],
     detail = '',
+    narrationTrace = [],
   } = opts
   const trace = thinkingTraceLines(reasoningTrace)
     .map(line => `> 🧠 *${line.toLocaleLowerCase('en-US')}*`)
-  const cleanDetail = compactLiveDetail(detail)
+  const cleanDetail = narrationTrace.length
+    ? narrationTrace.map(part => part.trim()).filter(Boolean).join('\n\n')
+    : compactLiveDetail(detail)
   const reasoning = trace.length ? `\n${trace.join('\n')}` : brainLine(thinking)
-  return `💭 ${glyph} **${label}${dots}**${reasoning}${cleanDetail ? `\n${cleanDetail}` : ''}`
+  return `💭 ${glyph} **${label}${dots}**${reasoning}${cleanDetail ? `\n💬 ***Narrating…***\n${cleanDetail}` : ''}`
 }

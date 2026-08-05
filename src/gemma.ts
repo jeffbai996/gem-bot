@@ -766,6 +766,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   let liveAgyThinking = ''
   const liveAgyThinkingTrace: string[] = []
   const liveAgyProgress = new LiveProgressBuffer()
+  const liveAgyNarrationTrace: string[] = []
   let liveTraceMessages: Message[] = []
   const collapseFailsafed = new Set<string>()
   const collapseFailsafeMs = Math.max(
@@ -956,6 +957,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           thinking: flags.thinking === 'off' ? '' : live,
           reasoningTrace: flags.thinking === 'collapse' ? liveThinkingTrace() : [],
           detail: liveAgyProgress.value(),
+          narrationTrace: flags.thinking === 'collapse' ? liveAgyNarrationTrace : [],
         })).catch(() => {})
       }, LIVE_UPDATE_INTERVAL_MS)
     }
@@ -1098,6 +1100,9 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           liveAgyThinkingTrace.push(e.thinking)
         }
         liveAgyProgress.push(e.detail)
+        if (e.detail && liveAgyNarrationTrace.at(-1) !== e.detail) {
+          liveAgyNarrationTrace.push(e.detail)
+        }
       }
     }
     // Speak-mode FULL BARGE-IN. If this message is being spoken to a vc and a
