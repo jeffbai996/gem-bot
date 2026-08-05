@@ -442,4 +442,22 @@ describe('AccessManager', () => {
       assert.equal(mgr.canReact('U1', 'C1'), true)
     })
   })
+
+  test('thread inherits parent policy and flags until explicitly overridden', async () => {
+    await writeAccess({ users: {}, channels: {} })
+    mgr = new AccessManager()
+    await mgr.load()
+    await mgr.allowUser('U1')
+    await mgr.setChannel('PARENT', true, false, { thinking: 'collapse', trace: 'live' })
+
+    assert.equal(mgr.canHandle({ channelId: 'THREAD', parentChannelId: 'PARENT', userId: 'U1', isMention: false }), true)
+    assert.equal(mgr.canReact('U1', 'THREAD', 'PARENT'), true)
+    assert.equal(mgr.channelFlags('THREAD', 'PARENT').thinking, 'collapse')
+    assert.equal(mgr.channelFlags('THREAD', 'PARENT').trace, 'live')
+
+    await mgr.setChannel('THREAD', true, true, { thinking: 'off', trace: 'off' })
+    assert.equal(mgr.canHandle({ channelId: 'THREAD', parentChannelId: 'PARENT', userId: 'U1', isMention: false }), false)
+    assert.equal(mgr.channelFlags('THREAD', 'PARENT').thinking, 'off')
+    assert.equal(mgr.channelFlags('THREAD', 'PARENT').trace, 'off')
+  })
 })
