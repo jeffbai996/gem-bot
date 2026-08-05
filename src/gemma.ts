@@ -1744,7 +1744,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 // active generation per channel. Cross-channel turns still run concurrently.
 interface QueuedChannelTurn { message: Message; opts: HandleOpts }
 const queueMarker = new LatestQueueMarker(() => client.user?.id)
-const QUEUE_SETTLE_MS = Number(process.env.GEM_QUEUE_SETTLE_MS) || 1_000
+const QUEUE_SETTLE_MS = Number(process.env.GEM_QUEUE_SETTLE_MS) || 0
 const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
   async (channelId, batch) => {
     const messages = batch.map(item => item.message)
@@ -1758,7 +1758,7 @@ const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
       const pinText = formatPinContext(await resolvePinContext(message))
       return [replyText, pinText, message.content].filter(Boolean).join('\n\n')
     }))).filter(Boolean).join('\n')
-    await queueMarker.clear(channelId)
+    void queueMarker.clear(channelId)
     await handleUserMessage(
       carrier,
       batch.length === 1
@@ -1850,7 +1850,6 @@ client.on('messageReactionAdd', async (reaction, user) => {
       && reaction.message.author?.id === user.id
       && queueMarker.isLatest(reaction.message.channelId, reaction.message.id)) {
     activeTurns.stopFor(reaction.message.channelId, { clearQueue: false })
-    await queueMarker.clear(reaction.message.channelId)
     return
   }
   await handleReaction(reaction, user, {
