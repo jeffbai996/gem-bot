@@ -452,8 +452,11 @@ describe('AccessManager', () => {
 
     assert.equal(mgr.canHandle({ channelId: 'THREAD', parentChannelId: 'PARENT', userId: 'U1', isMention: false }), true)
     assert.equal(mgr.canReact('U1', 'THREAD', 'PARENT'), true)
-    assert.equal(mgr.channelFlags('THREAD', 'PARENT').thinking, 'collapse')
-    assert.equal(mgr.channelFlags('THREAD', 'PARENT').trace, 'live')
+    assert.equal(mgr.channelFlags('THREAD').thinking, 'collapse')
+    assert.equal(mgr.channelFlags('THREAD').trace, 'live')
+    const inheritedOverride = await mgr.setChannelFlags('THREAD', { trace: 'off' })
+    assert.equal(inheritedOverride.thinking, 'collapse')
+    assert.equal(inheritedOverride.trace, 'off')
 
     await mgr.setChannel('THREAD', true, true, { thinking: 'off', trace: 'off' })
     assert.equal(mgr.canHandle({ channelId: 'THREAD', parentChannelId: 'PARENT', userId: 'U1', isMention: false }), false)

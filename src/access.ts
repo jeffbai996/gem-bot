@@ -131,6 +131,7 @@ export class AccessManager {
   private stateDir: string
   private file: string
   private data: AccessFile = { ...EMPTY }
+  private threadParents = new Map<string, string>()
 
   constructor() {
     this.stateDir = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
@@ -176,7 +177,13 @@ export class AccessManager {
   }
 
   private resolveChannel(channelId: string, parentChannelId?: string | null): ChannelConfig | undefined {
-    return this.data.channels[channelId] ?? (parentChannelId ? this.data.channels[parentChannelId] : undefined)
+    if (parentChannelId) this.threadParents.set(channelId, parentChannelId)
+    const parent = parentChannelId ?? this.threadParents.get(channelId)
+    return this.data.channels[channelId] ?? (parent ? this.data.channels[parent] : undefined)
+  }
+
+  noteChannelParent(channelId: string, parentChannelId: string | null): void {
+    if (parentChannelId) this.threadParents.set(channelId, parentChannelId)
   }
 
   canHandle({ channelId, parentChannelId, userId, isMention }: CanHandleInput): boolean {
