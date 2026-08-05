@@ -182,6 +182,11 @@ export class AccessManager {
     return this.data.channels[channelId] ?? (parent ? this.data.channels[parent] : undefined)
   }
 
+  private resolveAccessChannel(channelId: string, parentChannelId?: string | null): ChannelConfig | undefined {
+    if (parentChannelId) this.threadParents.set(channelId, parentChannelId)
+    return this.data.channels[channelId]
+  }
+
   noteChannelParent(channelId: string, parentChannelId: string | null): void {
     if (parentChannelId) this.threadParents.set(channelId, parentChannelId)
   }
@@ -190,7 +195,7 @@ export class AccessManager {
     const user = this.data.users[userId]
     if (!user?.allowed) return false
 
-    const channel = this.resolveChannel(channelId, parentChannelId)
+    const channel = this.resolveAccessChannel(channelId, parentChannelId)
     if (!channel?.enabled) return false
 
     if (channel.requireMention && !isMention) return false
@@ -203,7 +208,7 @@ export class AccessManager {
   canReact(userId: string, channelId: string, parentChannelId?: string | null): boolean {
     const user = this.data.users[userId]
     if (!user?.allowed) return false
-    const channel = this.resolveChannel(channelId, parentChannelId)
+    const channel = this.resolveAccessChannel(channelId, parentChannelId)
     if (!channel?.enabled) return false
     return true
   }
@@ -275,6 +280,9 @@ export class AccessManager {
     patch: Partial<ChannelFlags>,
     parentChannelId?: string | null,
   ): Promise<ChannelConfig> {
+    if (parentChannelId) this.threadParents.set(channelId, parentChannelId)
+    const parent = parentChannelId ?? this.threadParents.get(channelId)
+    const exact = this.data.channels[channelId]
     const existing = this.resolveChannel(channelId, parentChannelId)
     if (!existing) {
       throw new Error(`channel ${channelId} not configured — run /gemini channel first`)
@@ -293,6 +301,7 @@ export class AccessManager {
     }
     this.data.channels[channelId] = {
       ...existing,
+      ...(parent && !exact ? { enabled: false } : {}),
       ...(patch.thinking !== undefined ? { thinking: patch.thinking } : {}),
       ...(patch.trace !== undefined ? { trace: patch.trace } : {}),
       ...(patch.counter !== undefined ? { counter: patch.counter } : {}),

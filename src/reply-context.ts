@@ -24,6 +24,7 @@ export interface ThreadContext {
   threadId: string
   threadName: string | null
   parentChannelId: string | null
+  forumTagIds: string[]
   starterContent: string
   source: ReplyContext | null
 }
@@ -34,7 +35,7 @@ interface MessageLike {
   content?: string
   channelId?: string
   channel?: unknown
-  thread?: { id: string; name?: string; parentId?: string | null } | null
+  thread?: { id: string; name?: string; parentId?: string | null; appliedTags?: string[] } | null
   reference?: { messageId?: string | null; channelId?: string | null } | null
   client?: unknown
   fetchReference(): Promise<{
@@ -78,25 +79,28 @@ export function resolveThreadContext(message: MessageLike): Promise<ThreadContex
   const cached = threadCache.get(message as object)
   if (cached) return cached
   const pending = (async (): Promise<ThreadContext | null> => {
-    const channel = message.channel as { name?: string; parentId?: string | null } | null | undefined
-    const client = message.client as { channels?: { fetch(id: string): Promise<{ id: string; name?: string; parentId?: string | null } | null> } } | undefined
+    const channel = message.channel as { name?: string; parentId?: string | null; appliedTags?: string[] } | null | undefined
+    const client = message.client as { channels?: { fetch(id: string): Promise<{ id: string; name?: string; parentId?: string | null; appliedTags?: string[] } | null> } } | undefined
     if (message.type === THREAD_CREATED) {
       const threadId = message.thread?.id ?? message.reference?.channelId ?? message.id
       if (!threadId) return null
       let threadName = message.thread?.name ?? null
       let parentChannelId = message.thread?.parentId ?? message.channelId ?? null
+      let forumTagIds = message.thread?.appliedTags ?? []
       if (!threadName && client?.channels) {
         const thread = await client.channels.fetch(threadId).catch(() => null)
         threadName = thread?.name ?? null
         parentChannelId = thread?.parentId ?? parentChannelId
+        forumTagIds = thread?.appliedTags ?? forumTagIds
       }
-      return { kind: 'created', threadId, threadName, parentChannelId, starterContent: message.content ?? '', source: null }
+      return { kind: 'created', threadId, threadName, parentChannelId, forumTagIds, starterContent: message.content ?? '', source: null }
     }
     const source = message.reference?.messageId ? await fetchReferencedMessage(message) : null
     return {
       kind: 'starter', threadId: message.channelId ?? message.id ?? 'unknown',
       threadName: channel?.name ?? null,
       parentChannelId: channel?.parentId ?? message.reference?.channelId ?? null,
+      forumTagIds: channel?.appliedTags ?? [],
       starterContent: '', source,
     }
   })()
@@ -144,7 +148,7 @@ export function formatPinContext(context: PinContext | null): string {
 
 export function formatThreadContext(context: ThreadContext | null): string {
   if (!context) return ''
-  const thread = { thread_id: context.threadId, thread_name: context.threadName, parent_channel_id: context.parentChannelId }
+  const thread = { thread_id: context.threadId, thread_name: context.threadName, parent_channel_id: context.parentChannelId, forum_tag_ids: context.forumTagIds }
   if (context.kind === 'created') {
     return '[Discord thread event — the user created a thread]\n' + JSON.stringify({ ...thread, starter_content: context.starterContent })
   }
