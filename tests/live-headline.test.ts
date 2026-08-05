@@ -98,7 +98,7 @@ describe('composeThinkingCard', () => {
     })
     assert.equal(
       out,
-      '💭 ✢ **Thinking with high effort..**\n> 🧠 *weighing the margin math*\n💬 ***Narrating…***\nChecking the live renderer.',
+      '💭 ✢ **Thinking with high effort..**\n> 🧠 *weighing the margin math*\nChecking the live renderer.',
     )
   })
 
@@ -109,7 +109,6 @@ describe('composeThinkingCard', () => {
     })
     assert.equal(out, [
       '💭 ✻ **Thinking…**',
-      '💬 ***Narrating…***',
       'Checking the renderer.',
       '',
       'Testing the service.',
@@ -133,7 +132,7 @@ describe('composeThinkingCard', () => {
     })
     assert.equal(
       out,
-      '💭 ✻ **Thinking…**\n> 🧠 *inspecting the renderer*\n💬 ***Narrating…***\nI will inspect the current edit owner.',
+      '💭 ✻ **Thinking…**\n> 🧠 *inspecting the renderer*\nI will inspect the current edit owner.',
     )
   })
 
