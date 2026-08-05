@@ -98,8 +98,22 @@ describe('composeThinkingCard', () => {
     })
     assert.equal(
       out,
-      '💭 ✢ **Thinking with high effort..**\n> 🧠 *weighing the margin math*\nChecking the live renderer.',
+      '💭 ✢ **Thinking with high effort..**\n> 🧠 *weighing the margin math*\n💬 ***Narrating…***\nChecking the live renderer.',
     )
+  })
+
+  it('preserves every narration update in collapse mode', () => {
+    const out = composeThinkingCard({
+      label: 'Thinking',
+      narrationTrace: ['Checking the renderer.', 'Testing the service.'],
+    })
+    assert.equal(out, [
+      '💭 ✻ **Thinking…**',
+      '💬 ***Narrating…***',
+      'Checking the renderer.',
+      '',
+      'Testing the service.',
+    ].join('\n'))
   })
 
   it('does not render the cumulative reasoning body', () => {
@@ -119,7 +133,7 @@ describe('composeThinkingCard', () => {
     })
     assert.equal(
       out,
-      '💭 ✻ **Thinking…**\n> 🧠 *inspecting the renderer*\nI will inspect the current edit owner.',
+      '💭 ✻ **Thinking…**\n> 🧠 *inspecting the renderer*\n💬 ***Narrating…***\nI will inspect the current edit owner.',
     )
   })
 
