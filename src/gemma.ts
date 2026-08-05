@@ -618,6 +618,7 @@ client.once('ready', async () => {
 })
 
 client.on('interactionCreate', async (interaction) => {
+  if (interaction.channel?.isThread()) access.noteChannelParent(interaction.channelId!, interaction.channel.parentId)
   if (!interaction.isChatInputCommand()) return
   if (shuttingDown) {
     await interaction.reply({ content: '⚠️ restarting after the current turn finishes', ephemeral: true }).catch(() => {})
