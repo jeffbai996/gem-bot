@@ -36,7 +36,11 @@ const EMOJI = {
   searching:       '🌐',
   tooling:         '🔧',
   delegating:      '🤖',  // reserved — not currently fired by Gemma
-  replied:         '✅',
+  // was ✅ — dropped 2026-08-05 (Jeff): a visible reply already means the turn
+  // finished, so the checkmark was redundant. Empty string keeps 'replied' a
+  // real terminal state (still sweeps transients in applyLifecycle) while
+  // stamping nothing — the same convention native_thinking already uses.
+  replied:         '',
   truncated:       '✂️',
   blocked:         '🛑',
   errored:         '❌',
