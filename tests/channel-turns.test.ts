@@ -26,3 +26,22 @@ test('coalesces queued messages in FIFO order after a quiet window', async () =>
 
   assert.deepEqual(seen, [['A'], ['B', 'C']])
 })
+
+test('a failed active batch still drains queued messages FIFO', async () => {
+  const first = deferred()
+  const seen: string[][] = []
+  const runner = new ChannelTurnRunner<string>(async (_channelId, batch) => {
+    seen.push(batch)
+    if (batch[0] === 'A') {
+      await first.promise
+      throw new Error('fake turn failure')
+    }
+  })
+
+  const leader = runner.submit('channel', 'A')
+  await runner.submit('channel', 'B')
+  await runner.submit('channel', 'C')
+  first.resolve()
+  await assert.rejects(leader, /fake turn failure/)
+  assert.deepEqual(seen, [['A'], ['B', 'C']])
+})
