@@ -37,6 +37,7 @@ import { activeTurns } from './active-turns.ts'
 import { ChannelTurnRunner } from './channel-turns.ts'
 import { FAST_FORWARD_REACTION, LatestQueueMarker } from './queue-marker.ts'
 import { renderSteeredMessage } from './steering.ts'
+import { frameSteeredMessages } from './steer-context.ts'
 import { isHardStopMessage } from './stop-command.ts'
 import type { LifecycleEvent, ToolCall, CodeExecArtifact } from './gemini.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
@@ -1753,7 +1754,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 // messages are folded into ONE batched follow-up turn (their text joined),
 // repeated until the queue drains. Result: exactly one thinking indicator per
 // active generation per channel. Cross-channel turns still run concurrently.
-interface QueuedChannelTurn { message: Message; opts: HandleOpts }
+interface QueuedChannelTurn { message: Message; opts: HandleOpts; steered: boolean }
 const queueMarker = new LatestQueueMarker(() => client.user?.id)
 const QUEUE_SETTLE_MS = Number(process.env.GEM_QUEUE_SETTLE_MS) || 0
 const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
@@ -1762,7 +1763,7 @@ const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
     const withAtt = [...messages].reverse().find(message => message.attachments.size > 0 || extractRichMedia(message).length > 0)
     const carrier = withAtt ?? messages[messages.length - 1]
     const carrierItem = batch.find(item => item.message.id === carrier.id) ?? batch[batch.length - 1]
-    const combined = (await Promise.all(messages.map(async message => {
+    const texts = (await Promise.all(messages.map(async message => {
       const item = batch.find(candidate => candidate.message.id === message.id)
       if (item?.opts.combinedText !== undefined) return item.opts.combinedText
       const replyText = formatReplyContext(await resolveReplyContext(message))
@@ -1770,7 +1771,10 @@ const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
       const threadText = formatThreadContext(await resolveThreadContext(message))
       const richText = formatRichContext(message)
       return [replyText, pinText, threadText, richText, message.content].filter(Boolean).join('\n\n')
-    }))).filter(Boolean).join('\n')
+    }))).filter(Boolean)
+    const combined = batch.some(item => item.steered)
+      ? frameSteeredMessages(texts)
+      : texts.join('\n')
     void queueMarker.clear(channelId)
     await handleUserMessage(
       carrier,
@@ -1791,6 +1795,7 @@ async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<
   if (!(await ingestAndGate(message))) return
 
   const cid = message.channelId
+  const steered = channelTurns.isRunning(cid)
   const pinText = formatPinContext(await resolvePinContext(message))
   const threadText = formatThreadContext(await resolveThreadContext(message))
   const richText = formatRichContext(message)
@@ -1798,7 +1803,7 @@ async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<
   const effectiveOpts = systemText && opts.combinedText === undefined
     ? { ...opts, combinedText: [systemText, message.content].filter(Boolean).join('\n\n') }
     : opts
-  const outcome = await channelTurns.submit(cid, { message, opts: effectiveOpts })
+  const outcome = await channelTurns.submit(cid, { message, opts: effectiveOpts, steered })
   if (outcome === 'queued') {
     void queueMarker.mark(cid, message)
   }
@@ -1831,7 +1836,7 @@ client.on('messageCreate', async (message: Message) => {
     if (channelTurns.isRunning(message.channelId) && activeTurns.canRequestBarge(message.channelId)) {
       if (!(await ingestAndGate(message))) return
       activeTurns.deferStopFor(message.channelId, { clearQueue: false })
-      channelTurns.enqueue(message.channelId, { message, opts: {} })
+      channelTurns.enqueue(message.channelId, { message, opts: {}, steered: true })
       void queueMarker.mark(message.channelId, message)
       return
     }
