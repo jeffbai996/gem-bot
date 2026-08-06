@@ -5,9 +5,12 @@ import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
 import http from 'http'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 import { zipSync, strToU8 } from 'fflate'
 
 const testDir = path.join(os.tmpdir(), `gemma-attachments-test-${process.pid}`)
+const execFileAsync = promisify(execFile)
 
 function startServer(handler: (req: http.IncomingMessage, res: http.ServerResponse) => void): Promise<{ url: string, close: () => void }> {
   return new Promise(resolve => {
@@ -58,6 +61,34 @@ describe('processAttachments', () => {
     assert.equal(p.inlineData.mimeType, 'image/png')
     assert.equal(Buffer.from(p.inlineData.data, 'base64').toString('hex'), pngBytes.toString('hex'))
     assert.equal(result.skipped.length, 0)
+  })
+
+  test('samples an animated GIF into a PNG contact sheet for every engine', async () => {
+    const sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gemma-gif-test-'))
+    const gifPath = path.join(sourceDir, 'duck.gif')
+    await execFileAsync(process.env.FFMPEG_PATH || 'ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'testsrc=size=64x64:rate=6:duration=2', gifPath,
+    ])
+    const gifBytes = await fs.readFile(gifPath)
+    const srv = await startServer((_, res) => { res.writeHead(200); res.end(gifBytes) })
+    const result = await processAttachments('msg-gif', [{
+      url: `${srv.url}/duck.gif`, name: 'duck.gif', size: gifBytes.length, contentType: 'image/gif',
+    }], 'test-api-key', { keepLocalFiles: true })
+    srv.close()
+
+    assert.equal(result.parts.length, 1)
+    const part = result.parts[0]
+    assert.ok(isInline(part))
+    assert.equal(part.inlineData.mimeType, 'image/png')
+    assert.ok(Buffer.from(part.inlineData.data, 'base64').subarray(1, 4).equals(Buffer.from('PNG')))
+    assert.equal(result.localFiles.length, 1)
+    assert.equal(result.localFiles[0].mimeType, 'image/png')
+    assert.match(result.localFiles[0].name, /sampled animation frames/)
+    assert.ok((await fs.stat(result.localFiles[0].path)).size > 100)
+
+    await result.cleanup()
+    await fs.rm(sourceDir, { recursive: true, force: true })
   })
 
   test('keeps an agy attachment in the message inbox until cleanup', async () => {
