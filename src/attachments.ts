@@ -5,6 +5,7 @@ import { spawn } from 'child_process'
 import { GoogleGenAI } from '@google/genai'
 import { extensionMime, extractLocalText, isLocallyExtractable, officeParserType } from './attachment-text.ts'
 import { parseOffice } from 'officeparser'
+import { animationContactSheet } from './animation-frames.ts'
 
 const MAX_BYTES = 20 * 1024 * 1024
 // Resolve yt-dlp path at call time (not module-load) so tests can override via env
@@ -389,12 +390,20 @@ export async function processAttachments(
       }
 
       // Discord filenames are user input. Keep them recognizable while forcing
-      // the write beneath this message's inbox directory.
+      // the write beneath this message's inbox directory. Animated GIFs become
+      // a six-frame PNG first so both Gemini API and agy see motion rather than
+      // depending on provider-specific GIF behavior.
       const safeName = path.basename(att.name) || 'attachment'
-      const localPath = path.join(msgDir, `${index}-${safeName}`)
-      await fs.writeFile(localPath, buf)
+      const sampled = mime === 'image/gif'
+        ? await animationContactSheet(buf, path.extname(safeName) || '.gif', path.join(msgDir, `animation-${index}`))
+        : null
+      const effectiveBuffer = sampled?.bytes ?? buf
+      const effectiveMime = sampled ? 'image/png' : mime
+      const effectiveName = sampled ? `${att.name} (sampled animation frames)` : att.name
+      const localPath = sampled?.path ?? path.join(msgDir, `${index}-${safeName}`)
+      if (!sampled) await fs.writeFile(localPath, buf)
       if (options.keepLocalFiles) {
-        localFiles.push({ path: localPath, name: att.name, mimeType: mime })
+        localFiles.push({ path: localPath, name: effectiveName, mimeType: effectiveMime })
       }
 
       if (localOfficeType) {
@@ -404,7 +413,7 @@ export async function processAttachments(
         const text = extractLocalText(buf, att.name)
         parts.push({ text: `[attached file: ${att.name}]\n${text}` })
       } else if (isImage || isDoc) {
-        parts.push({ inlineData: { mimeType: mime, data: buf.toString('base64') } })
+        parts.push({ inlineData: { mimeType: effectiveMime, data: effectiveBuffer.toString('base64') } })
       } else if (uriCache.has(att.url)) {
         parts.push({ fileData: { mimeType: mime, fileUri: uriCache.get(att.url)! } })
       } else if (options.keepLocalFiles) {
