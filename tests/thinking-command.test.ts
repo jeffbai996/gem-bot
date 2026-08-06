@@ -3,6 +3,13 @@ import test from 'node:test'
 
 import { fmtChannelChange, fmtSettingChange, geminiCommand } from '../src/commands.ts'
 
+test('/gemini poll is not registered', () => {
+  const command = geminiCommand.toJSON()
+  const poll = command.options?.find((option: any) => option.name === 'poll')
+
+  assert.equal(poll, undefined)
+})
+
 test('setting acknowledgements show a changed previous value only', () => {
   assert.equal(fmtSettingChange('thinking', 'collapse', 'live'), '✅ thinking → `collapse` (was `live`)')
   assert.equal(fmtSettingChange('thinking', 'live', 'live'), '✅ thinking → `live`')
