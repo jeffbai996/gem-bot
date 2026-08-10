@@ -69,6 +69,14 @@ const stats = new GemStats(path.join(STATE_DIR, 'global-stats.json'))
 const PRESENCE_FILE = path.join(STATE_DIR, 'presence.json')
 const DEFAULT_PRESENCE_TEXT = '📡 waiting on gemini 4'
 
+function isNewerDiscordMessage(candidateId: string, anchorId: string): boolean {
+  try {
+    return BigInt(candidateId) > BigInt(anchorId)
+  } catch {
+    return candidateId > anchorId
+  }
+}
+
 function loadPresenceText(): string {
   try {
     const parsed = JSON.parse(readFileSync(PRESENCE_FILE, 'utf8'))
@@ -758,6 +766,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   const liveAgyProgress = new LiveProgressBuffer()
   const liveAgyNarrationTrace: string[] = []
   let liveTraceMessages: Message[] = []
+  let liveTraceRehomeTask: Promise<void> | null = null
   const collapseFailsafed = new Set<string>()
   const collapseFailsafeMs = Math.max(
     60_000,
@@ -926,6 +935,34 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       liveTraceMessages = liveTraceMessages.slice(0, cards.length)
     }
 
+    const rehomeLiveTraceAtBottom = async (below: Message | null): Promise<void> => {
+      if (flags.trace !== 'live' || !below || !liveTraceMessages.length) return
+      if (liveTraceRehomeTask) {
+        await liveTraceRehomeTask
+        return rehomeLiveTraceAtBottom(below)
+      }
+      const anchor = liveTraceMessages.at(-1)
+      if (!anchor || !isNewerDiscordMessage(below.id, anchor.id)) return
+      const task = (async () => {
+        const previousTraceMessages = [...liveTraceMessages]
+        const replacements: Message[] = []
+        for (const current of previousTraceMessages) {
+          const replacement = await sendRawMessage(message, current.content)
+          if (!replacement) {
+            for (const sent of replacements) await sent.delete().catch(() => {})
+            return
+          }
+          replacements.push(replacement)
+        }
+        liveTraceMessages = replacements
+        for (const replacement of replacements) scheduleCollapseFailsafe(replacement, 'trace')
+        for (const previous of previousTraceMessages) await previous.delete().catch(() => {})
+      })()
+      liveTraceRehomeTask = task
+      await task
+      if (liveTraceRehomeTask === task) liveTraceRehomeTask = null
+    }
+
     const flushLiveTrace = async () => {
       await syncTraceMessages(liveTraceCards())
     }
@@ -1023,6 +1060,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         for (let i = 0; i < pieces.length; i++) {
           await replaceActiveMessage(message, activeMessages, i + offset, pieces[i], 'stream')
         }
+        await rehomeLiveTraceAtBottom(activeMessages.at(-1) ?? null)
       } finally {
         isFlushing = false
         const resolve = resolveFlush
@@ -1561,6 +1599,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           await m.delete().catch(err => console.error(`excess delete failed (cosmetic):`, err))
         }
       }
+      await rehomeLiveTraceAtBottom(activeMessages.at(-1) ?? null)
 
       // Collapse (Jeff 2026-06-25, reworked 2026-06-28 for the split). After a
       // linger, best-effort fire-and-forget:
@@ -1608,6 +1647,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         const excess = activeMessages.splice(thinkingPieces.length)
         for (const m of excess) await m.delete().catch(() => {})
       }
+      await rehomeLiveTraceAtBottom(activeMessages.at(-1) ?? null)
       // Honor both transient modes here too — delete the thought message(s)
       // after the linger, same as the main path.
       if (transientThinking) {
