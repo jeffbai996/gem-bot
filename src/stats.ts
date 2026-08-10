@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs'
+import { formatCodeCard } from './discord-card.ts'
 
 export interface UsageInput {
   promptTokens: number
@@ -133,8 +134,6 @@ export function formatStats(snapshot: StatsSnapshot, now = Date.now()): string {
   const upMin = Math.floor((now - snapshot.bootTs) / 60_000)
   const cachePct = g.promptTokens > 0 ? Math.round((g.cachedTokens / g.promptTokens) * 100) : 0
   const lines = [
-    '📊 **@gem usage** — cumulative across restarts, all channels',
-    '```',
     `turns:    ${g.turns.toLocaleString('en-US')}  (today ${snapshot.today.turns.toLocaleString('en-US')})`,
   ]
   if (g.promptTokens > 0 || g.responseTokens > 0) {
@@ -155,7 +154,6 @@ export function formatStats(snapshot: StatsSnapshot, now = Date.now()): string {
     `models:   ${models}`,
     `runtime:  ${(g.elapsedMs / 3_600_000).toFixed(1)}h aggregate`,
     `uptime:   ${Math.floor(upMin / 60)}h ${upMin % 60}m`,
-    '```',
   )
-  return lines.join('\n')
+  return formatCodeCard('📊 **@gem usage** — cumulative across restarts, all channels', lines)
 }

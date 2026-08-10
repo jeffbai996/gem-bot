@@ -18,11 +18,11 @@ test('setting acknowledgements show a changed previous value only', () => {
 test('channel acknowledgement separates the before and after state', () => {
   assert.equal(
     fmtChannelChange('123', true, true, { enabled: true, requireMention: false }),
-    '✅ <#123> updated\n`enabled` yes → yes\n`require @` no → yes',
+    '✅ <#123> updated · enabled yes → yes · require @ no → yes',
   )
   assert.equal(
     fmtChannelChange('123', true, false),
-    '✅ <#123> configured\n`enabled` yes\n`require @` no',
+    '✅ <#123> configured · enabled yes · require @ no',
   )
 })
 

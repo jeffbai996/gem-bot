@@ -40,7 +40,7 @@ test('rejects a quota response without usable groups', () => {
   assert.throws(() => parseAgyQuotaSummary({ error: { message: 'denied' } }), /denied/i)
 })
 
-test('formats quota headers outside fenced bars and omits the footer', () => {
+test('formats all quota detail inside one fenced card and omits the footer', () => {
   const rendered = formatAgyLimits(
     [
       {
@@ -64,13 +64,13 @@ test('formats quota headers outside fenced bars and omits the footer', () => {
     rendered,
     [
       '⏱️ **agy limits**',
-      '',
-      '**Gemini Models**',
-      'Gemini Flash, Gemini Pro',
       '```',
+      'Gemini Models',
+      'Gemini Flash, Gemini Pro',
       'weekly: █░░░░░░░░░   9%  · 91% left · resets in 6d 6h',
       '```',
     ].join('\n'),
   )
+  assert.equal(rendered.match(/```/g)?.length, 2)
   assert.doesNotMatch(rendered, /Buckets are shared/)
 })
