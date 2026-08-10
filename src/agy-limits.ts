@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { formatCodeCard } from './discord-card.ts'
 const DEFAULT_AGY_BIN = path.join(os.homedir(), '.local', 'bin', 'agy')
 const QUOTA_URL = 'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary'
 
@@ -126,10 +127,10 @@ function resetCountdown(resetTime: string | null, nowMs: number): string {
 }
 
 export function formatAgyLimits(groups: AgyQuotaGroup[], nowMs = Date.now()): string {
-  const lines = ['⏱️ **agy limits**', '']
+  const lines: string[] = []
   groups.forEach((group, groupIndex) => {
     if (groupIndex > 0) lines.push('')
-    lines.push(`**${group.displayName}**`)
+    lines.push(group.displayName)
     if (group.description) {
       lines.push(group.description.replace(/^Models within this group:\s*/i, ''))
     }
@@ -141,9 +142,9 @@ export function formatAgyLimits(groups: AgyQuotaGroup[], nowMs = Date.now()): st
         `${quotaLabel(bucket).padEnd(7)} ${quotaBar(bucket.remainingFraction)} ${String(used).padStart(3)}%  · ${left}% left · ${resetCountdown(bucket.resetTime, nowMs)}`,
       )
     }
-    lines.push('```', ...quotaLines, '```')
+    lines.push(...quotaLines)
   })
-  return lines.join('\n')
+  return formatCodeCard('⏱️ **agy limits**', lines)
 }
 
 function agyChildEnv(): NodeJS.ProcessEnv {

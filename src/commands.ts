@@ -11,7 +11,7 @@ import {
 } from './access.ts'
 import { PersonaLoader } from './persona.ts'
 import { GeminiClient } from './gemini.ts'
-import { GeminiCacheManager } from './cache.ts'
+import { GeminiCacheManager, type CachedRef } from './cache.ts'
 import { insertMessage } from './db.ts'
 import { rewriteEnvVar, scheduleSelfRestart } from './restart.ts'
 import { activeTurns } from './active-turns.ts'
@@ -24,6 +24,7 @@ import {
 } from './models.ts'
 import { formatStats, type GemStats } from './stats.ts'
 import { fetchAgyLimits, formatAgyLimits } from './agy-limits.ts'
+import { formatCodeCard } from './discord-card.ts'
 
 export const geminiCommand = new SlashCommandBuilder()
   .setName('gemini')
@@ -304,7 +305,7 @@ function settingsCard(access: AccessManager, channelId: string): string {
   ]
   const pad = Math.max(...rows.map(([k]) => k.length))
   const body = rows.map(([k, v]) => `${k.padEnd(pad)} : ${v}`).join('\n')
-  return `⚙️ **gemini settings** — <#${channelId}>\n\`\`\`\n${body}\n\`\`\``
+  return formatCodeCard(`⚙️ **gemini settings** — <#${channelId}>`, body)
 }
 
 export function fmtSettingChange(label: string, value: string, previous: string): string {
@@ -317,18 +318,46 @@ export function fmtChannelChange(
   requireMention: boolean,
   previous?: Pick<ChannelConfig, 'enabled' | 'requireMention'>,
 ): string {
-  const current = [
-    `\`enabled\` ${enabled ? 'yes' : 'no'}`,
-    `\`require @\` ${requireMention ? 'yes' : 'no'}`,
-  ]
   if (!previous) {
-    return `✅ <#${channelId}> configured\n${current.join('\n')}`
+    return `✅ <#${channelId}> configured · enabled ${enabled ? 'yes' : 'no'} · require @ ${requireMention ? 'yes' : 'no'}`
   }
-  return [
-    `✅ <#${channelId}> updated`,
-    `\`enabled\` ${previous.enabled ? 'yes' : 'no'} → ${enabled ? 'yes' : 'no'}`,
-    `\`require @\` ${previous.requireMention ? 'yes' : 'no'} → ${requireMention ? 'yes' : 'no'}`,
-  ].join('\n')
+  return (`✅ <#${channelId}> updated · enabled ${previous.enabled ? 'yes' : 'no'} → ${enabled ? 'yes' : 'no'}`
+    + ` · require @ ${previous.requireMention ? 'yes' : 'no'} → ${requireMention ? 'yes' : 'no'}`)
+}
+
+export function formatCacheInfo(
+  caches: Array<Pick<CachedRef,
+    'systemHash' | 'model' | 'createdAt' | 'lastUsedAt' | 'ttlSec'
+    | 'cachedTokens' | 'systemTokens' | 'hitCount'>>,
+  defaultTtlSec: number,
+  now = Date.now(),
+): string {
+  const count = caches.length
+  const title = `📦 **gemma cache** · ${count || 'no'} live entr${count === 1 ? 'y' : 'ies'}`
+  if (!count) {
+    return formatCodeCard(title, [
+      'reason      : no cache-enabled channel has reached the model minimum',
+      `default TTL : ${defaultTtlSec}s`,
+    ])
+  }
+  const lines: string[] = []
+  caches.forEach((cache, index) => {
+    const ageSec = Math.floor((now - cache.createdAt) / 1000)
+    const idleSec = Math.floor((now - cache.lastUsedAt) / 1000)
+    const remainingSec = Math.max(0, cache.ttlSec - ageSec)
+    const cachedSize = cache.cachedTokens != null
+      ? `${cache.cachedTokens.toLocaleString('en-US')} tok billed`
+      : `~${cache.systemTokens.toLocaleString('en-US')} tok est. (no hit yet)`
+    if (index > 0) lines.push('')
+    lines.push(
+      `${cache.systemHash} · ${cache.model}`,
+      `  size      : ${cachedSize}`,
+      `  hits      : ${cache.hitCount} · last used ${formatRelative(idleSec)} ago`,
+      `  age / TTL : ${formatRelative(ageSec)} / ${cache.ttlSec}s · ${formatRelative(remainingSec)} left`,
+    )
+  })
+  lines.push('', '─'.repeat(32), `default TTL : ${defaultTtlSec}s · /gemini cache ttl`)
+  return formatCodeCard(title, lines)
 }
 
   export async function executeGeminiCommand(interaction: ChatInputCommandInteraction, access: AccessManager, persona: PersonaLoader, gemini: GeminiClient, adminUserId: string | undefined, deps: ExtraDeps) {
@@ -586,31 +615,10 @@ export function fmtChannelChange(
 
       if (verb === 'info') {
         const caches = gemini.listCaches?.() ?? []
-        if (caches.length === 0) {
-          return interaction.reply({
-            content: `📦 no live caches in process. either no channel has \`cache=true\`, or the prefix is below the model's minimum (1024 Flash / 4096 Pro tokens).\n\ndefault TTL: ${GeminiCacheManager.defaultTtlSec()}s.`,
-            ephemeral: true
-          })
-        }
-        const now = Date.now()
-        const lines: string[] = [`📦 **gemma cache** — ${caches.length} live entr${caches.length === 1 ? 'y' : 'ies'}`, '']
-        for (const c of caches) {
-          const ageSec = Math.floor((now - c.createdAt) / 1000)
-          const idleSec = Math.floor((now - c.lastUsedAt) / 1000)
-          const remainingSec = Math.max(0, c.ttlSec - ageSec)
-          const cachedSize = c.cachedTokens != null
-            ? `${c.cachedTokens.toLocaleString('en-US')} tok billed`
-            : `~${c.systemTokens.toLocaleString('en-US')} tok est. (no hit yet)`
-          lines.push(
-            `• \`${c.systemHash}\` (${c.model})`,
-            `   ↳ size: ${cachedSize}`,
-            `   ↳ hits: ${c.hitCount} · last used: ${formatRelative(idleSec)} ago`,
-            `   ↳ age: ${formatRelative(ageSec)} · TTL: ${c.ttlSec}s · remaining: ${formatRelative(remainingSec)}`,
-            ''
-          )
-        }
-        lines.push(`default TTL: ${GeminiCacheManager.defaultTtlSec()}s. set per-channel with \`/gemini cache ttl\`.`)
-        return interaction.reply({ content: lines.join('\n'), ephemeral: true })
+        return interaction.reply({
+          content: formatCacheInfo(caches, GeminiCacheManager.defaultTtlSec()),
+          ephemeral: true,
+        })
       }
 
       // unrecognized verb under the group
