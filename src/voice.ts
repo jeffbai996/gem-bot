@@ -116,6 +116,8 @@ export class VoiceManager extends EventEmitter {
     if (this.connection) {
       return { ok: false, error: 'already in a voice session' }
     }
+    this.clearBufferedPlayback()
+    this.txAudioFrames = 0
 
     // 1. Connect to gem-voice IPC and start a session
     let ipcSock: net.Socket
@@ -295,18 +297,25 @@ export class VoiceManager extends EventEmitter {
    *  side — kill everything buffered here so she stops mid-word. The next
    *  model turn re-arms a fresh stream via ensurePlaying(). */
   private flushPlayback(): void {
+    const banked = this.turnBuffer.length
+    this.clearBufferedPlayback()
+    this.audioPlayer?.stop(true)
+    console.log(`[voice/tx] playback FLUSHED (barge-in; ${banked} banked frames dropped)`)
+  }
+
+  /** Drop every delayed/current output artifact before a leave or rejoin. A
+   * turn-start timer surviving stop() can otherwise flush the prior call's
+   * banked audio into the next channel. */
+  private clearBufferedPlayback(): void {
     if (this.turnBufferTimer) {
       clearTimeout(this.turnBufferTimer)
       this.turnBufferTimer = null
     }
-    const banked = this.turnBuffer.length
     this.turnBuffer = []
     if (this.outboundOpus && !this.outboundOpus.destroyed) {
       this.outboundOpus.destroy()
     }
     this.outboundOpus = null
-    this.audioPlayer?.stop(true)
-    console.log(`[voice/tx] playback FLUSHED (barge-in; ${banked} banked frames dropped)`)
   }
 
   /** Jitter buffer: Gemini streams audio in bursts, and on free tier the
@@ -404,13 +413,10 @@ export class VoiceManager extends EventEmitter {
 
     // 2. Stop audio player + tear down outbound stream
     if (this.audioPlayer) {
-      this.audioPlayer.stop()
+      this.audioPlayer.stop(true)
       this.audioPlayer = null
     }
-    if (this.outboundOpus) {
-      this.outboundOpus.push(null)
-      this.outboundOpus = null
-    }
+    this.clearBufferedPlayback()
 
     // 3. Disconnect from voice channel
     if (this.connection) {
@@ -503,9 +509,11 @@ export class VoiceManager extends EventEmitter {
       const sock = net.createConnection(sockPath)
       sock.once('connect', () => {
         this.ipcConnection = sock
+        this.ipcRecvBuffer = ''
         sock.on('data', (chunk: Buffer) => this.handleIpcData(chunk))
         sock.on('close', () => {
           this.ipcConnection = null
+          this.ipcRecvBuffer = ''
           for (const cb of this.ipcPendingRequests.values()) {
             cb({ id: '', ok: false, error: 'ipc connection closed' })
           }
