@@ -14,6 +14,9 @@ import assert from 'node:assert/strict'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { Readable } from 'node:stream'
+
+import { VoiceManager } from '../src/voice.ts'
 
 interface FakeServer {
   path: string
@@ -210,5 +213,33 @@ describe('VoiceManager IPC client', () => {
     assert.deepEqual(Object.keys(cancelMsg!).sort(), ['action', 'id'])
 
     sock.destroy()
+  })
+
+  test('stop clears stale buffered audio and its delayed flush before a rejoin', async () => {
+    const manager = new VoiceManager({} as any)
+    let staleFlushFired = false
+    const timer = setTimeout(() => { staleFlushFired = true }, 20)
+    const outbound = new Readable({ read() {} })
+    let playerStopped = false
+    let connectionDestroyed = false
+
+    Object.assign(manager as any, {
+      turnBuffer: [Buffer.from('stale audio')],
+      turnBufferTimer: timer,
+      outboundOpus: outbound,
+      audioPlayer: { stop: () => { playerStopped = true } },
+      connection: { destroy: () => { connectionDestroyed = true } },
+    })
+
+    await manager.stop()
+    await new Promise(resolve => setTimeout(resolve, 40))
+
+    assert.equal((manager as any).turnBuffer.length, 0)
+    assert.equal((manager as any).turnBufferTimer, null)
+    assert.equal((manager as any).outboundOpus, null)
+    assert.equal(playerStopped, true)
+    assert.equal(connectionDestroyed, true)
+    assert.equal(staleFlushFired, false)
+    manager.close()
   })
 })
