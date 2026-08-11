@@ -3,7 +3,16 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { rewriteEnvVar } from '../src/restart.ts'
+import {
+  GRACEFUL_SHUTDOWN_DEADLINE_MS,
+  RESTART_DRAIN_DEADLINE_MS,
+  RestartCoordinator,
+  ShutdownGate,
+  rewriteEnvVar,
+  waitForIdleOrDeadline,
+} from '../src/restart.ts'
+
+const tick = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 const tmp = path.join(os.tmpdir(), `gemma-restart-test-${process.pid}`)
 const envPath = path.join(tmp, '.env')
@@ -72,5 +81,65 @@ describe('rewriteEnvVar', () => {
     const body = await fs.readFile(envPath, 'utf8')
     assert.match(body, /^GEMINI_MODEL_NICKNAME=robot$/m)
     assert.match(body, /^GEMINI_MODEL=new$/m)
+  })
+})
+
+describe('RestartCoordinator', () => {
+  test('keeps intake open until every accepted turn reaches idle', async () => {
+    const gate = new ShutdownGate()
+    const firstDone = gate.enter()
+    assert.ok(firstDone)
+    let launches = 0
+    const coordinator = new RestartCoordinator(
+      () => gate.waitForIdle(),
+      () => { launches++ },
+      () => gate.beginDrain(),
+    )
+
+    assert.equal(coordinator.request(), true)
+    assert.equal(coordinator.request(), false)
+    const secondDone = gate.enter()
+    assert.ok(secondDone, 'a pending model-change restart must admit unrelated work')
+    firstDone()
+    await Promise.resolve()
+    assert.equal(launches, 0)
+    secondDone()
+    await Promise.resolve()
+    assert.equal(launches, 1)
+    assert.equal(gate.enter(), null)
+  })
+
+  test('warns on an overrun without closing intake or launching', async () => {
+    const gate = new ShutdownGate()
+    let expired = 0
+    let launches = 0
+    const coordinator = new RestartCoordinator(
+      () => new Promise<void>(() => {}),
+      () => { launches++ },
+      () => gate.beginDrain(),
+      { deadlineMs: 5, onDeadline: () => { expired++ } },
+    )
+
+    coordinator.request()
+    await tick(30)
+    assert.equal(expired, 1)
+    assert.equal(launches, 0)
+    assert.equal(gate.isDraining(), false)
+  })
+})
+
+describe('graceful shutdown', () => {
+  test('has bounded defaults and distinguishes idle from timeout', async () => {
+    assert.ok(RESTART_DRAIN_DEADLINE_MS > 0 && RESTART_DRAIN_DEADLINE_MS <= 30 * 60_000)
+    assert.ok(GRACEFUL_SHUTDOWN_DEADLINE_MS > 0 && GRACEFUL_SHUTDOWN_DEADLINE_MS <= 30_000)
+    assert.equal(await waitForIdleOrDeadline(Promise.resolve(), 30), 'idle')
+    assert.equal(await waitForIdleOrDeadline(new Promise<void>(() => {}), 5), 'timeout')
+  })
+
+  test('SIGTERM can begin exit after restart cutover begins', () => {
+    const gate = new ShutdownGate()
+    assert.equal(gate.beginDrain(), true)
+    assert.equal(gate.beginExit(), true)
+    assert.equal(gate.beginExit(), false)
   })
 })

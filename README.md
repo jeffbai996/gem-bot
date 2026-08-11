@@ -302,13 +302,17 @@ Runs as a systemd user service (`gemma.service`) on Node 22+ via nvm.
 ```bash
 # Pull + redeploy
 git pull && npm install
-systemctl --user restart gemma
+systemctl --user kill --kill-who=main -s SIGUSR2 gemma
 
 # Hot reload (access.json + GEMINI.md/persona files only, no code reload):
 systemctl --user kill -s HUP gemma
 ```
 
 Logs: `~/.gemini/channels/discord/gemma.log`. Status: `systemctl --user status gemma`.
+
+`SIGUSR2` keeps intake open while a restart is pending, cuts over only at a
+natural idle window, and replays any message that lands during the final
+restart window. Direct `systemctl --user restart gemma` is recovery-only.
 
 ---
 

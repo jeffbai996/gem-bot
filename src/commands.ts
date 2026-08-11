@@ -13,7 +13,7 @@ import { PersonaLoader } from './persona.ts'
 import { GeminiClient } from './gemini.ts'
 import { GeminiCacheManager, type CachedRef } from './cache.ts'
 import { insertMessage } from './db.ts'
-import { rewriteEnvVar, scheduleSelfRestart } from './restart.ts'
+import { rewriteEnvVar } from './restart.ts'
 import { activeTurns } from './active-turns.ts'
 import {
   AGY_MODEL_CHOICES,
@@ -275,6 +275,7 @@ interface ExtraDeps {
   summaryStore: { upsert(channelId: string, summary: string, lastMessageId: string): void }
   summarizer: { runForChannel(channelId: string): Promise<{ messageCount: number } | null> }
   stats: GemStats
+  requestRestart: () => void
 }
 
 // The one settings card. /gemini settings renders it, and every setter ack
@@ -450,14 +451,13 @@ export function formatCacheInfo(
           ephemeral: true,
         })
       }
-      // Reply BEFORE scheduling the restart so Discord acks while the process
-      // is still alive. The detached `bash -c 'sleep ... && systemctl restart'`
-      // outlives this process; systemd brings us back up reading the new env.
+      // Ack before handing the restart to the lifecycle coordinator. It keeps
+      // unrelated intake open until the bot reaches a natural idle window.
       await interaction.reply({
         content: `🔁 **${targetEngine}** model → \`${newModel}\`${newModel === previousModel ? '' : ` (was \`${previousModel}\`)`} · restarting`,
         ephemeral: true,
       })
-      scheduleSelfRestart('gemma', 1500)
+      deps.requestRestart()
       return
     }
 
