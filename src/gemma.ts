@@ -60,11 +60,20 @@ import { extractPresenceDirective, normalizePresenceText } from './presence.ts'
 import { GemStats } from './stats.ts'
 import { editImages, isImageEditRequest } from './image-generation.ts'
 import { formatSkippedAttachments } from './discord-card.ts'
+import {
+  GRACEFUL_SHUTDOWN_DEADLINE_MS,
+  RestartCoordinator,
+  ShutdownGate,
+  scheduleSelfRestart,
+  waitForIdleOrDeadline,
+} from './restart.ts'
+import { RestartInbox } from './restart-inbox.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
 const LIVE_UPDATE_INTERVAL_MS = resolveLiveUpdateInterval(process.env.GEM_LIVE_UPDATE_INTERVAL_MS)
 const deferredActions = new DeferredActions(path.join(STATE_DIR, 'deferred-actions.json'))
+const restartInbox = new RestartInbox(path.join(STATE_DIR, 'restart-inbox.json'))
 const stats = new GemStats(path.join(STATE_DIR, 'global-stats.json'))
 const PRESENCE_FILE = path.join(STATE_DIR, 'presence.json')
 const DEFAULT_PRESENCE_TEXT = '📡 waiting on gemini 4'
@@ -488,20 +497,21 @@ const client = new Client({
 const voiceManager = new VoiceManager(client)
 voiceManager.attach()
 
-let shuttingDown = false
+const shutdownGate = new ShutdownGate()
 function installGracefulShutdown(): void {
-  const timeoutMs = Number(process.env.GEMMA_GRACEFUL_SHUTDOWN_MS) || 30 * 60_000
+  const configuredTimeoutMs = Number(process.env.GEMMA_GRACEFUL_SHUTDOWN_MS)
+  const timeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+    ? configuredTimeoutMs
+    : GRACEFUL_SHUTDOWN_DEADLINE_MS
   const shutdown = (signal: string) => {
-    if (shuttingDown) return
-    shuttingDown = true
+    if (!shutdownGate.beginExit()) return
     console.error(`[shutdown] ${signal} received; waiting for active turns to finish`)
-    const timer = new Promise<'timeout'>(resolve => {
-      const t = setTimeout(() => resolve('timeout'), timeoutMs)
-      t.unref?.()
-    })
-    const idle = Promise.all([activeTurns.waitForIdle(), channelTurns.waitForIdle()])
-      .then(() => 'idle' as const)
-    Promise.race([idle, timer])
+    const idle = Promise.all([
+      shutdownGate.waitForIdle(),
+      activeTurns.waitForIdle(),
+      channelTurns.waitForIdle(),
+    ])
+    waitForIdleOrDeadline(idle, timeoutMs)
       .then(reason => {
         console.error(`[shutdown] exiting after ${reason}`)
         client.destroy()
@@ -514,9 +524,8 @@ function installGracefulShutdown(): void {
   }
   process.once('SIGTERM', () => shutdown('SIGTERM'))
   process.once('SIGINT', () => shutdown('SIGINT'))
+  process.on('SIGUSR2', requestGracefulRestart)
 }
-
-installGracefulShutdown()
 
 // Attach `/gemini voice <call|speak|leave|type>` onto the /gemini command
 // builder. Voice used to be a standalone /voice — moved under /gemini to
@@ -594,6 +603,14 @@ client.once('ready', async () => {
     }
   }
 
+  const replayed = await restartInbox.replay(async (channelId, messageId) => {
+    const channel = await client.channels.fetch(channelId)
+    if (!channel?.isTextBased()) throw new Error(`deferred channel ${channelId} is unavailable`)
+    const message = await channel.messages.fetch(messageId)
+    await dispatchInboundMessage(message)
+  })
+  if (replayed) console.error(`replayed ${replayed} message(s) deferred during restart`)
+
   try {
     const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN)
     await rest.put(
@@ -612,7 +629,7 @@ client.once('ready', async () => {
 client.on('interactionCreate', async (interaction) => {
   if (interaction.channel?.isThread()) access.noteChannelParent(interaction.channelId!, interaction.channel.parentId)
   if (!interaction.isChatInputCommand()) return
-  if (shuttingDown) {
+  if (shutdownGate.isDraining()) {
     await interaction.reply({ content: '⚠️ restarting after the current turn finishes', ephemeral: true }).catch(() => {})
     return
   }
@@ -639,6 +656,7 @@ client.on('interactionCreate', async (interaction) => {
     summaryStore,
     summarizer,
     stats,
+    requestRestart: requestGracefulRestart,
   })
 })
 
@@ -1809,6 +1827,31 @@ const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
   QUEUE_SETTLE_MS,
 )
 
+const restartCoordinator = new RestartCoordinator(
+  () => Promise.all([
+    shutdownGate.waitForIdle(),
+    activeTurns.waitForIdle(),
+    channelTurns.waitForIdle(),
+  ]).then(() => {}),
+  () => scheduleSelfRestart('gemma', 250),
+  () => shutdownGate.beginDrain(),
+  {
+    onDeadline: () => {
+      console.error('[restart] drain exceeded its warning deadline; continuing to wait for active work')
+    },
+  },
+)
+
+function requestGracefulRestart(): void {
+  if (!restartCoordinator.request()) {
+    console.error('[restart] request coalesced; restart already pending')
+    return
+  }
+  console.error('[restart] requested; waiting for a natural idle window before cutover')
+}
+
+installGracefulShutdown()
+
 async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<void> {
   // Embed (always, for allowed messages) + gate. A gated-OUT message never
   // produces a placeholder, so it must not be queued or batched — just embed
@@ -1831,8 +1874,41 @@ async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<
   }
 }
 
-client.on('messageCreate', async (message: Message) => {
-  if (shuttingDown) return
+async function dispatchInboundMessage(message: Message): Promise<void> {
+  if (message.author.bot) return
+  const replyContext = await resolveReplyContext(message)
+  if (client.user && isAddressedToAnotherBot(
+    client.user.id,
+    message.mentions.users.values(),
+    message.content,
+    replyContext ? { id: replyContext.authorId, bot: replyContext.authorIsBot } : null,
+  )) return
+
+  const release = shutdownGate.enter()
+  if (!release) {
+    const isMention = client.user
+      ? message.mentions.users.has(client.user.id) || replyContext?.authorId === client.user.id
+      : false
+    const mine = access.canHandle({
+      channelId: message.channelId,
+      parentChannelId: message.channel.isThread() ? message.channel.parentId : null,
+      userId: message.author.id,
+      isMention,
+    })
+    if (!mine) return
+    restartInbox.defer(message.channelId, message.id)
+    void message.react('⏳').catch(() => {})
+    return
+  }
+
+  try {
+    await handleInboundMessage(message)
+  } finally {
+    release()
+  }
+}
+
+async function handleInboundMessage(message: Message): Promise<void> {
   const parentChannelId = message.channel.isThread() ? message.channel.parentId : null
   if (!message.author.bot && access.isAllowedAndEnabled(message.author.id, message.channelId, parentChannelId)) {
     // Lone ❌ / X message: hard-kill the in-flight turn and swallow the message.
@@ -1881,9 +1957,12 @@ client.on('messageCreate', async (message: Message) => {
     }
   }
   await runChannelTurn(message, {})
-})
+}
+
+client.on('messageCreate', dispatchInboundMessage)
 
 client.on('messageReactionAdd', async (reaction, user) => {
+  if (shutdownGate.isDraining()) return
   if (reaction.partial) {
     try { await reaction.fetch() } catch { return }
   }
