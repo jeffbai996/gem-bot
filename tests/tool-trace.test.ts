@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import {
@@ -12,11 +13,16 @@ import {
 } from '../src/tool-trace.ts'
 import { agyToolDisplayName } from '../src/agy-chat.ts'
 
-test('tool calls fit 86 columns and output payloads fit 83 columns', () => {
-  assert.equal(TRACE_ROW_MAX, 86)
-  assert.equal(TRACE_RESULT_PAYLOAD_MAX, 83)
+test('tool calls fit 88 columns and output payloads fit 85 columns', () => {
+  assert.equal(TRACE_ROW_MAX, 88)
+  assert.equal(TRACE_RESULT_PAYLOAD_MAX, 85)
   assert.equal(`+ ● shell(${'x'.repeat(TRACE_ROW_MAX - 11)})`.length, TRACE_ROW_MAX)
-  assert.equal(`  ⎿ ${'x'.repeat(TRACE_RESULT_PAYLOAD_MAX)}`.length, 87)
+  assert.equal(`  ⎿ ${'x'.repeat(TRACE_RESULT_PAYLOAD_MAX)}`.length, 89)
+})
+
+test('running tool calls do not spend trace width on synthetic ellipses', async () => {
+  const source = await readFile(new URL('../src/gemma.ts', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /call\.running\s*\?\s*['"]\.\.\.['"]/) // no synthetic live suffix
 })
 
 test('truncated tool arguments end cleanly without an ellipsis', () => {

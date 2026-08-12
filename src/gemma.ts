@@ -351,7 +351,10 @@ function buildTraceLines(toolCalls: RenderableToolCall[]): string[] {
   const lines: string[] = []
   for (const call of toolCalls) {
     const prefix = call.failed ? '- ● ' : '+ ● '
-    const tail = call.running ? '...' : call.failed ? ' FAILED' : ''
+    // The lifecycle reaction already communicates that a tool is running. A
+    // synthetic `...` on every live row only burns width and survives into
+    // post-hoc AGY traces, where it misleadingly makes completed calls look live.
+    const tail = call.failed ? ' FAILED' : ''
     // Timing badge. Two regimes so we kill the agy noise without losing native
     // precision: native tool calls carry sub-second ms timing that's genuinely
     // useful → show `[Nms]` for anything under 1s. agy's timing is coarse
