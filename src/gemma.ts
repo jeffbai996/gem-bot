@@ -1259,6 +1259,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           userName: message.author.username,
           mediaFiles: attachmentResult.localFiles,
           channelId: message.channelId,
+          messageId: message.id,
           onEvent: onLifecycleEvent,
           signal: combinedSignal,  // /gemini stop → SIGKILLs the agy process group
         }, parseResponse))
