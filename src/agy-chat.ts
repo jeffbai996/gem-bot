@@ -245,6 +245,9 @@ export function buildAgyPrompt(input: AgyChatInput): string {
         'For every memory, journal, todo, or file mutation, invoke the squad-store CLI itself. ' +
           'Never import `store`, `history`, or other squad-store Python internals directly, never call ' +
           '`edit_memory_with_history`, and never mutate through raw HTTP: those bypass the visible Discord undo card.',
+        'Squad-store JSON files are databases, not normal files. NEVER use `write_to_file`, `replace_file_content`, ' +
+          'shell redirection, or any file-edit tool on `memories.json`, `journal.json`, `todos.json`, `ephemeral.json`, ' +
+          'the files manifest, or anything under the store data directory. This overrides the general file-edit rule above.',
         `For a memory edit, use exactly: ${SQUAD_STORE_BIN} memory edit <id> "<new body>" ` +
           `--discord-chat-id "${input.channelId}" --discord-message-id "${input.messageId}"`,
         'Use those same two Discord flags on every other mutating squad-store subcommand. ' +

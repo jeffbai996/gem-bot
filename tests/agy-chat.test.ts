@@ -60,6 +60,8 @@ describe('agy squad-store mutations', () => {
     assert.match(prompt, /--discord-chat-id "123456789"/)
     assert.match(prompt, /--discord-message-id "987654321"/)
     assert.match(prompt, /Never import .*store.*history.*directly/i)
+    assert.match(prompt, /never use .*write_to_file.*memories\.json/i)
+    assert.match(prompt, /overrides the general file-edit rule/i)
   })
 })
 
