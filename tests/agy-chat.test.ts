@@ -37,10 +37,29 @@ describe('agy media bridge', () => {
       .filter(Boolean)
 
     assert.ok(promptIndex > 0)
-    assert.equal(granted.length, 2)
+    assert.equal(granted.length, 3)
     assert.match(granted[0] ?? '', /\/\.local\/bin$/)
-    assert.equal(granted[1], '/tmp/gem/inbox/message-1')
+    assert.match(granted[1] ?? '', /\/cc-context\/modules\/squad-store$/)
+    assert.equal(granted[2], '/tmp/gem/inbox/message-1')
     assert.ok(args.indexOf('/tmp/gem/inbox/message-1') < promptIndex)
+  })
+})
+
+describe('agy squad-store mutations', () => {
+  test('requires Discord mutation cards and forbids direct store imports', () => {
+    const prompt = buildAgyPrompt({
+      systemPrompt: 'You are Gemma.',
+      history: [],
+      userMessageText: 'update that memory',
+      userName: 'Alice',
+      channelId: '123456789',
+      messageId: '987654321',
+    })
+
+    assert.match(prompt, /memory edit <id> "<new body>"/)
+    assert.match(prompt, /--discord-chat-id "123456789"/)
+    assert.match(prompt, /--discord-message-id "987654321"/)
+    assert.match(prompt, /Never import .*store.*history.*directly/i)
   })
 })
 

@@ -12,11 +12,11 @@ import {
 } from '../src/tool-trace.ts'
 import { agyToolDisplayName } from '../src/agy-chat.ts'
 
-test('tool calls fit 76 columns and output payloads fit 73 columns', () => {
-  assert.equal(TRACE_ROW_MAX, 76)
-  assert.equal(TRACE_RESULT_PAYLOAD_MAX, 73)
+test('tool calls fit 86 columns and output payloads fit 83 columns', () => {
+  assert.equal(TRACE_ROW_MAX, 86)
+  assert.equal(TRACE_RESULT_PAYLOAD_MAX, 83)
   assert.equal(`+ ● shell(${'x'.repeat(TRACE_ROW_MAX - 11)})`.length, TRACE_ROW_MAX)
-  assert.equal(`  ⎿ ${'x'.repeat(TRACE_RESULT_PAYLOAD_MAX)}`.length, 77)
+  assert.equal(`  ⎿ ${'x'.repeat(TRACE_RESULT_PAYLOAD_MAX)}`.length, 87)
 })
 
 test('truncated tool arguments end cleanly without an ellipsis', () => {

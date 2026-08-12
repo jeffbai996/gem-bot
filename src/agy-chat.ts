@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { readdirSync, statSync, readFileSync } from 'node:fs'
+import { readdirSync, statSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import type { GeminiContent } from './history.ts'
@@ -108,6 +108,10 @@ const VECGREP_BIN = process.env.GEMMA_VECGREP_BIN || '/home/jbai/.local/bin/vecg
 // reachable without leaning on the sandbox auto-escalation. Derived from the
 // bin path so a GEMMA_SQUAD_STORE_BIN override moves the granted dir with it.
 const SQUAD_STORE_DIR = SQUAD_STORE_BIN.replace(/\/[^/]+$/, '')
+const SQUAD_STORE_TARGET_DIR = (() => {
+  try { return dirname(realpathSync(SQUAD_STORE_BIN)) }
+  catch { return SQUAD_STORE_DIR }
+})()
 
 export interface AgyChatInput {
   // The same fully-assembled system prompt gemma.ts hands gemini.respond()
@@ -123,6 +127,7 @@ export interface AgyChatInput {
   // directory via --add-dir, then reads the media with view_file.
   mediaFiles?: LocalAttachment[]
   channelId?: string
+  messageId?: string
   onEvent?: (event: LifecycleEvent) => void
   // Abort signal from /gemini stop (via gemma.ts's stopController). When it
   // fires we SIGKILL the agy process group so a user stop actually kills an
@@ -234,6 +239,19 @@ export function buildAgyPrompt(input: AgyChatInput): string {
       ].join('\n')
     : ''
 
+  const memoryMutationContext = input.channelId && input.messageId
+    ? [
+        '--- Squad-store mutations — mandatory Discord card path ---',
+        'For every memory, journal, todo, or file mutation, invoke the squad-store CLI itself. ' +
+          'Never import `store`, `history`, or other squad-store Python internals directly, never call ' +
+          '`edit_memory_with_history`, and never mutate through raw HTTP: those bypass the visible Discord undo card.',
+        `For a memory edit, use exactly: ${SQUAD_STORE_BIN} memory edit <id> "<new body>" ` +
+          `--discord-chat-id "${input.channelId}" --discord-message-id "${input.messageId}"`,
+        'Use those same two Discord flags on every other mutating squad-store subcommand. ' +
+          'A mutation is not complete unless the CLI reports success and posts its card.',
+      ].join('\n')
+    : '--- Squad-store mutations unavailable ---\nDo not mutate squad-store without current Discord channel and message IDs.'
+
   return [
     sysNoJson,
     '',
@@ -254,6 +272,7 @@ export function buildAgyPrompt(input: AgyChatInput): string {
       `preference, a project, prior context). Skip it for general knowledge, code, or casual ` +
       `chat — don't slow those down. The squad memory store is sensitive: only surface ` +
       `portfolio/account specifics where Jeff already is.`,
+    memoryMutationContext,
     '--- vecgrep (semantic search) ---',
     // vecgrep is now wired as an MCP tool on agy (mcp_config.json, 2026-06-29),
     // so the MCP `search` tool is the primary path. The CLI still works as a
@@ -280,7 +299,7 @@ export function buildAgyPrompt(input: AgyChatInput): string {
 export function buildAgyArgs(additionalDirs: string[] = [], prompt = ''): string[] {
   const watchdog = agyWatchdogPolicy()
   const printTimeout = `${Math.max(1, Math.ceil(watchdog.printTimeoutMs / 1000))}s`
-  const grantedDirs = [...new Set([SQUAD_STORE_DIR, ...additionalDirs])]
+  const grantedDirs = [...new Set([SQUAD_STORE_DIR, SQUAD_STORE_TARGET_DIR, ...additionalDirs])]
   return [
     '--sandbox',
     '--dangerously-skip-permissions',
