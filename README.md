@@ -144,7 +144,7 @@ Each channel can pick which engine answers text turns:
 - **Fail-open.** Any `agy` failure (timeout, empty output, spawn error) silently falls back to the metered API — the bot never goes dark because the flat-sub CLI hiccuped.
 - **Resolution order:** the channel's explicit `/gemini engine` pick → else the global `GEMMA_AGY_CHAT` env default (`1` = `agy`, unset/`0` = `api`).
 
-Set per channel with `/gemini engine agy|api|default` (`default` clears the per-channel pick so the env default applies). Configure via env: `GEMMA_AGY_CHAT` (global default), `GEMMA_AGY_BIN` (agy binary path, default `~/.local/bin/agy`), `GEMMA_AGY_MODEL` (exact id from `agy models`, default `gemini-3.6-flash-medium`), `GEMMA_AGY_IDLE_TIMEOUT_MS` (silent-child watchdog; active trajectory/stdout/stderr progress resets it, default 600000), `GEMMA_AGY_CHAT_TIMEOUT_MS` (hard runaway fuse, default 2700000).
+Set per channel with `/gemini engine agy|api|default` (`default` clears the per-channel pick so the env default applies). Configure via env: `GEMMA_AGY_CHAT` (global default), `GEMMA_AGY_BIN` (agy binary path, default `~/.local/bin/agy`), `GEMMA_AGY_MODEL` (exact id from `agy models`, default `gemini-3.7-flash-medium`), `GEMMA_AGY_IDLE_TIMEOUT_MS` (silent-child watchdog; active trajectory/stdout/stderr progress resets it, default 600000), `GEMMA_AGY_CHAT_TIMEOUT_MS` (hard runaway fuse, default 2700000).
 
 ### Persona & shared context
 
@@ -190,7 +190,7 @@ Manage everything from inside Discord — no terminal-side JSON edits required. 
 | `/gemini stats` | Persistent token, cache, engine, model, runtime, and uptime totals |
 | `/gemini mention on\|off [#channel]` | Flip the @-mention gate without re-running `/gemini channel` |
 | `/gemini engine agy\|api\|default [#channel]` | Per-channel chat engine. `agy` = Antigravity CLI / flat sub with trajectory trace and local media ingestion through `view_file`; `api` = metered Gemini API; `default` = clear the pick, use the `GEMMA_AGY_CHAT` env default |
-| `/gemini model api [id]` | Switch the metered Gemini API model (`GEMINI_MODEL`) and auto-restart the bot. Omit `id` to show the current one. Choices: `gemini-3.6-flash` (default), `gemini-3.1-pro-preview` |
+| `/gemini model api [id]` | Switch the metered Gemini API model (`GEMINI_MODEL`) and auto-restart the bot. Omit `id` to show the current one. Choices: `gemini-3.7-flash` (default), `gemini-3.1-pro-preview` |
 | `/gemini model agy [agy_model]` | Switch the Antigravity CLI flat-sub model (`GEMMA_AGY_MODEL`) and auto-restart the bot. Omit `agy_model` to show the current one. Independent of `/gemini model api` — each only touches its own setting |
 | `/gemini cache on\|off [#channel]` | Toggle server-side context caching |
 | `/gemini cache info` | Live cache details — size, hits, age, TTL, hash |
@@ -209,7 +209,7 @@ Runtime state lives in `~/.gemini/channels/discord/` (override via `DISCORD_STAT
 
 | File / dir | Purpose |
 |---|---|
-| `.env` | `DISCORD_BOT_TOKEN`, `GEMINI_API_KEY`, `DISCORD_ADMIN_ID`, optional `GEMINI_MODEL` (default `gemini-3.6-flash`), `MAX_HISTORY_TOKENS` (default 80000), `MAX_UNSUMMARIZED_MESSAGES`, `SUMMARIZATION_BATCH_LIMIT`, `GEMINI_EMBED_COOLDOWN_MS` (default 3000), `GEMINI_BACKFILL_DELAY_MS` (default 100). **agy engine:** `GEMMA_AGY_CHAT` (`1` = agy is the global default engine; unset/`0` = api), `GEMMA_AGY_BIN` (agy binary path, default `~/.local/bin/agy`), `GEMMA_AGY_MODEL` (exact id from `agy models`, default `gemini-3.6-flash-medium`), `GEMMA_AGY_IDLE_TIMEOUT_MS` (silent-child watchdog, default 600000), `GEMMA_AGY_CHAT_TIMEOUT_MS` (hard runaway fuse, default 2700000) |
+| `.env` | `DISCORD_BOT_TOKEN`, `GEMINI_API_KEY`, `DISCORD_ADMIN_ID`, optional `GEMINI_MODEL` (default `gemini-3.7-flash`), `MAX_HISTORY_TOKENS` (default 80000), `MAX_UNSUMMARIZED_MESSAGES`, `SUMMARIZATION_BATCH_LIMIT`, `GEMINI_EMBED_COOLDOWN_MS` (default 3000), `GEMINI_BACKFILL_DELAY_MS` (default 100). **agy engine:** `GEMMA_AGY_CHAT` (`1` = agy is the global default engine; unset/`0` = api), `GEMMA_AGY_BIN` (agy binary path, default `~/.local/bin/agy`), `GEMMA_AGY_MODEL` (exact id from `agy models`, default `gemini-3.7-flash-medium`), `GEMMA_AGY_IDLE_TIMEOUT_MS` (silent-child watchdog, default 600000), `GEMMA_AGY_CHAT_TIMEOUT_MS` (hard runaway fuse, default 2700000) |
 | `access.json` | User + channel allowlists with per-channel render flags |
 | `memory.db` | SQLite + sqlite-vss database of embedded messages |
 | `GEMINI.md` | Default system prompt; falls back to legacy `persona.md` when absent |
@@ -264,7 +264,7 @@ cat > ~/.gemini/channels/discord/.env <<EOF
 DISCORD_BOT_TOKEN=your_token_here
 GEMINI_API_KEY=your_key_here
 DISCORD_ADMIN_ID=your_personal_discord_user_id
-GEMINI_MODEL=gemini-3.6-flash
+GEMINI_MODEL=gemini-3.7-flash
 EOF
 chmod 600 ~/.gemini/channels/discord/.env
 
@@ -336,7 +336,7 @@ The bot still *consumes* MCP — it auto-discovers tools from an external MCP se
 
 ## Stack
 
-TypeScript · Node.js 22+ (`tsx`) · `discord.js` v14 · `@google/genai` (Gemini 3.6 Flash by default; override via `GEMINI_MODEL`) · `better-sqlite3` + `sqlite-vss` · `@modelcontextprotocol/sdk` · `@mozilla/readability` + `jsdom` · `yt-dlp` (system binary, optional)
+TypeScript · Node.js 22+ (`tsx`) · `discord.js` v14 · `@google/genai` (Gemini 3.7 Flash by default; override via `GEMINI_MODEL`) · `better-sqlite3` + `sqlite-vss` · `@modelcontextprotocol/sdk` · `@mozilla/readability` + `jsdom` · `yt-dlp` (system binary, optional)
 
 ---
 

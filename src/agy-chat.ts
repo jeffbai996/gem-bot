@@ -70,7 +70,7 @@ export const agySpawnEnv = (extra: Record<string, string> = {}): NodeJS.ProcessE
 // capture happened before dotenv.config() under ESM, which meant `/gemini model
 // agy` rewrote the right file but the restarted process quietly kept the code
 // default. `agy models` now exposes exact slug ids such as
-// `gemini-3.6-flash-medium`; pass those through verbatim.
+// `gemini-3.7-flash-medium`; pass those through verbatim.
 const agyModel = (): string => process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL
 
 // Watchdog policy, not a guessed "turn should be done by now" timer.

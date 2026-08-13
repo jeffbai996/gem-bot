@@ -41,10 +41,10 @@ describe('GeminiCacheManager', () => {
     assert.equal(client._created.length, 0)
   })
 
-  test('supports Gemini 3.6 Flash caching at the Flash threshold', async () => {
+  test('supports Gemini 3.7 Flash caching at the Flash threshold', async () => {
     const mgr = new GeminiCacheManager()
     const client = makeFakeClient({ name: 'cachedContents/flash36' })
-    const out = await mgr.getOrCreate(client, 'gemini-3.6-flash', 'x'.repeat(5000), [], {})
+    const out = await mgr.getOrCreate(client, 'gemini-3.7-flash', 'x'.repeat(5000), [], {})
     assert.equal(out, 'cachedContents/flash36')
   })
 
