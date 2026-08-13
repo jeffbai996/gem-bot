@@ -1,7 +1,7 @@
 import { Type } from '@google/genai'
 import type { Tool } from './registry.ts'
 
-// Squad-store HTTP API on the local bind. The /squad/... prefixed path 404s
+// Shared-memory HTTP API on the local bind. The /squad/... prefixed path 404s
 // locally; the bare /api/files route is the one that answers on 127.0.0.1.
 const SQUAD_STORE_URL = process.env.SQUAD_STORE_URL || 'http://127.0.0.1:5005'
 const REQUEST_TIMEOUT_MS = 8_000

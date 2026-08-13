@@ -1,7 +1,7 @@
 import { Type } from '@google/genai'
 import type { Tool } from './registry.ts'
 
-// Squad-store HTTP API on the local bind. Use /api/recall (semantic vecgrep) —
+// Shared-memory HTTP API on the local bind. Use /api/recall (semantic vecgrep) —
 // it resolves natural-language queries like "who is Paul" to the right curated
 // memory. The old /api/search?mode=literal substring path missed those: a
 // literal "who is Paul" matched nothing → the model hallucinated a wrong Paul.
@@ -53,11 +53,11 @@ async function getMemoryById(id: number): Promise<string> {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; gemma-bot/1.0)' },
     })
     if (res.status === 404) return `No squad memory with id ${id}.`
-    if (!res.ok) return `shared-memory read failed: HTTP ${res.status} ${res.statusText}`
+    if (!res.ok) return `shared memory read failed: HTTP ${res.status} ${res.statusText}`
     data = await res.json()
   } catch (e: any) {
-    if (e?.name === 'AbortError') return 'shared-memory read timed out.'
-    return `shared-memory read error: ${e?.message ?? String(e)}`
+    if (e?.name === 'AbortError') return 'shared memory read timed out.'
+    return `shared memory read error: ${e?.message ?? String(e)}`
   } finally {
     clearTimeout(timer)
   }
@@ -84,17 +84,17 @@ async function recentSquadStore(): Promise<string> {
       signal: controller.signal,
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; gemma-bot/1.0)' },
     })
-    if (!res.ok) return `shared-memory recent failed: HTTP ${res.status} ${res.statusText}`
+    if (!res.ok) return `shared memory recent failed: HTTP ${res.status} ${res.statusText}`
     data = await res.json()
   } catch (e: any) {
-    if (e?.name === 'AbortError') return 'shared-memory recent timed out.'
-    return `shared-memory recent error: ${e?.message ?? String(e)}`
+    if (e?.name === 'AbortError') return 'shared memory recent timed out.'
+    return `shared memory recent error: ${e?.message ?? String(e)}`
   } finally {
     clearTimeout(timer)
   }
   const entries: SquadEntry[] = Array.isArray(data?.entries) ? data.entries : []
-  if (entries.length === 0) return 'No shared-memory memories found.'
-  return 'shared-memory: newest memories first\n\n' + renderEntries(entries)
+  if (entries.length === 0) return 'No shared memories found.'
+  return 'shared memory: newest memories first\n\n' + renderEntries(entries)
 }
 
 // Shared single-entry renderer: id/type/pin/name/tags header + (capped) body.
@@ -122,7 +122,7 @@ function renderEntries(entries: SquadEntry[]): string {
   return lines.join('\n\n')
 }
 
-// Read-only keyword search over the shared shared-memory (durable squad facts,
+// Read-only keyword search over shared memory (durable group facts,
 // projects, references, people, feedback). Returns a compact text rendering
 // the model can read directly.
 async function searchSquadStore(query: string): Promise<string> {
@@ -142,12 +142,12 @@ async function searchSquadStore(query: string): Promise<string> {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; gemma-bot/1.0)' },
     })
     if (!res.ok) {
-      return `shared-memory search failed: HTTP ${res.status} ${res.statusText}`
+      return `shared memory search failed: HTTP ${res.status} ${res.statusText}`
     }
     data = await res.json()
   } catch (e: any) {
-    if (e?.name === 'AbortError') return 'shared-memory search timed out.'
-    return `shared-memory search error: ${e?.message ?? String(e)}`
+    if (e?.name === 'AbortError') return 'shared memory search timed out.'
+    return `shared memory search error: ${e?.message ?? String(e)}`
   } finally {
     clearTimeout(timer)
   }
@@ -163,7 +163,7 @@ async function searchSquadStore(query: string): Promise<string> {
   const body = renderEntries(entries)
   const total = typeof data?.total === 'number' ? data.total : entries.length
   const shown = body ? body.split('\n\n').filter((s) => s.startsWith('#')).length : 0
-  const header = `shared-memory: ${shown} of ${total} match(es) for "${query}"`
+  const header = `shared memory: ${shown} of ${total} match(es) for "${query}"`
   return header + '\n\n' + body
 }
 
@@ -172,7 +172,7 @@ export const searchSquadMemoryTool: Tool = {
   declaration: {
     name: 'search_squad_memory',
     description:
-      "Search the shared SQUAD-STORE memory (durable squad facts, projects, references, people, and feedback notes). This is the operator-curated knowledge base, distinct from this channel's chat history (use search_memory for that). Read-only. Three modes: (1) pass `query` for a semantic search by topic — use for \"who is X\", \"what's the plan for Y\"; (2) pass `recent: true` for the NEWEST memories first — use for \"latest/newest/most recent project\", \"what are we working on now\" (semantic search can't answer recency, so you MUST use recent for those); (3) pass `id` to read one specific memory by its number (e.g. \"read memory 198\"). If a semantic search returns nothing useful, do not keep rewording — answer from what you know or say you don't have it.",
+      "Search shared memory (durable group facts, projects, references, people, and feedback notes). This is an operator-curated knowledge base, distinct from this channel's chat history (use search_memory for that). Read-only. Three modes: (1) pass `query` for a semantic search by topic — use for \"who is X\", \"what's the plan for Y\"; (2) pass `recent: true` for the newest memories first — use for \"latest/newest/most recent project\", \"what are we working on now\" (semantic search can't answer recency, so you must use recent for those); (3) pass `id` to read one specific memory by its number (e.g. \"read memory 198\"). If a semantic search returns nothing useful, do not keep rewording — answer from what you know or say you don't have it.",
     parameters: {
       type: Type.OBJECT,
       properties: {

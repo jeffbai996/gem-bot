@@ -27,11 +27,11 @@ class AgyChatError extends Error {
   }
 }
 
-// The agy binary running under Jeff's flat Google subscription (OAuth token at
-// ~/.gemini/antigravity-cli/...). Single-shot `-p` mode returns PLAIN TEXT —
+// The agy binary running under a local Google subscription. Single-shot `-p`
+// mode returns PLAIN TEXT —
 // no JSON, no event stream, no usage. So this engine is much simpler than the
 // codex one: build prompt → run → return the text.
-const AGY_BIN = process.env.GEMMA_AGY_BIN || '/home/user/.local/bin/agy'
+const AGY_BIN = process.env.GEMMA_AGY_BIN || join(homedir(), '.local', 'bin', 'agy')
 
 // agy inherits gemma's env so it can find SQUAD_STORE_URL, GEMMA_AGY_* etc.
 // But dotenv loads DISCORD_BOT_TOKEN and GEMINI_API_KEY into process.env at
@@ -70,7 +70,7 @@ export const agySpawnEnv = (extra: Record<string, string> = {}): NodeJS.ProcessE
 // capture happened before dotenv.config() under ESM, which meant `/gemini model
 // agy` rewrote the right file but the restarted process quietly kept the code
 // default. `agy models` now exposes exact slug ids such as
-// `gemini-3.6-flash-medium`; pass those through verbatim.
+// `gemini-3.7-flash-medium`; pass those through verbatim.
 const agyModel = (): string => process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL
 
 // Watchdog policy, not a guessed "turn should be done by now" timer.
@@ -88,27 +88,15 @@ export function agyWatchdogPolicy(): { idleTimeoutMs: number; hardTimeoutMs: num
   }
 }
 
-// Squad-memory on the agy path: like codex-chat.ts, we don't wire an MCP
-// server — agy can run the shared-memory CLI directly through its own agentic
-// shell (verified: `agy --sandbox -p` self-bypasses the sandbox to reach a
-// binary OUTSIDE the workspace, and the CLI POSTs/GETs the local Flask store
-// over loopback). The model decides when to recall, exactly like a tool call.
-// We pass the bin DIR via --add-dir so we don't RELY on that sandbox self-
-// bypass, and we set SQUAD_STORE_URL in the spawn env so the CLI knows where
-// the Flask store is (codex-chat.ts does the same).
-const SQUAD_STORE_BIN = process.env.GEMMA_SQUAD_STORE_BIN || '/home/user/.local/bin/shared-memory'
+// Shared-memory access is deliberately opt-in. A public clone must not assume
+// the name or location of a private local service.
+const SQUAD_STORE_BIN = process.env.GEMMA_SHARED_MEMORY_BIN || process.env.GEMMA_SQUAD_STORE_BIN || ''
 const SQUAD_STORE_URL = process.env.SQUAD_STORE_URL || 'http://127.0.0.1:5005'
-// vecgrep CLI (semantic code/doc search). Lives in the same bin dir as
-// shared-memory, so the --add-dir grant below already covers it — agy reaches it
-// by shelling out, NOT via MCP (agy has no MCP servers wired). Gemma wrongly
-// believed vecgrep was unreachable because she was looking for an MCP tool;
-// the CLI is the path on this engine.
-const VECGREP_BIN = process.env.GEMMA_VECGREP_BIN || '/home/user/.local/bin/vecgrep'
-// The directory --add-dir grants agy so shared-memory (and any sibling CLI) is
-// reachable without leaning on the sandbox auto-escalation. Derived from the
-// bin path so a GEMMA_SQUAD_STORE_BIN override moves the granted dir with it.
-const SQUAD_STORE_DIR = SQUAD_STORE_BIN.replace(/\/[^/]+$/, '')
+const VECGREP_BIN = process.env.GEMMA_VECGREP_BIN || join(homedir(), '.local', 'bin', 'vecgrep')
+// Derive the optional grant from the configured command path.
+const SQUAD_STORE_DIR = SQUAD_STORE_BIN ? SQUAD_STORE_BIN.replace(/\/[^/]+$/, '') : null
 const SQUAD_STORE_TARGET_DIR = (() => {
+  if (!SQUAD_STORE_BIN) return null
   try { return dirname(realpathSync(SQUAD_STORE_BIN)) }
   catch { return SQUAD_STORE_DIR }
 })()
@@ -239,13 +227,13 @@ export function buildAgyPrompt(input: AgyChatInput): string {
       ].join('\n')
     : ''
 
-  const memoryMutationContext = input.channelId && input.messageId
+  const memoryMutationContext = SQUAD_STORE_BIN && input.channelId && input.messageId
     ? [
-        '--- Squad-store mutations — mandatory Discord card path ---',
-        'For every memory, journal, todo, or file mutation, invoke the shared-memory CLI itself. ' +
-          'Never import `store`, `history`, or other shared-memory Python internals directly, never call ' +
+        '--- Shared-memory mutations — mandatory Discord card path ---',
+        'For every memory, journal, todo, or file mutation, invoke the configured shared-memory CLI itself. ' +
+          'Never import `store`, `history`, or other service Python internals directly, never call ' +
           '`edit_memory_with_history`, and never mutate through raw HTTP: those bypass the visible Discord undo card.',
-        'Squad-store JSON files are databases, not normal files. NEVER use `write_to_file`, `replace_file_content`, ' +
+        'Shared-memory JSON files are databases, not normal files. NEVER use `write_to_file`, `replace_file_content`, ' +
           'shell redirection, or any file-edit tool on `memories.json`, `journal.json`, `todos.json`, `ephemeral.json`, ' +
           'the files manifest, or anything under the store data directory. This overrides the general file-edit rule above.',
         `For a memory edit, use exactly: ${SQUAD_STORE_BIN} memory edit <id> "<new body>" ` +
@@ -253,7 +241,7 @@ export function buildAgyPrompt(input: AgyChatInput): string {
         'Use those same two Discord flags on every other mutating shared-memory subcommand. ' +
           'A mutation is not complete unless the CLI reports success and posts its card.',
       ].join('\n')
-    : '--- Squad-store mutations unavailable ---\nDo not mutate shared-memory without current Discord channel and message IDs.'
+    : '--- Shared-memory mutations unavailable ---\nDo not mutate shared memory without a configured command and current Discord channel and message IDs.'
 
   return [
     sysNoJson,
@@ -264,17 +252,10 @@ export function buildAgyPrompt(input: AgyChatInput): string {
     '',
     '--- You are chatting in a Discord conversation. Recent history (oldest first): ---',
     transcript || '(no prior messages)',
-    '--- Squad memory (use when relevant) ---',
-    // Mirror codex-chat.ts: agy can shell out, so hand it the shared-memory CLI
-    // directly instead of an MCP server. The model runs it ITSELF when the turn
-    // turns on squad-specific knowledge, then weaves the result into the reply.
-    `You can search the squad's shared long-term memory — durable facts about Jeff, his ` +
-      `family, his portfolio/projects, preferences, and past decisions — by running this shell ` +
-      `command:\n  ${SQUAD_STORE_BIN} recall "<search query>"\nRun it BEFORE replying whenever ` +
-      `the message turns on squad-specific knowledge you don't already have (a person, a ` +
-      `preference, a project, prior context). Skip it for general knowledge, code, or casual ` +
-      `chat — don't slow those down. The squad memory store is sensitive: only surface ` +
-      `portfolio/account specifics where Jeff already is.`,
+    ...(SQUAD_STORE_BIN ? [
+      '--- Shared memory (use when configured) ---',
+      `You can search configured shared long-term memory by running:\n  ${SQUAD_STORE_BIN} recall "<search query>"\nRun it before replying only when the message turns on stored facts, preferences, projects, or prior context. Skip it for general knowledge, code, or casual chat.`,
+    ] : []),
     memoryMutationContext,
     '--- vecgrep (semantic search) ---',
     // vecgrep is now wired as an MCP tool on agy (mcp_config.json, 2026-06-29),
@@ -302,7 +283,10 @@ export function buildAgyPrompt(input: AgyChatInput): string {
 export function buildAgyArgs(additionalDirs: string[] = [], prompt = ''): string[] {
   const watchdog = agyWatchdogPolicy()
   const printTimeout = `${Math.max(1, Math.ceil(watchdog.printTimeoutMs / 1000))}s`
-  const grantedDirs = [...new Set([SQUAD_STORE_DIR, SQUAD_STORE_TARGET_DIR, ...additionalDirs])]
+  const grantedDirs = [...new Set(
+    [SQUAD_STORE_DIR, SQUAD_STORE_TARGET_DIR, ...additionalDirs]
+      .filter((dir): dir is string => Boolean(dir)),
+  )]
   return [
     '--sandbox',
     '--dangerously-skip-permissions',
@@ -362,7 +346,7 @@ function runAgy(
   // within that already-sandboxed scope; without it agy blocks in -p mode
   // waiting for human confirmation that never comes (toolPermission=request-review
   // is the default, and -p has no human to respond). --add-dir grants the
-  // shared-memory bin dir so agy can run the recall CLI.
+  // configured shared-memory bin dir so agy can run the recall CLI.
   const watchdog = agyWatchdogPolicy()
   const args = buildAgyArgs(additionalDirs, prompt)
 
@@ -371,7 +355,7 @@ function runAgy(
     try {
       child = spawn(AGY_BIN, args, {
         detached: true, // own process group so the backstop can SIGKILL the whole tree
-        // SQUAD_STORE_URL tells the shared-memory CLI where the loopback Flask
+        // SQUAD_STORE_URL tells the configured CLI where the loopback service
         // store lives, so agy's recall hits it directly (mirrors codex-chat.ts).
         env: agySpawnEnv({ SQUAD_STORE_URL }),
         stdio: ['ignore', 'pipe', 'pipe'],

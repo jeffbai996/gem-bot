@@ -106,7 +106,7 @@ describe('PersonaLoader', () => {
   // Tests for the legacy markdown shared-memories path
   // (~/agents/shared/squad-context/memories/) and the markdown
   // channel-summary path (~/agents/shared/squad-context/summaries/)
-  // were removed in 2026-05-01 — both dirs were nuked in the shared-memory
+    // were removed in 2026-05-01 — both dirs were removed in the shared-memory
   // rebuild on 2026-04-26 and the corresponding readers in persona.ts went
   // with them. The live channel summary now flows through SummaryStore
   // (see summarization/store.ts and the SummarizationScheduler).
