@@ -53,5 +53,27 @@ export async function buildDefaultRegistry(): Promise<ToolRegistry> {
     console.error(`[vecgrep] MCP connect failed at ${vecgrepUrl}: ${e?.message ?? e}. Skipping.`)
   }
 
+  // Context7: up-to-date library and framework docs. Hosted, keyless, and
+  // read-only by nature — it resolves a library name and returns
+  // documentation. Worth having because her own training cut-off is the
+  // thing she is most often wrong about, and a docs lookup is the cheapest
+  // possible fix for that.
+  //
+  // Text it returns lands in her context like any fetched page, so it goes
+  // through the same load-time filter as vecgrep rather than being trusted
+  // for being an official server.
+  const context7Url = process.env.CONTEXT7_MCP_URL || 'https://mcp.context7.com/mcp'
+  try {
+    const c7 = await connectMcpClient(context7Url)
+    const c7Tools = await loadMcpTools(c7, { skip: isMutatingTool })
+    for (const t of c7Tools) r.register(t)
+    r.setMcpClient(c7)
+    console.error(`[context7] registered ${c7Tools.length} tools from ${context7Url}`)
+  } catch (e: any) {
+    // Off-box and therefore the one MCP that can be down for reasons nothing
+    // here controls. Losing docs lookup must never stop her booting.
+    console.error(`[context7] MCP connect failed at ${context7Url}: ${e?.message ?? e}. Skipping.`)
+  }
+
   return r
 }
