@@ -5,6 +5,7 @@ import { readSquadFileTool } from './read-squad-file.ts'
 import { fetchUrlTool } from './fetch-url.ts'
 import { connectMcpClient } from './mcp-client.ts'
 import { loadIbkrTools } from './ibkr-tools.ts'
+import { loadMcpTools, isMutatingTool } from './mcp-tools.ts'
 import { ibkrUnreachableStub } from './ibkr-unreachable-stub.ts'
 
 export { ToolRegistry } from './registry.ts'
@@ -32,6 +33,24 @@ export async function buildDefaultRegistry(): Promise<ToolRegistry> {
   } catch (e: any) {
     console.error(`[ibkr] MCP connect failed at ${ibkrUrl}: ${e?.message ?? e}. Registering fallback stub.`)
     r.register(ibkrUnreachableStub)
+  }
+
+  // vecgrep MCP: semantic search over the squad's chat history, repos and
+  // store. READ-ONLY — Gemma has fetch_url, so any page she reads is an
+  // injection surface, and a write/propose_* tool would let fetched text
+  // mutate the corpus. Filtering at LOAD rather than dispatch means the
+  // writers are never registered, so there is nothing for an injected call
+  // to reach.
+  const vecgrepUrl = process.env.VECGREP_MCP_URL || 'http://127.0.0.1:8765/mcp'
+  try {
+    const vg = await connectMcpClient(vecgrepUrl)
+    const vgTools = await loadMcpTools(vg, { skip: isMutatingTool })
+    for (const t of vgTools) r.register(t)
+    r.setMcpClient(vg)
+    console.error(`[vecgrep] registered ${vgTools.length} read-only tools from ${vecgrepUrl}`)
+  } catch (e: any) {
+    // No stub: vecgrep being down costs her search, not her ability to run.
+    console.error(`[vecgrep] MCP connect failed at ${vecgrepUrl}: ${e?.message ?? e}. Skipping.`)
   }
 
   return r
