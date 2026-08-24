@@ -5,6 +5,7 @@ import { readSquadFileTool } from './read-squad-file.ts'
 import { fetchUrlTool } from './fetch-url.ts'
 import { connectMcpClient } from './mcp-client.ts'
 import { listSquadTodosTool } from './list-squad-todos.ts'
+import { squadWriteTools } from './write-shared-memory.ts'
 import { loadIbkrTools } from './ibkr-tools.ts'
 import { loadMcpTools, isMutatingTool } from './mcp-tools.ts'
 import { ibkrUnreachableStub } from './ibkr-unreachable-stub.ts'
@@ -18,6 +19,11 @@ export async function buildDefaultRegistry(): Promise<ToolRegistry> {
   r.register(searchSquadMemoryTool)
   r.register(readSquadFileTool)
   r.register(listSquadTodosTool)
+  // Her only tools that leave a mark. Every one of them posts a card: asked-for
+  // writes to her home channel, self-initiated ones badged auto in the alerts
+  // room. She has fetch_url, so a write she was talked into is possible - the
+  // card is what makes it visible and revertible rather than silent.
+  for (const t of squadWriteTools) r.register(t)
   r.register(fetchUrlTool)
 
   // ibkr-mcp (server_http.py) listens on :8001, not :8000. The old 8000
