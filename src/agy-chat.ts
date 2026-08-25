@@ -906,8 +906,9 @@ export function parseAgyTrajectoryText(raw: string): AgyTrajParse {
 // real Discord turn doesn't hit the cold-start auth race (exit code 1).
 export function warmAgy(): void {
   if (process.env.GEMMA_AGY_CHAT !== '1') return
+  const grantedDirArgs = SQUAD_STORE_DIR ? ['--add-dir', SQUAD_STORE_DIR] : []
   const child = spawn(AGY_BIN, [
-    '--sandbox', '--add-dir', SQUAD_STORE_DIR,
+    '--sandbox', ...grantedDirArgs,
     '--model', agyModel(),
     '--print-timeout', '20s',
     '-p', 'Reply with just the word READY and nothing else. Do not use any tools.',
@@ -917,7 +918,7 @@ export function warmAgy(): void {
   })
   let errOut = ''
   child.stderr?.on('data', (d: Buffer) => { errOut += d.toString() })
-  child.on('close', (code) => {
+  child.on('close', (code: number | null) => {
     if (code !== 0) console.error(`[agy] warm-up exited ${code}: ${errOut.trim().slice(0, 200) || '(no stderr)'}`)
     else console.error('[agy] warm-up ok')
   })

@@ -64,7 +64,7 @@ describe('formatTodos', () => {
 
   test('a long note is clipped so one entry cannot swallow the list', () => {
     const out = formatTodos([{ id: 'x', text: 't', note: 'y'.repeat(1000) } as any])
-    assert.ok(out.length < 400, out.length)
+    assert.ok(out.length < 400, `unexpected output length: ${out.length}`)
     assert.match(out, /…/)
   })
 })
