@@ -277,6 +277,17 @@ describe('parseResponse', () => {
 })
 
 describe('formatSystemPrompt', () => {
+  test('invalid configured timezone falls back instead of killing the reply', () => {
+    const previous = process.env.GEMINI_TIME_ZONE
+    process.env.GEMINI_TIME_ZONE = 'America/Springfield'
+    try {
+      assert.match(formatSystemPrompt('persona', 'collapse'), /current date and time/i)
+    } finally {
+      if (previous === undefined) delete process.env.GEMINI_TIME_ZONE
+      else process.env.GEMINI_TIME_ZONE = previous
+    }
+  })
+
   test('collapse mode appends only the base format instruction', () => {
     const out = formatSystemPrompt('You are a bot.', 'collapse')
     assert.match(out, /You are a bot\./)

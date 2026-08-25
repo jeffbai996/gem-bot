@@ -53,13 +53,19 @@ This channel has thinking mode forced to NEVER. Set the \`thinking\` field to nu
 
 export function formatSystemPrompt(base: string, mode: ThinkingMode): string {
   // Inject the current date/time so the model isn't blind to "now" (it was
-  // hallucinating dates / current events). Springfield tz (Jeff's), rebuilt each
-  // turn since this runs per-request.
-  const now = new Date().toLocaleString('en-CA', {
-    timeZone: 'America/Springfield', weekday: 'long', year: 'numeric',
-    month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit',
-    timeZoneName: 'short',
+  // hallucinating dates / current events). Prefer an explicit deployment
+  // setting, otherwise use the host's local zone. Invalid config falls back to
+  // UTC instead of taking the whole reply path down inside Intl.
+  const requestedTimeZone = process.env.GEMINI_TIME_ZONE
+    || Intl.DateTimeFormat().resolvedOptions().timeZone
+    || 'UTC'
+  const formatNow = (timeZone: string) => new Date().toLocaleString('en-CA', {
+    timeZone, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
   })
+  let now: string
+  try { now = formatNow(requestedTimeZone) }
+  catch { now = formatNow('UTC') }
   let out = base + `\n\nThe current date and time is ${now}. Treat this as "now" — do not guess the date.` + '\n\n' + RESPONSE_FORMAT_BASE
   // Unified modes: on→force thinking, off→suppress, live/collapse are
   // render-layer behaviors and therefore add no prompt override.
