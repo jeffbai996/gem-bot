@@ -10,6 +10,13 @@ export interface SchedulerDeps {
   batchLimit?: number
 }
 
+export type CompactionOutcome = 'completed' | 'failed'
+
+export interface CompactionObserver {
+  onStart?: () => void | Promise<void>
+  onFinish?: (outcome: CompactionOutcome) => void | Promise<void>
+}
+
 // Single-flight per channel: scheduleIfNeeded() is idempotent within an
 // in-flight run, and fire-and-forget from the caller's perspective. Errors
 // are logged, never thrown back to the caller (the reply path).
@@ -17,9 +24,9 @@ export class SummarizationScheduler {
   private inFlight = new Map<string, Promise<void>>()
   constructor(private deps: SchedulerDeps) {}
 
-  scheduleIfNeeded(channelId: string): void {
+  scheduleIfNeeded(channelId: string, observer?: CompactionObserver): void {
     if (this.inFlight.has(channelId)) return
-    const p = this.runIfThresholdMet(channelId)
+    const p = this.runIfThresholdMet(channelId, observer)
       .catch(e => console.error(`[summarization] failed for ${channelId}:`, e))
       .finally(() => this.inFlight.delete(channelId))
     this.inFlight.set(channelId, p)
@@ -40,19 +47,38 @@ export class SummarizationScheduler {
     return p
   }
 
-  private async runIfThresholdMet(channelId: string): Promise<void> {
+  private async runIfThresholdMet(
+    channelId: string,
+    observer?: CompactionObserver,
+  ): Promise<void> {
     const existing = this.deps.store.get(channelId)
     const since = existing?.lastSummarizedMessageId ?? null
     const limit = this.deps.batchLimit ?? 500
     const messages = await this.deps.fetchSinceForSummarization(channelId, since, limit)
     if (messages.length < this.deps.threshold) return
-    const { summary, lastMessageId } = await runSummarization(
-      existing?.summary ?? null,
-      messages,
-      this.deps.gemini
-    )
-    this.deps.store.upsert(channelId, summary, lastMessageId)
-    console.error(`[summarization] updated channel ${channelId}; summarized ${messages.length} new messages`)
+    await this.notify(observer?.onStart)
+    try {
+      const { summary, lastMessageId } = await runSummarization(
+        existing?.summary ?? null,
+        messages,
+        this.deps.gemini
+      )
+      this.deps.store.upsert(channelId, summary, lastMessageId)
+      console.error(`[summarization] updated channel ${channelId}; summarized ${messages.length} new messages`)
+      await this.notify(observer?.onFinish, 'completed')
+    } catch (error) {
+      await this.notify(observer?.onFinish, 'failed')
+      throw error
+    }
+  }
+
+  private async notify<T>(callback: ((value: T) => void | Promise<void>) | undefined, value?: T): Promise<void> {
+    if (!callback) return
+    try {
+      await callback(value as T)
+    } catch (error) {
+      console.error('[summarization] lifecycle observer failed:', error)
+    }
   }
 
   private async runForce(channelId: string): Promise<{ messageCount: number } | null> {

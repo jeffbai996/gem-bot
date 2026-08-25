@@ -53,6 +53,64 @@ describe('SummarizationScheduler', () => {
     assert.equal(got.lastSummarizedMessageId, 'M50')
   })
 
+  test('automatic compaction reports start and completion only after the threshold is met', async () => {
+    const store = new FakeStore()
+    const events: string[] = []
+    const s = new SummarizationScheduler({
+      store: store as any,
+      fetchSinceForSummarization: async () => makeMessages(['M1']),
+      gemini: gemini('summary text'),
+      threshold: 1
+    })
+
+    s.scheduleIfNeeded('C1', {
+      onStart: () => { events.push('start') },
+      onFinish: outcome => { events.push(outcome) },
+    })
+    await settle(s, 'C1')
+
+    assert.deepEqual(events, ['start', 'completed'])
+  })
+
+  test('below-threshold checks do not show a compaction lifecycle', async () => {
+    const store = new FakeStore()
+    const events: string[] = []
+    const s = new SummarizationScheduler({
+      store: store as any,
+      fetchSinceForSummarization: async () => makeMessages(['M1']),
+      gemini: gemini('summary text'),
+      threshold: 2
+    })
+
+    s.scheduleIfNeeded('C1', {
+      onStart: () => { events.push('start') },
+      onFinish: outcome => { events.push(outcome) },
+    })
+    await settle(s, 'C1')
+
+    assert.deepEqual(events, [])
+  })
+
+  test('failed automatic compaction reports failure so transient UI can clean up', async () => {
+    const store = new FakeStore()
+    const events: string[] = []
+    const s = new SummarizationScheduler({
+      store: store as any,
+      fetchSinceForSummarization: async () => makeMessages(['M1']),
+      gemini: { completeText: async () => { throw new Error('provider down') } } as any,
+      threshold: 1
+    })
+
+    s.scheduleIfNeeded('C1', {
+      onStart: () => { events.push('start') },
+      onFinish: outcome => { events.push(outcome) },
+    })
+    await settle(s, 'C1')
+
+    assert.deepEqual(events, ['start', 'failed'])
+    assert.equal(store.get('C1'), null)
+  })
+
   test('concurrent calls dedupe per channel', async () => {
     let runs = 0
     const store = new FakeStore()

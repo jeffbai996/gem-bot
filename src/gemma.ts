@@ -44,6 +44,7 @@ import { PinnedFactsStore } from './pinned-facts.ts'
 import { handleReaction } from './reactions/handler.ts'
 import { SummaryStore } from './summarization/store.ts'
 import { SummarizationScheduler } from './summarization/scheduler.ts'
+import { createCompactionObserver } from './compaction-ui.ts'
 import { fetchMessagesSince, recordInFlightTurn, clearInFlightTurn, getAllInFlightTurns } from './db.ts'
 import { DeferredActions } from './deferred-actions.ts'
 import { LiveProgressBuffer, resolveLiveUpdateInterval } from './live-update.ts'
@@ -1401,7 +1402,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       await Promise.all([attachmentResult.cleanup(), ytResult.cleanup()])
       // Still kick the summarizer — silent turns don't change the summary
       // schedule.
-      summarizer.scheduleIfNeeded(message.channelId)
+      summarizer.scheduleIfNeeded(
+        message.channelId,
+        createCompactionObserver(content => sendReply(message, content)),
+      )
       return
     }
 
@@ -1705,7 +1709,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // Fire-and-forget: kick off conversation summarization if the channel
     // has accumulated enough new messages. Single-flight per channel inside
     // the scheduler — safe to call on every reply.
-    summarizer.scheduleIfNeeded(message.channelId)
+    summarizer.scheduleIfNeeded(
+      message.channelId,
+      createCompactionObserver(content => sendReply(message, content)),
+    )
 
   } catch (e: any) {
     // Barge-in: this turn was deliberately aborted because a newer /voice speak
