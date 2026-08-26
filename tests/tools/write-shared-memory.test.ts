@@ -1,8 +1,8 @@
-import { describe, it } from 'node:test'
+import { describe, it, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   cardFields, clampText, postWrite, describe as say,
-  squadWriteTools, saveSquadMemoryTool, addSquadScratchTool,
+  squadWriteTools, saveSquadMemoryTool, addSquadScratchTool, storeToken
 } from '../../src/tools/write-shared-memory.ts'
 
 const HOME = '111111111111111111'
@@ -124,3 +124,67 @@ describe('registration', () => {
     assert.ok(!body.discord_chat_id)
   })
 })
+
+// ── authorization ────────────────────────────────────────────────────────
+// Every unsafe store route requires X-Squad-Token. Gemma sent X-Squad-Bot and
+// not the token, so every write she made between 2026-08-24 and 2026-08-25 was
+// a 401 that reached nothing. The old tests mocked fetch, and a mocked fetch
+// cannot 401 — which is exactly why this shipped broken and looked fine.
+describe('storeToken', () => {
+  const saved = process.env.SQUAD_STORE_TOKEN
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.SQUAD_STORE_TOKEN
+    else process.env.SQUAD_STORE_TOKEN = saved
+  })
+
+  it('reads the credential from the environment', () => {
+    process.env.SQUAD_STORE_TOKEN = 'from-env'
+    assert.equal(storeToken(), 'from-env')
+  })
+
+  it('trims whitespace, which a unit file will supply', () => {
+    process.env.SQUAD_STORE_TOKEN = '  padded  '
+    assert.equal(storeToken(), 'padded')
+  })
+
+  it('is empty when unset, rather than throwing', () => {
+    delete process.env.SQUAD_STORE_TOKEN
+    assert.equal(storeToken(), '')
+  })
+
+})
+
+describe('postWrite authorization header', () => {
+  const saved = process.env.SQUAD_STORE_TOKEN
+  afterEach(() => {
+    if (saved === undefined) delete process.env.SQUAD_STORE_TOKEN
+    else process.env.SQUAD_STORE_TOKEN = saved
+  })
+
+  it('sends X-Squad-Token so the write is not refused', async () => {
+    process.env.SQUAD_STORE_TOKEN = 'tok'
+    let seen: any = null
+    const fake = async (_u: string, init: any) => {
+      seen = init.headers
+      return { ok: true, status: 201, json: async () => ({ ok: true }) } as any
+    }
+    await postWrite('/api/todo', { text: 't' }, false, fake as any)
+    assert.equal(seen['X-Squad-Token'], 'tok')
+    assert.equal(seen['X-Squad-Bot'], 'gemma')
+  })
+
+  it('omits the header entirely when unset, and still sends', async () => {
+    delete process.env.SQUAD_STORE_TOKEN
+    let seen: any = null
+    const fake = async (_u: string, init: any) => {
+      seen = init.headers
+      return { ok: true, status: 201, json: async () => ({ ok: true }) } as any
+    }
+    await postWrite('/api/todo', { text: 't' }, false, fake as any)
+    assert.ok(!('X-Squad-Token' in seen))
+    // a missing credential must not swallow the call — it fails at the server
+    assert.equal(seen['X-Squad-Bot'], 'gemma')
+  })
+})
+

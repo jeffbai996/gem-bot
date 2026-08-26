@@ -29,6 +29,19 @@ const storeUrl = () => process.env.SQUAD_STORE_URL || 'http://127.0.0.1:5005'
 /** Where human-directed cards land. Empty means "no home configured". */
 const homeChannelId = () => process.env.GEMMA_CARD_CHANNEL_ID || ''
 const botToken = () => process.env.DISCORD_BOT_TOKEN || ''
+
+/**
+ * The store's write credential. Every unsafe route requires it; without it a
+ * write is 401 and nothing reaches the store — which is what happened to every
+ * write Gemma attempted between 2026-08-24 and 2026-08-25. Reads are public, so
+ * the tools looked healthy from outside.
+ *
+ * Supplied by the unit, not hunted for on disk: a service should be handed its
+ * credentials by its supervisor. Empty is a valid state — the write still goes
+ * out and fails loudly rather than being swallowed here.
+ */
+export const storeToken = () => (process.env.SQUAD_STORE_TOKEN || '').trim()
+
 const REQUEST_TIMEOUT_MS = 8_000
 const ACTOR = 'gemma'
 // A store write is a sentence, not an essay. Long enough for a real note,
@@ -85,6 +98,9 @@ export async function postWrite(
         'Content-Type': 'application/json',
         // Identity. The store refuses a card-less anonymous write outright.
         'X-Squad-Bot': ACTOR,
+        // Authorization. Identity says WHO; this says ALLOWED. Without it every
+        // write is 401 and the tool reports a failure nobody sees.
+        ...(storeToken() ? { 'X-Squad-Token': storeToken() } : {}),
         'User-Agent': 'Mozilla/5.0 (compatible; gemma-bot/1.0)',
       },
       body: JSON.stringify(payload),
