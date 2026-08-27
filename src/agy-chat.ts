@@ -487,6 +487,11 @@ function runAgy(
       if (!text) {
         return reject(new AgyChatError(`agy produced no output (stderr: ${err.trim().slice(0, 200) || 'none'})`, Date.now() - t0))
       }
+      // A successful run used to log NOTHING. Failures carried a duration in
+      // AgyChatError; successes were silent — so the runs that actually spend
+      // the quota left no trace at all, and "what consumed it" was
+      // unanswerable after the fact (Jeff 2026-08-27, agy quota wall).
+      console.error(`[agy] run ok in ${Math.round((Date.now() - t0) / 1000)}s, ${text.length} chars`)
       resolve(text)
     })
   })

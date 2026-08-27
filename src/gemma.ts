@@ -1,3 +1,5 @@
+import { installLogTimestamps } from './log-timestamps.ts'
+installLogTimestamps()
 import { Client, GatewayIntentBits, Partials, ActivityType, REST, Routes, type Message } from 'discord.js'
 import path from 'path'
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -15,6 +17,7 @@ import { processAttachments, processYouTubeUrls, type InputAttachment } from './
 import { extractRichMedia, formatRichContext } from './discord-rich-input.ts'
 import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources, parseResponse, formatSystemPrompt, type ParsedResponse } from './gemini.ts'
 import { respondViaAgy, warmAgy } from './agy-chat.ts'
+import { describeAgyFailure } from './agy-fallback-reason.ts'
 import { composeLiveThinkingCard, composeThinkingCard } from './live-headline.ts'
 import {
   DEFAULT_AGY_MODEL,
@@ -1237,6 +1240,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // Surfaced as a footer badge below so the degrade isn't invisible (Jeff
     // 2026-06-29).
     let agyFellBack = false
+    let agyFallbackReason = ''
 
     if (isImageEditRequest(userText, allParts)) {
       const generated = await editImages(GEMINI_API_KEY, userText, allParts)
@@ -1292,6 +1296,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         // shell/read files, so this turn quietly lost those capabilities.
         console.error('[agy] chat engine failed, falling back to API:', e instanceof Error ? e.message : e)
         agyFellBack = true
+        agyFallbackReason = e instanceof Error ? e.message : String(e)
         const skippedBeforeFallback = attachmentResult.skipped.length
         await attachmentResult.prepareApiParts()
         allParts = [...attachmentResult.parts, ...ytResult.parts]
@@ -1562,7 +1567,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // the user-facing notice terse and name both engines plainly.
     if (agyFellBack) {
       finalFullReply = finalFullReply.replace(/\s+$/, '')
-      finalFullReply += `\n\n-# ⚠️ antigravity unavailable - used Gemini API to answer`
+      finalFullReply += `\n\n-# ⚠️ ${describeAgyFailure(agyFallbackReason)} - used Gemini API to answer`
     }
 
     if (meta.finishReason === 'MAX_TOKENS') {
