@@ -12,6 +12,7 @@ import type {
   RespondMetadata,
   RespondResult,
   LifecycleEvent,
+  LiveTimelineStep,
   ToolCall,
 } from './gemini.ts'
 
@@ -434,7 +435,7 @@ function runAgy(
             markActivity()
             try { onEvent({ type: 'tool_call_start', name: traj.tools[i].name }) } catch { /* ignore */ }
           }
-          const progressKey = JSON.stringify([traj.liveThinking, traj.liveProgress])
+          const progressKey = JSON.stringify([traj.liveThinking, traj.liveProgress, traj.timeline])
           if ((traj.liveThinking || traj.liveProgress) && progressKey !== lastEmittedProgress) {
             lastEmittedProgress = progressKey
             markActivity()
@@ -443,6 +444,7 @@ function runAgy(
                 type: 'agy_progress',
                 thinking: traj.liveThinking ?? '',
                 detail: traj.liveProgress ?? '',
+                timeline: traj.timeline,
               })
             } catch { /* ignore */ }
           }
@@ -539,6 +541,8 @@ interface AgyTrajParse {
   // every prior planner step.
   liveThinking: string | null
   liveProgress: string | null
+  // Ordered progress summaries and actions for a bounded rolling Discord card.
+  timeline: LiveTimelineStep[]
   // Each tool call with a best-effort duration. agy logs only second-resolution
   // `created_at` per step (no completed_at), so we derive a call's duration as
   // the gap to the NEXT step's created_at. 0 when unknown (the trace omits the
@@ -785,6 +789,7 @@ const emptyAgyTrajectory = (): AgyTrajParse => ({
   thinking: null,
   liveThinking: null,
   liveProgress: null,
+  timeline: [],
   tools: [],
   answer: null,
   writtenFiles: [],
@@ -836,6 +841,7 @@ export function parseAgyTrajectoryText(raw: string): AgyTrajParse {
   }
 
   const thinkingChunks: string[] = []
+  const timeline: LiveTimelineStep[] = []
   const tools: Array<{ name: string; durationMs: number; diff?: string }> = []
   const writtenFiles: string[] = []
   let answer: string | null = null
@@ -857,10 +863,19 @@ export function parseAgyTrajectoryText(raw: string): AgyTrajParse {
       // step-by-step (Jeff 2026-06-29: "stream what agy is tryna do under
       // Thinking…"). The final step's content is the answer, never thinking.
       if (typeof s.thinking === 'string' && s.thinking.trim()) {
+        const normalized = normalizeAgyThinkingChunk(s.thinking)
         thinkingChunks.push(s.thinking.trim())
-        liveThinking = normalizeAgyThinkingChunk(s.thinking)
+        liveThinking = normalized
+        timeline.push({
+          kind: 'thinking',
+          text: normalized,
+          ...((hasTools || !isFinal) && typeof s.content === 'string' && s.content.trim()
+            ? { detail: s.content.trim() }
+            : {}),
+        })
       } else if (!isFinal && typeof s.content === 'string' && s.content.trim()) {
         thinkingChunks.push(s.content.trim())
+        timeline.push({ kind: 'thinking', text: s.content.trim() })
       }
       // A tool-bearing current last step is still intermediate even though it
       // is temporarily the last row in a growing live transcript.
@@ -877,10 +892,17 @@ export function parseAgyTrajectoryText(raw: string): AgyTrajParse {
           const abs = (tc.args as Record<string, unknown>).AbsolutePath
           if (typeof abs === 'string' && abs.trim()) writtenFiles.push(abs.trim())
         }
+        const displayName = agyToolDisplayName(tc.name ?? '', tc.args)
         tools.push({
-          name: agyToolDisplayName(tc.name ?? '', tc.args),
+          name: displayName,
           durationMs: dur,
           ...(diff ? { diff } : {}),
+        })
+        const displayMatch = displayName.match(/^([^()]+?)(?:\((.*)\))?$/)
+        timeline.push({
+          kind: 'action',
+          text: displayMatch?.[1]?.trim() || displayName,
+          ...(displayMatch?.[2]?.trim() ? { detail: displayMatch[2].trim() } : {}),
         })
       }
     } else if (!anyPlannerTools) {
@@ -889,7 +911,9 @@ export function parseAgyTrajectoryText(raw: string): AgyTrajParse {
       // so the 🔧 trace still fires. (When planners DID carry tool_calls, these
       // are just execution echoes — suppress to avoid duplicates.)
       if (typeof s.type === 'string') {
-        tools.push({ name: agyToolDisplayName(s.type, undefined), durationMs: stepMs(i) })
+        const displayName = agyToolDisplayName(s.type, undefined)
+        tools.push({ name: displayName, durationMs: stepMs(i) })
+        timeline.push({ kind: 'action', text: displayName })
       }
     }
   }
@@ -904,7 +928,7 @@ export function parseAgyTrajectoryText(raw: string): AgyTrajParse {
   const thinking = thinkingChunks.length
     ? thinkingChunks.map(normalizeAgyThinkingChunk).join('\n\n').trim()
     : null
-  return { thinking, liveThinking, liveProgress, tools, answer, writtenFiles }
+  return { thinking, liveThinking, liveProgress, timeline, tools, answer, writtenFiles }
 }
 
 // Fire a trivial agy -p to prime the long-lived server process so the first

@@ -12,6 +12,15 @@ test('live replaces one thought while collapse accumulates and both disappear', 
   assert.match(source, /const collapsingThinking = transientThinking && replyStart > 0/)
 })
 
+test('agy live mode renders one bounded trajectory timeline and hides the duplicate tool card', async () => {
+  const source = await readFile(new URL('../src/gemma.ts', import.meta.url), 'utf8')
+
+  assert.match(source, /let liveAgyTimeline:/)
+  assert.match(source, /composeTrajectoryTimelineCard\(/)
+  assert.match(source, /e\.timeline/)
+  assert.match(source, /if \(flags\.thinking === 'live' && liveAgyTimeline\.length > 0\) return \[\]/)
+})
+
 test('live Gem edit events carry diffs into the rolling trace', async () => {
   const source = await readFile(new URL('../src/gemma.ts', import.meta.url), 'utf8')
 

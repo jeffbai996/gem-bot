@@ -108,6 +108,51 @@ describe('agyWatchdogPolicy', () => {
 })
 
 describe('parseAgyTrajectoryText live narration', () => {
+  test('exposes Operator-style planner and action steps in trajectory order', () => {
+    const rows = [
+      {
+        step_index: 2,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        thinking: '**Inspecting the renderer**\nThe Discord path is flattening the trajectory.',
+        content: 'I will inspect the live renderer.',
+        tool_calls: [{ name: 'view_file', args: { AbsolutePath: '/workspace/live.ts' } }],
+      },
+      {
+        step_index: 5,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        thinking: '**Fixing the choke point**\nThe provider events are already rich enough.',
+        content: 'I will update the bounded timeline.',
+        tool_calls: [{ name: 'write_to_file', args: { AbsolutePath: '/workspace/timeline.ts', CodeContent: 'export {}' } }],
+      },
+      {
+        step_index: 8,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        content: 'The live timeline now preserves planner and action steps.',
+        tool_calls: [],
+      },
+    ]
+
+    const parsed = parseAgyTrajectoryText(rows.map(row => JSON.stringify(row)).join('\n'))
+
+    assert.deepEqual(parsed.timeline, [
+      {
+        kind: 'thinking',
+        text: '**Inspecting the renderer**\nThe Discord path is flattening the trajectory.',
+        detail: 'I will inspect the live renderer.',
+      },
+      { kind: 'action', text: 'Read', detail: 'live.ts' },
+      {
+        kind: 'thinking',
+        text: '**Fixing the choke point**\nThe provider events are already rich enough.',
+        detail: 'I will update the bounded timeline.',
+      },
+      { kind: 'action', text: 'Write', detail: 'timeline.ts' },
+    ])
+  })
+
   test('keeps the final thought history but exposes only the latest live snapshot', () => {
     const rows = [
       {

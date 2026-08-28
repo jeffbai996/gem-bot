@@ -6,6 +6,7 @@ import {
   brainLine,
   composeLiveThinkingCard,
   composeThinkingCard,
+  composeTrajectoryTimelineCard,
   thinkingTraceLines,
 } from '../src/live-headline.js'
 
@@ -178,5 +179,52 @@ describe('composeLiveThinkingCard', () => {
       '💭 **Thought for 42s**\n> 🧠 *fixing the renderer*',
     )
     assert.doesNotMatch(out, /every instruction|implementation detail/)
+  })
+})
+
+describe('composeTrajectoryTimelineCard', () => {
+  it('renders ordered reasoning summaries and actions in one live card', () => {
+    const out = composeTrajectoryTimelineCard({
+      label: 'Working with high effort',
+      glyph: '✶',
+      dots: '…',
+      steps: [
+        {
+          kind: 'thinking',
+          text: '**Inspecting the renderer**\nThe events are already present.',
+          detail: 'I will compare the Discord and web renderers.',
+        },
+        { kind: 'action', text: 'Read', detail: 'live.ts' },
+        {
+          kind: 'thinking',
+          text: '**Fixing the choke point**\nA rolling timeline preserves useful context.',
+          detail: 'I will implement the bounded renderer.',
+        },
+      ],
+    })
+
+    assert.match(out, /^💭 ✶ \*\*Working with high effort…\*\*/)
+    assert.match(out, /3 steps/)
+    assert.match(out, /\*\*Inspecting the renderer\*\*/)
+    assert.match(out, /> The events are already present\./)
+    assert.match(out, /I will compare the Discord and web renderers\./)
+    assert.match(out, /📖 \*\*Reading\*\* · live\.ts/)
+    assert.ok(out.indexOf('Inspecting the renderer') < out.indexOf('📖'))
+    assert.ok(out.indexOf('📖') < out.indexOf('Fixing the choke point'))
+  })
+
+  it('keeps a rolling tail within Discord limits and reports omitted steps', () => {
+    const steps = Array.from({ length: 40 }, (_, index) => ({
+      kind: 'thinking' as const,
+      text: `**Milestone ${index}**\n${'Detailed public progress. '.repeat(20)}`,
+      detail: `Working on stage ${index}.`,
+    }))
+    const out = composeTrajectoryTimelineCard({ label: 'Working', steps })
+
+    assert.ok(out.length <= 2000)
+    assert.match(out, /40 steps/)
+    assert.match(out, /earlier steps omitted/)
+    assert.doesNotMatch(out, /Milestone 0/)
+    assert.match(out, /Milestone 39/)
   })
 })

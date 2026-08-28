@@ -581,6 +581,12 @@ export interface RespondResult {
   meta: RespondMetadata
 }
 
+export interface LiveTimelineStep {
+  kind: 'thinking' | 'action'
+  text: string
+  detail?: string
+}
+
 /**
  * Mid-stream lifecycle events emitted from gemini.ts. gemma.ts subscribes
  * via the `onEvent` callback to surface visible reactions.
@@ -605,7 +611,12 @@ export type LifecycleEvent =
   // Antigravity exposes a public action narration on each planner step plus
   // occasional substantive reasoning summaries. Keep them separate so the
   // live card replaces one snapshot in place instead of accumulating a wall.
-  | { type: 'agy_progress', thinking: string, detail: string }
+  | {
+      type: 'agy_progress'
+      thinking: string
+      detail: string
+      timeline?: LiveTimelineStep[]
+    }
 
 export interface BuildRequestArgs {
   systemPrompt: string

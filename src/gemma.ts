@@ -18,7 +18,11 @@ import { extractRichMedia, formatRichContext } from './discord-rich-input.ts'
 import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources, parseResponse, formatSystemPrompt, type ParsedResponse } from './gemini.ts'
 import { respondViaAgy, warmAgy } from './agy-chat.ts'
 import { describeAgyFailure } from './agy-fallback-reason.ts'
-import { composeLiveThinkingCard, composeThinkingCard } from './live-headline.ts'
+import {
+  composeLiveThinkingCard,
+  composeThinkingCard,
+  composeTrajectoryTimelineCard,
+} from './live-headline.ts'
 import {
   DEFAULT_AGY_MODEL,
   DEFAULT_GEMINI_MODEL,
@@ -42,7 +46,7 @@ import { FAST_FORWARD_REACTION, LatestQueueMarker } from './queue-marker.ts'
 import { renderSteeredMessage } from './steering.ts'
 import { frameSteeredMessages } from './steer-context.ts'
 import { isHardStopMessage } from './stop-command.ts'
-import type { LifecycleEvent, ToolCall, CodeExecArtifact } from './gemini.ts'
+import type { LifecycleEvent, LiveTimelineStep, ToolCall, CodeExecArtifact } from './gemini.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
 import { handleReaction } from './reactions/handler.ts'
 import { SummaryStore } from './summarization/store.ts'
@@ -790,6 +794,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   const liveAgyThinkingTrace: string[] = []
   const liveAgyProgress = new LiveProgressBuffer()
   const liveAgyNarrationTrace: string[] = []
+  let liveAgyTimeline: LiveTimelineStep[] = []
   let liveTraceMessages: Message[] = []
   let liveTraceRehomeTask: Promise<void> | null = null
   const collapseFailsafed = new Set<string>()
@@ -939,6 +944,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     const liveTraceCards = (): string[] => {
       if (flags.trace === 'off' || liveToolCalls.length === 0) return []
+      if (flags.thinking === 'live' && liveAgyTimeline.length > 0) return []
       return renderTraceCards(buildTraceLines(liveToolCalls), flags.trace)
     }
 
@@ -1006,13 +1012,21 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         // One render owner, one latest snapshot. Replacing this card in place
         // is the important bit; no stale planner lines queue behind it.
         const live = liveThinkingText()
-        spinnerEditPromise = target.edit(composeThinkingCard({
-          label: thinkingLabel, glyph: sp, dots: d,
-          thinking: flags.thinking === 'off' ? '' : live,
-          reasoningTrace: flags.thinking === 'collapse' ? liveThinkingTrace() : [],
-          detail: liveAgyProgress.value(),
-          narrationTrace: flags.thinking === 'collapse' ? liveAgyNarrationTrace : [],
-        })).catch(() => {})
+        const content = flags.thinking === 'live' && liveAgyTimeline.length > 0
+          ? composeTrajectoryTimelineCard({
+              label: thinkingLabel,
+              glyph: sp,
+              dots: d,
+              steps: liveAgyTimeline,
+            })
+          : composeThinkingCard({
+              label: thinkingLabel, glyph: sp, dots: d,
+              thinking: flags.thinking === 'off' ? '' : live,
+              reasoningTrace: flags.thinking === 'collapse' ? liveThinkingTrace() : [],
+              detail: liveAgyProgress.value(),
+              narrationTrace: flags.thinking === 'collapse' ? liveAgyNarrationTrace : [],
+            })
+        spinnerEditPromise = target.edit(content).catch(() => {})
       }, LIVE_UPDATE_INTERVAL_MS)
     }
 
@@ -1160,6 +1174,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         if (e.detail && liveAgyNarrationTrace.at(-1) !== e.detail) {
           liveAgyNarrationTrace.push(e.detail)
         }
+        if (e.timeline) liveAgyTimeline = e.timeline
       }
     }
     // Speak-mode FULL BARGE-IN. If this message is being spoken to a vc and a

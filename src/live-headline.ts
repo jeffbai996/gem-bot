@@ -11,8 +11,12 @@
 // fields, while the API engine feeds its streamed partial `thinking` field.
 // `live` uses the compact current headline; `collapse` accumulates every line.
 
+import type { LiveTimelineStep } from './gemini.ts'
+
 const HEADLINE_MAX = 120
 const DETAIL_MAX = 160
+const TIMELINE_BODY_MAX = 280
+const TIMELINE_CARD_MAX = 1960
 
 function clipOnWordBoundary(text: string, max: number): string {
   if (text.length <= max) return text
@@ -102,4 +106,89 @@ export function composeThinkingCard(opts: {
     : compactLiveDetail(detail)
   const reasoning = trace.length ? `\n${trace.join('\n')}` : brainLine(thinking)
   return `💭 ${glyph} **${label}${dots}**${reasoning}${cleanDetail ? `\n${cleanDetail}` : ''}`
+}
+
+const ACTION_LABELS: Record<string, string> = {
+  bash: 'Running',
+  browse: 'Browsing',
+  click: 'Clicking',
+  grep: 'Searching',
+  list: 'Listing',
+  read: 'Reading',
+  readpage: 'Reading',
+  screenshot: 'Capturing',
+  search: 'Searching',
+  type: 'Typing',
+  write: 'Writing',
+}
+
+function actionPresentation(text: string): { emoji: string, label: string } {
+  const key = text.trim().toLocaleLowerCase('en-US')
+  const label = ACTION_LABELS[key] ?? (text.trim() || 'Using tool')
+  const emoji = /read|list/.test(key) ? '📖'
+    : /search|grep|browse/.test(key) ? '🌐'
+    : /write/.test(key) ? '✍️'
+    : /bash|run/.test(key) ? '⌨️'
+    : /click|type/.test(key) ? '🖱️'
+    : /screen/.test(key) ? '📸'
+    : '🔧'
+  return { emoji, label }
+}
+
+function timelineThinkingBlock(step: LiveTimelineStep): string {
+  const lines = step.text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  const headingIndex = lines.findIndex(line => /^\*\*.+\*\*$/.test(line) || /^#{1,6}\s+\S/.test(line))
+  const titleIndex = headingIndex >= 0 ? headingIndex : 0
+  const title = clipOnWordBoundary(cleanHeadlineLine(lines[titleIndex] ?? 'Working'), HEADLINE_MAX)
+  const body = lines
+    .filter((_, index) => index !== titleIndex)
+    .map(cleanHeadlineLine)
+    .filter(Boolean)
+    .join(' ')
+  const detail = step.detail?.trim() ?? ''
+  const bodyParts = [body, detail && detail !== body ? detail : ''].filter(Boolean)
+  const summary = clipOnWordBoundary(bodyParts.join(' '), TIMELINE_BODY_MAX)
+  return `• **${title || 'Working'}**${summary ? `\n> ${summary}` : ''}`
+}
+
+function timelineActionBlock(step: LiveTimelineStep): string {
+  const { emoji, label } = actionPresentation(step.text)
+  const detail = step.detail ? ` · ${clipOnWordBoundary(step.detail.replace(/\s+/g, ' ').trim(), DETAIL_MAX)}` : ''
+  return `${emoji} **${label}**${detail}`
+}
+
+/** One Discord-safe rolling trajectory. It preserves the ordered public
+ * progress summaries and actions while dropping only the oldest complete
+ * blocks when the card reaches Discord's message limit. */
+export function composeTrajectoryTimelineCard(opts: {
+  label: string
+  glyph?: string
+  dots?: string
+  steps: LiveTimelineStep[]
+}): string {
+  const { label, glyph = '✻', dots = '…', steps } = opts
+  const header = `💭 ${glyph} **${label}${dots}**\n-# ${steps.length} step${steps.length === 1 ? '' : 's'}`
+  const blocks = steps.map(step => step.kind === 'action'
+    ? timelineActionBlock(step)
+    : timelineThinkingBlock(step))
+  const kept: string[] = []
+  let omitted = 0
+
+  for (let index = blocks.length - 1; index >= 0; index--) {
+    const candidateOmitted = index
+    const marker = candidateOmitted > 0 ? `\n-# ↑ ${candidateOmitted} earlier steps omitted` : ''
+    const candidate = `${header}${marker}\n\n${[blocks[index], ...kept].join('\n\n')}`
+    if (candidate.length > TIMELINE_CARD_MAX) {
+      omitted = index + 1
+      break
+    }
+    kept.unshift(blocks[index])
+  }
+
+  if (!kept.length && blocks.length) {
+    kept.push(blocks.at(-1)!.slice(0, Math.max(0, TIMELINE_CARD_MAX - header.length - 80)))
+    omitted = Math.max(0, blocks.length - 1)
+  }
+  const marker = omitted > 0 ? `\n-# ↑ ${omitted} earlier steps omitted` : ''
+  return `${header}${marker}${kept.length ? `\n\n${kept.join('\n\n')}` : ''}`.slice(0, 2000)
 }
