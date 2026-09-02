@@ -4,9 +4,24 @@
 export const TRACE_ROW_MAX = 88
 export const TRACE_RESULT_PAYLOAD_MAX = 85
 const TRACE_BODY_CHAR_BUDGET = 1800
-const SECRET_RE = /[A-Za-z0-9_\-]{32,256}/g
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 const WIDE_RE = /\p{Extended_Pictographic}|[\u1100-\u115f\u2329\u232a\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6]/u
+const EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi
+const NORTH_AMERICAN_PHONE_RE = /(?<![\dA-Z])(?:\+?1[ .-]?)?\(?[2-9]\d{2}\)?[ .-][2-9]\d{2}[ .-]\d{4}(?![\dA-Z])/gi
+const SSN_RE = /\b\d{3}[- ]\d{2}[- ]\d{4}\b/g
+const LABELLED_CREDENTIAL_RE = /\b((?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|passwd|pwd|authorization|cookie)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi
+const AUTH_CREDENTIAL_RE = /\b((?:Bearer|Bot)\s+)[A-Z0-9._~+/=-]{8,}/gi
+const JWT_RE = /\beyJ[A-Z0-9_-]{8,}\.[A-Z0-9_-]{8,}\.[A-Z0-9_-]{8,}\b/gi
+
+export function redactTraceSensitiveData(value: string): string {
+  return value
+    .replace(EMAIL_RE, '<REDACTED>')
+    .replace(NORTH_AMERICAN_PHONE_RE, '<REDACTED>')
+    .replace(SSN_RE, '<REDACTED>')
+    .replace(LABELLED_CREDENTIAL_RE, '$1<REDACTED>')
+    .replace(AUTH_CREDENTIAL_RE, '$1<REDACTED>')
+    .replace(JWT_RE, '<REDACTED>')
+}
 
 export function displayWidth(value: string): number {
   let width = 0
@@ -119,14 +134,14 @@ function rollingTracePage(blocks: string[][]): string[] {
 
 export function renderTraceCards(rawLines: string[], mode: TraceDisplayMode): string[] {
   if (mode === 'off') return []
-  const lines = rawLines.map(line => truncateDisplayWidth(line, TRACE_ROW_MAX))
+  const lines = rawLines.map(line => truncateDisplayWidth(redactTraceSensitiveData(line), TRACE_ROW_MAX))
   const blocks = splitTraceBlocks(lines)
   const pages = mode === 'live'
     ? [rollingTracePage(blocks)]
     : paginateTraceBlocks(blocks)
 
   return pages.map((page, index) => {
-    const body = page.join('\n').replace(SECRET_RE, '<REDACTED>')
+    const body = page.join('\n')
     const header = index === 0 ? '🔧 **Tool trace**\n' : ''
     return `${header}\`\`\`diff\n${body}\n\`\`\``
   })

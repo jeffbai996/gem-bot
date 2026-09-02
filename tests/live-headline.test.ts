@@ -227,4 +227,22 @@ describe('composeTrajectoryTimelineCard', () => {
     assert.doesNotMatch(out, /Milestone 0/)
     assert.match(out, /Milestone 39/)
   })
+
+  it('renders running, completed, and failed actions legibly', () => {
+    const out = composeTrajectoryTimelineCard({
+      label: 'Worked for 12s',
+      glyph: '✓',
+      dots: '',
+      steps: [
+        { kind: 'action', text: 'Read', detail: 'renderer.ts', status: 'running' },
+        { kind: 'action', text: 'Search', detail: 'current project', status: 'done', durationMs: 842 },
+        { kind: 'action', text: 'Browse', detail: 'example.com', status: 'failed', durationMs: 6_200 },
+      ],
+    })
+
+    assert.match(out, /^💭 ✓ \*\*Worked for 12s\*\*/)
+    assert.match(out, /📖 \*\*Reading…\*\* · renderer\.ts/)
+    assert.match(out, /🌐 \*\*Searching\*\* · current project · 842ms/)
+    assert.match(out, /⚠️ \*\*Browsing failed\*\* · example\.com · 6\.2s/)
+  })
 })

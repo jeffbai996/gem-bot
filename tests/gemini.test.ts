@@ -32,6 +32,111 @@ describe('respond() barge-in abort', () => {
   })
 })
 
+describe('respond() live trajectory events', () => {
+  test('streams public thought summaries around a native tool call in order', async () => {
+    const registry = {
+      getDeclarations: () => [],
+      dispatch: async () => ({ matches: ['one result'] }),
+    }
+    const client = new GeminiClient('dummy-key', 'gemini-3.7-flash', registry as any)
+    const turns = [
+      [
+        { candidates: [{ content: { parts: [{ thought: true, text: '**Checking squad context**' }] } }] },
+        { candidates: [{ content: { parts: [{ thought: true, text: '\nThe stored facts should settle this.' }] } }] },
+        {
+          candidates: [{ content: { parts: [{
+            functionCall: { name: 'search_squad_memory', args: { query: 'current project' } },
+            thoughtSignature: 'sig-one',
+          }] } }],
+        },
+      ],
+      [
+        { candidates: [{ content: { parts: [{ thought: true, text: '**Synthesizing the result**' }] } }] },
+        {
+          candidates: [{
+            content: { parts: [{ text: '{"react":null,"thinking":null,"reply":"done"}' }] },
+            finishReason: 'STOP',
+          }],
+        },
+      ],
+    ]
+    let turnIndex = 0
+    ;(client as any).client = {
+      models: {
+        generateContentStream: async () => (async function * () {
+          for (const chunk of turns[turnIndex++] ?? []) yield chunk
+        })(),
+      },
+    }
+
+    const events: any[] = []
+    const result = await client.respond({
+      systemPrompt: 'Be concise.',
+      history: [],
+      userMessageText: 'What are we working on?',
+      userMediaParts: [],
+      userName: 'Alice',
+      thinkingMode: 'live',
+      cacheEnabled: false,
+    }, () => {}, event => events.push(event))
+
+    assert.equal(result.parsed.reply, 'done')
+    assert.deepEqual(events.map(event => [event.type, event.text ?? event.name]), [
+      ['native_thinking', '**Checking squad context**'],
+      ['native_thinking', '\nThe stored facts should settle this.'],
+      ['tool_call_start', 'search_squad_memory'],
+      ['tool_call_end', 'search_squad_memory'],
+      ['native_thinking', '**Synthesizing the result**'],
+    ])
+  })
+
+  test('surfaces server-side search and code execution as live actions', async () => {
+    const registry = { getDeclarations: () => [], dispatch: async () => ({}) }
+    const client = new GeminiClient('dummy-key', 'gemini-3.7-flash', registry as any)
+    const chunks = [
+      { candidates: [{ groundingMetadata: { webSearchQueries: ['current release notes'] }, content: { parts: [] } }] },
+      { candidates: [{ content: { parts: [{ executableCode: { language: 'PYTHON', code: 'print(6 * 7)' } }] } }] },
+      { candidates: [{ content: { parts: [{ codeExecutionResult: { outcome: 'OK', output: '42\n' } }] } }] },
+      {
+        candidates: [{
+          content: { parts: [{ text: '{"react":null,"thinking":null,"reply":"42"}' }] },
+          finishReason: 'STOP',
+        }],
+      },
+    ]
+    ;(client as any).client = {
+      models: {
+        generateContentStream: async () => (async function * () {
+          for (const chunk of chunks) yield chunk
+        })(),
+      },
+    }
+
+    const events: any[] = []
+    await client.respond({
+      systemPrompt: 'Be concise.',
+      history: [],
+      userMessageText: 'Calculate it.',
+      userMediaParts: [],
+      userName: 'Alice',
+      thinkingMode: 'live',
+      cacheEnabled: false,
+    }, () => {}, event => events.push(event))
+
+    assert.deepEqual(events.map(event => ({
+      type: event.type,
+      name: event.name,
+      queries: event.queries,
+      failed: event.failed,
+      resultPreview: event.resultPreview,
+    })), [
+      { type: 'searching', name: undefined, queries: ['current release notes'], failed: undefined, resultPreview: undefined },
+      { type: 'tool_call_start', name: 'code_execution', queries: undefined, failed: undefined, resultPreview: undefined },
+      { type: 'tool_call_end', name: 'code_execution', queries: undefined, failed: false, resultPreview: '42\n' },
+    ])
+  })
+})
+
 describe('extractModelText', () => {
   test('returns empty string for undefined parts', () => {
     assert.equal(extractModelText(undefined), '')

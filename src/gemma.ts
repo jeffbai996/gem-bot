@@ -46,7 +46,7 @@ import { FAST_FORWARD_REACTION, LatestQueueMarker } from './queue-marker.ts'
 import { renderSteeredMessage } from './steering.ts'
 import { frameSteeredMessages } from './steer-context.ts'
 import { isHardStopMessage } from './stop-command.ts'
-import type { LifecycleEvent, LiveTimelineStep, ToolCall, CodeExecArtifact } from './gemini.ts'
+import type { LifecycleEvent, ToolCall, CodeExecArtifact } from './gemini.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
 import { handleReaction } from './reactions/handler.ts'
 import { SummaryStore } from './summarization/store.ts'
@@ -55,6 +55,7 @@ import { createCompactionObserver } from './compaction-ui.ts'
 import { fetchMessagesSince, recordInFlightTurn, clearInFlightTurn, getAllInFlightTurns } from './db.ts'
 import { DeferredActions } from './deferred-actions.ts'
 import { LiveProgressBuffer, resolveLiveUpdateInterval } from './live-update.ts'
+import { LiveTimelineBuffer, visibleTimelineSteps } from './live-timeline.ts'
 import {
   DEFAULT_LIVE_END_LINGER_MS,
   renderTraceCards,
@@ -794,7 +795,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   const liveAgyThinkingTrace: string[] = []
   const liveAgyProgress = new LiveProgressBuffer()
   const liveAgyNarrationTrace: string[] = []
-  let liveAgyTimeline: LiveTimelineStep[] = []
+  const timeline = new LiveTimelineBuffer()
   let liveTraceMessages: Message[] = []
   let liveTraceRehomeTask: Promise<void> | null = null
   const collapseFailsafed = new Set<string>()
@@ -942,9 +943,14 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         ? liveAgyThinkingTrace
         : latestParsed.thinking ? [latestParsed.thinking] : []
 
+    const visibleTimeline = () => visibleTimelineSteps(timeline.snapshot(), flags.trace)
+    const trajectoryOwnsTrace = (): boolean =>
+      flags.thinking === 'live' && flags.trace !== 'on'
+      && visibleTimeline().some(step => step.kind === 'action')
+
     const liveTraceCards = (): string[] => {
       if (flags.trace === 'off' || liveToolCalls.length === 0) return []
-      if (flags.thinking === 'live' && liveAgyTimeline.length > 0) return []
+      if (trajectoryOwnsTrace()) return []
       return renderTraceCards(buildTraceLines(liveToolCalls), flags.trace)
     }
 
@@ -1012,12 +1018,13 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         // One render owner, one latest snapshot. Replacing this card in place
         // is the important bit; no stale planner lines queue behind it.
         const live = liveThinkingText()
-        const content = flags.thinking === 'live' && liveAgyTimeline.length > 0
+        const timelineSteps = visibleTimeline()
+        const content = flags.thinking === 'live' && timelineSteps.length > 0
           ? composeTrajectoryTimelineCard({
               label: thinkingLabel,
               glyph: sp,
               dots: d,
-              steps: liveAgyTimeline,
+              steps: timelineSteps,
             })
           : composeThinkingCard({
               label: thinkingLabel, glyph: sp, dots: d,
@@ -1140,6 +1147,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           failed: false,
           running: true,
         })
+        timeline.startTool(e.name, e.args ?? {})
         flushStream().catch(() => {})
         return
       }
@@ -1154,6 +1162,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           call.resultPreview = e.resultPreview ?? call.resultPreview
           call.diff = e.diff
         }
+        timeline.finishTool(e.name, {
+          failed: e.failed,
+          durationMs: e.durationMs,
+          resultPreview: e.resultPreview,
+        }, e.args ?? {})
         flushStream().catch(() => {})
         if (activeToolCount === 0) activeTurns.clearBusy(message.channelId)
         return
@@ -1161,8 +1174,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       if (activeTurns.stopIfPending(message.channelId)) return
       if (e.type === 'native_thinking') {
         applyLifecycle(message, 'native_thinking').catch(() => {})
+        if (e.text) timeline.pushThought(e.text)
       } else if (e.type === 'searching') {
         applyLifecycle(message, 'searching').catch(() => {})
+        timeline.pushSearch(e.queries ?? [])
       } else if (e.type === 'agy_progress') {
         // Picked up by the next spinner tick; coalescing here keeps the Discord
         // edit cadence bounded even when the trajectory writes several steps.
@@ -1174,7 +1189,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         if (e.detail && liveAgyNarrationTrace.at(-1) !== e.detail) {
           liveAgyNarrationTrace.push(e.detail)
         }
-        if (e.timeline) liveAgyTimeline = e.timeline
+        if (e.timeline) timeline.replace(e.timeline)
       }
     }
     // Speak-mode FULL BARGE-IN. If this message is being spoken to a vc and a
@@ -1448,7 +1463,9 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     const traceExtras = { searchQueries: meta.searchQueries, codeArtifacts: meta.codeArtifacts }
     const showTrace = flags.trace !== 'off'
       && (meta.toolCalls.length > 0 || meta.searchQueries.length > 0 || meta.codeArtifacts.length > 0)
-    const finalTraceCards = showTrace
+    const finalTraceCards = trajectoryOwnsTrace()
+      ? []
+      : showTrace
       ? renderTraceCards(buildAllTraceLines(meta.toolCalls, traceExtras), flags.trace)
       : []
 
@@ -1478,8 +1495,16 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // "Thought for Ns" regardless of effort/model choice.
       const thoughtSecs = Math.round(respondElapsedMs / 1000)
       const header = `💭 **Thought for ${thoughtSecs}s**`
+      const timelineSteps = visibleTimeline()
       const finalThinking = parsed.thinking || meta.nativeThoughts
-      if (finalThinking) {
+      if (flags.thinking === 'live' && timelineSteps.length > 0) {
+        thinkingMessage += composeTrajectoryTimelineCard({
+          label: `Worked for ${thoughtSecs}s`,
+          glyph: '✓',
+          dots: '',
+          steps: timelineSteps,
+        }) + '\n\n'
+      } else if (finalThinking) {
         // Live finishes on the same compact latest headline the user watched.
         // Collapse and on retain the full trace; collapse removes it after the
         // configured linger while on keeps it.

@@ -154,7 +154,12 @@ function timelineThinkingBlock(step: LiveTimelineStep): string {
 function timelineActionBlock(step: LiveTimelineStep): string {
   const { emoji, label } = actionPresentation(step.text)
   const detail = step.detail ? ` · ${clipOnWordBoundary(step.detail.replace(/\s+/g, ' ').trim(), DETAIL_MAX)}` : ''
-  return `${emoji} **${label}**${detail}`
+  const duration = !step.durationMs ? ''
+    : step.durationMs < 1000 ? ` · ${Math.round(step.durationMs)}ms`
+    : ` · ${(step.durationMs / 1000).toFixed(step.durationMs < 10_000 ? 1 : 0)}s`
+  if (step.status === 'failed') return `⚠️ **${label} failed**${detail}${duration}`
+  if (step.status === 'running') return `${emoji} **${label}…**${detail}`
+  return `${emoji} **${label}**${detail}${duration}`
 }
 
 /** One Discord-safe rolling trajectory. It preserves the ordered public

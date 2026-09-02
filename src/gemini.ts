@@ -585,19 +585,21 @@ export interface LiveTimelineStep {
   kind: 'thinking' | 'action'
   text: string
   detail?: string
+  status?: 'running' | 'done' | 'failed'
+  durationMs?: number
 }
 
 /**
  * Mid-stream lifecycle events emitted from gemini.ts. gemma.ts subscribes
  * via the `onEvent` callback to surface visible reactions.
  *
- * Fired at most once per type per `respond()` call (the underlying loop
- * may dispatch multiple tool calls, but the user only needs to see "she
- * used a tool" once — repeats would just thrash the reaction).
+ * One-shot state changes are de-duplicated per model round. Public native
+ * thought summaries and tool calls intentionally emit multiple ordered events
+ * because the Discord trajectory needs their actual chronology.
  */
 export type LifecycleEvent =
-  | { type: 'searching' }
-  | { type: 'native_thinking' }
+  | { type: 'searching', queries?: string[] }
+  | { type: 'native_thinking', text?: string }
   | { type: 'tool_call_start', name: string, args?: Record<string, unknown> }
   | {
       type: 'tool_call_end'
@@ -865,6 +867,8 @@ export class GeminiClient {
         // earlier chunk than the final aggregated candidate.
         let functionCallPartReceived: any = null
         let lastChunk: any = null
+        const seenCodeExecutions = new Set<string>()
+        const pendingCodeExecutions: string[] = []
         // De-dupe one-shot events across chunks within this turn.
         const emitted = new Set<LifecycleEvent['type']>()
         const emitOnce = (e: LifecycleEvent) => {
@@ -879,15 +883,61 @@ export class GeminiClient {
           lastChunk = chunk
           const candidate = chunk.candidates?.[0]
           const parts = candidate?.content?.parts as any[] | undefined
-          // Native thinking parts: gemini-3 thinking models emit text parts
-          // with `thought: true`. First time we see one, fire 🧠.
-          if (parts?.some(p => p?.thought === true)) {
-            emitOnce({ type: 'native_thinking' })
+          // Gemini exposes public thought-summary chunks separately from answer
+          // text. Carry every chunk to the Discord trajectory instead of reducing
+          // the whole stream to a boolean "thinking started" light.
+          for (const part of parts ?? []) {
+            if (part?.thought === true && typeof part.text === 'string' && part.text) {
+              if (onEvent) {
+                try { onEvent({ type: 'native_thinking', text: part.text }) }
+                catch (err) { console.error('[onEvent]', err) }
+              }
+            }
           }
           // Grounding search: candidate.groundingMetadata.webSearchQueries
           // populates as soon as the search runs server-side.
-          if (extractSearchQueries(candidate).length > 0) {
-            emitOnce({ type: 'searching' })
+          const searchQueries = extractSearchQueries(candidate)
+          if (searchQueries.length > 0) {
+            emitOnce({ type: 'searching', queries: searchQueries })
+          }
+          // Server-side code execution does not pass through our ToolRegistry,
+          // so translate its streamed parts into the same start/end lifecycle
+          // events used by native functions. The final aggregated chunk can
+          // repeat earlier parts; the normalized key prevents duplicate rows.
+          for (const part of parts ?? []) {
+            if (part?.executableCode) {
+              const language = typeof part.executableCode.language === 'string'
+                ? part.executableCode.language.toLowerCase()
+                : 'python'
+              const code = typeof part.executableCode.code === 'string' ? part.executableCode.code : ''
+              const key = `${language}\0${normalizeCodeForDedupe(code)}`
+              if (!seenCodeExecutions.has(key)) {
+                seenCodeExecutions.add(key)
+                pendingCodeExecutions.push(key)
+                if (onEvent) {
+                  try { onEvent({ type: 'tool_call_start', name: 'code_execution', args: { language } }) }
+                  catch (err) { console.error('[onEvent]', err) }
+                }
+              }
+            }
+            if (part?.codeExecutionResult && pendingCodeExecutions.length > 0) {
+              pendingCodeExecutions.shift()
+              const outcome = String(part.codeExecutionResult.outcome ?? '')
+              const output = typeof part.codeExecutionResult.output === 'string'
+                ? part.codeExecutionResult.output
+                : ''
+              if (onEvent) {
+                try {
+                  onEvent({
+                    type: 'tool_call_end',
+                    name: 'code_execution',
+                    args: {},
+                    failed: /FAIL/i.test(outcome),
+                    resultPreview: output,
+                  })
+                } catch (err) { console.error('[onEvent]', err) }
+              }
+            }
           }
           const fnCallPart = parts?.find(p => p.functionCall)
           if (fnCallPart) {
