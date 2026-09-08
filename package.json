@@ -26,7 +26,8 @@
     "officeparser": "^7.5.0",
     "opusscript": "^0.0.8",
     "sqlite-vss": "^0.1.2",
-    "tsx": "^4.19.2"
+    "tsx": "^4.19.2",
+    "undici": "^6.28.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

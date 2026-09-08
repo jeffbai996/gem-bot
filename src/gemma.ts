@@ -1,3 +1,4 @@
+import { PresenceOwner } from './presence-owner.ts'
 import { installLogTimestamps } from './log-timestamps.ts'
 installLogTimestamps()
 import { Client, GatewayIntentBits, Partials, ActivityType, REST, Routes, type Message } from 'discord.js'
@@ -65,7 +66,7 @@ import {
   truncateDisplayWidth,
   truncateDisplayWidthClean,
 } from './tool-trace.ts'
-import { extractPresenceDirective, normalizePresenceText } from './presence.ts'
+import { extractPresenceDirective } from './presence.ts'
 import { GemStats } from './stats.ts'
 import { editImages, isImageEditRequest } from './image-generation.ts'
 import { formatSkippedAttachments } from './discord-card.ts'
@@ -84,26 +85,11 @@ const LIVE_UPDATE_INTERVAL_MS = resolveLiveUpdateInterval(process.env.GEM_LIVE_U
 const deferredActions = new DeferredActions(path.join(STATE_DIR, 'deferred-actions.json'))
 const restartInbox = new RestartInbox(path.join(STATE_DIR, 'restart-inbox.json'))
 const stats = new GemStats(path.join(STATE_DIR, 'global-stats.json'))
-const PRESENCE_FILE = path.join(STATE_DIR, 'presence.json')
-const DEFAULT_PRESENCE_TEXT = '📡 waiting on gemini 4'
-
 function isNewerDiscordMessage(candidateId: string, anchorId: string): boolean {
   try {
     return BigInt(candidateId) > BigInt(anchorId)
   } catch {
     return candidateId > anchorId
-  }
-}
-
-function loadPresenceText(): string {
-  try {
-    const parsed = JSON.parse(readFileSync(PRESENCE_FILE, 'utf8'))
-    const text = typeof parsed?.text === 'string' ? normalizePresenceText(parsed.text) : ''
-    return text || DEFAULT_PRESENCE_TEXT
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code !== 'ENOENT') console.error('[presence] load failed:', error)
-    return DEFAULT_PRESENCE_TEXT
   }
 }
 
@@ -553,37 +539,25 @@ addVoiceGroup(geminiCommand)
 // correct if that ever changes.
 const speakTurnControllers = new Map<string, AbortController>()
 
-let basePresenceText = loadPresenceText()
-function presenceActivity(text: string) {
-  return { name: text, type: ActivityType.Custom, state: text }
+const presenceOwner = new PresenceOwner(STATE_DIR, text => {
+  client.user?.setPresence({ status: 'online', activities: [
+    { name: text, type: ActivityType.Custom, state: text },
+  ] })
+  console.error(`[presence] applied ${JSON.stringify(text)}`)
+})
+client.on('shardResume', () => presenceOwner.restore())
+
+async function generateStartupPresence(prompt: string, signal: AbortSignal): Promise<string> {
+  return gemini.completeText('Write only the requested public profile status.', prompt, signal)
 }
 
-function applyBasePresence(text: string): void {
-  const normalized = normalizePresenceText(text)
-  if (!normalized) return
-
-  basePresenceText = normalized
-  try {
-    client.user?.setPresence({
-      status: 'online',
-      activities: [presenceActivity(basePresenceText)],
-    })
-    console.error(`[presence] applied "${basePresenceText}"`)
-  } catch (error) {
-    console.error('[presence] Discord update failed:', error)
-  }
-  try {
-    writeFileSync(PRESENCE_FILE, JSON.stringify({ text: basePresenceText }) + '\n', { mode: 0o600 })
-  } catch (error) {
-    console.error('[presence] persistence failed:', error)
-  }
-}
 
 client.once('ready', async () => {
   console.error(`Gem online as ${client.user?.tag} (${client.user?.id})`)
   warmAgy()
   deferredActions.rearm(client)
-  applyBasePresence(basePresenceText)
+  void presenceOwner.start(persona.buildPresenceContext(), generateStartupPresence)
+    .catch(error => console.error('[presence] startup failed:', error))
 
   // Sweep turns left in-flight by the PREVIOUS process (crash, OOM, manual
   // restart mid-turn) — anything still in this table means that process died
@@ -753,6 +727,7 @@ async function ingestAndGate(message: Message): Promise<boolean> {
 async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promise<void> {
   if (message.author.bot) return
   if (!client.user) return
+  const presenceTicket = presenceOwner.request(opts.combinedText ?? message.content)
 
   // Opt-in reply gate removed 2026-05-02. The two-tier classifier (regex +
   // flash-lite) silenced messages it judged "not for Gemma" — but the UX was
@@ -1353,7 +1328,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     parsed = { ...parsed, reply: presenceUpdate.reply }
     latestParsed = parsed
     if (presenceUpdate.presence) {
-      applyBasePresence(presenceUpdate.presence)
+      presenceOwner.update(presenceTicket, presenceUpdate.presence)
     }
     const respondElapsedMs = Date.now() - respondT0
     const actualEngine = useAgy && !agyFellBack ? 'agy' : 'api'

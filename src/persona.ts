@@ -86,6 +86,11 @@ export class PersonaLoader {
     return DEFAULT_PERSONA
   }
 
+  buildPresenceContext(): string {
+    // Public profile generation gets voice, never a private channel's history.
+    return this.persona.split('## Addressing rules')[0].slice(0, 12000)
+  }
+
   buildSystemPrompt(channelId: string, guildId?: string | null): string {
     const persona = (guildId && this.guildPersonas.get(guildId)) || this.persona
     const conversationSummary = this.summaryStore?.get(channelId)?.summary ?? ''
@@ -103,6 +108,7 @@ export class PersonaLoader {
     if (pinned) {
       sections.push(`## Pinned facts for this channel\n\n${pinned}`)
     }
+    sections.push('Discord status is account-wide and owned by the gateway. Include [[presence: short status]] only when the user explicitly requests a status change. Ordinary chat turns must not reset it.')
     return sections.join('\n\n---\n\n')
   }
 }

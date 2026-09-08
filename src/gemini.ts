@@ -752,11 +752,12 @@ export class GeminiClient {
 
   // Single-turn text completion. No streaming, no tool dispatch — used for
   // background tasks like summarization where we just want plain text out.
-  async completeText(systemPrompt: string, userText: string): Promise<string> {
+  async completeText(systemPrompt: string, userText: string, signal?: AbortSignal): Promise<string> {
     const result = await this.client.models.generateContent({
       model: this.modelName,
       contents: [{ role: 'user', parts: [{ text: userText }] }],
       config: {
+        abortSignal: signal,
         systemInstruction: { role: 'system', parts: [{ text: systemPrompt }] },
       },
     })
