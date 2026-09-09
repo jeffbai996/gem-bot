@@ -16,6 +16,7 @@ const RESET = /Resets? in ([0-9hms]+)/i
 export function describeAgyFailure(raw: string): string {
   const msg = (raw || '').trim()
   if (!msg) return 'antigravity unavailable'
+  if (/^antigravity (?:5-hour|weekly|usage) quota reached — (?:retry <t:\d+:R> \(<t:\d+:t>\)|reset time unavailable)$/.test(msg)) return msg
 
   if (/quota reached|quota exceeded|upgrade your subscription/i.test(msg)) {
     const reset = RESET.exec(msg)

@@ -7,6 +7,7 @@ import type { GeminiContent } from './history.ts'
 import type { LocalAttachment } from './attachments.ts'
 import { killProcessTree } from './kill-tree.ts'
 import { DEFAULT_AGY_MODEL, modelEffort } from './models.ts'
+import { checkAgyQuota } from './agy-quota-gate.ts'
 import type {
   ParsedResponse,
   RespondMetadata,
@@ -330,7 +331,7 @@ function emptyMeta(): RespondMetadata {
 // the child runs and fire tool_call_start as each new tool step appears — driving
 // gemma's live 🔧 trace so the user SEES progress. trajBefore + fingerprint let us
 // pin THIS run's trajectory mid-flight (same disambiguation as the post-hoc read).
-function runAgy(
+async function runAgy(
   prompt: string,
   onEvent?: (e: LifecycleEvent) => void,
   trajBefore?: Map<string, number>,
@@ -339,6 +340,9 @@ function runAgy(
   signal?: AbortSignal,
 ): Promise<string> {
   const t0 = Date.now()
+  const quotaFailure = await checkAgyQuota(agyModel())
+  if (signal?.aborted) { const error = new Error('agy stopped'); error.name = 'AbortError'; throw error }
+  if (quotaFailure) throw new AgyChatError(quotaFailure, Date.now() - t0)
   // Flags MUST precede the `-p` positional: agy uses Go's flag parser, which
   // stops at the first non-flag arg — anything after `-p "<prompt>"` is ignored
   // (verified: trailing --sandbox silently dropped). --sandbox enables terminal

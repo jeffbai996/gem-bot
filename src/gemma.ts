@@ -21,6 +21,7 @@ import { extractRichMedia, formatRichContext } from './discord-rich-input.ts'
 import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources, parseResponse, formatSystemPrompt, type ParsedResponse } from './gemini.ts'
 import { respondViaAgy, warmAgy } from './agy-chat.ts'
 import { describeAgyFailure } from './agy-fallback-reason.ts'
+import { checkAgyQuota } from './agy-quota-gate.ts'
 import {
   composeLiveThinkingCard,
   composeThinkingCard,
@@ -1290,6 +1291,12 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         console.error('[agy] chat engine failed, falling back to API:', e instanceof Error ? e.message : e)
         agyFellBack = true
         agyFallbackReason = e instanceof Error ? e.message : String(e)
+        if (/timeout|timed out|watchdog/i.test(agyFallbackReason)) {
+          agyFallbackReason = await checkAgyQuota(process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL) ?? agyFallbackReason
+        }
+        if (/quota reached|quota exceeded|quota exhausted/i.test(agyFallbackReason)) {
+          await sendReply(message, `⚠️ ${describeAgyFailure(agyFallbackReason)}. Trying Gemini API instead.`)
+        }
         const skippedBeforeFallback = attachmentResult.skipped.length
         await attachmentResult.prepareApiParts()
         allParts = [...attachmentResult.parts, ...ytResult.parts]
