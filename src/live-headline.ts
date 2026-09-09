@@ -151,17 +151,41 @@ function timelineThinkingBlock(step: LiveTimelineStep): string {
   return `**${title || 'Working'}**${summary ? `\n> ${summary}` : ''}`
 }
 
-function timelineActionBlock(step: LiveTimelineStep): string {
+function timelineActionRow(step: LiveTimelineStep, previous?: LiveTimelineStep): string {
   const { emoji, label } = actionPresentation(step.text)
   const detail = step.detail ? ` · ${clipOnWordBoundary(step.detail.replace(/\s+/g, ' ').trim(), DETAIL_MAX)}` : ''
   const duration = !step.durationMs ? ''
     : step.durationMs < 1000 ? ` · ${Math.round(step.durationMs)}ms`
     : ` · ${(step.durationMs / 1000).toFixed(step.durationMs < 10_000 ? 1 : 0)}s`
+  const repeated = previous && actionPresentation(previous.text).label === label && detail
   const row = step.status === 'failed' ? `⚠️ ${label} failed${detail}${duration}`
+    : repeated ? `   ${detail.slice(3)}${step.status === 'running' ? '…' : ''}${duration}`
     : step.status === 'running' ? `${emoji} ${label}…${detail}`
     : `${emoji} ${label}${detail}${duration}`
   // Tool arguments can contain backticks; keep them from closing the fence.
-  return '**Tool call**\n```text\n' + row.replace(/`/g, 'ˋ') + '\n```'
+  return row.replace(/`/g, 'ˋ')
+}
+
+function timelineBlocks(steps: LiveTimelineStep[]): string {
+  const blocks: string[] = []
+  let rows: string[] = []
+  let previous: LiveTimelineStep | undefined
+  const flush = () => {
+    if (rows.length) blocks.push('**Tool call**\n```text\n' + rows.join('\n') + '\n```')
+    rows = []
+    previous = undefined
+  }
+  for (const step of steps) {
+    if (step.kind === 'thinking') {
+      flush()
+      blocks.push(timelineThinkingBlock(step))
+    } else {
+      rows.push(timelineActionRow(step, previous))
+      previous = step
+    }
+  }
+  flush()
+  return blocks.join('\n\n')
 }
 
 /** One Discord-safe rolling trajectory. It preserves the ordered public
@@ -175,27 +199,14 @@ export function composeTrajectoryTimelineCard(opts: {
 }): string {
   const { label, glyph = '✻', dots = '…', steps } = opts
   const header = `💭 ${glyph} **${label}${dots}**\n-# ${steps.length} step${steps.length === 1 ? '' : 's'}`
-  const blocks = steps.map(step => step.kind === 'action'
-    ? timelineActionBlock(step)
-    : timelineThinkingBlock(step))
-  const kept: string[] = []
-  let omitted = 0
-
-  for (let index = blocks.length - 1; index >= 0; index--) {
-    const candidateOmitted = index
-    const marker = candidateOmitted > 0 ? `\n-# ↑ ${candidateOmitted} earlier steps omitted` : ''
-    const candidate = `${header}${marker}\n\n${[blocks[index], ...kept].join('\n\n')}`
-    if (candidate.length > TIMELINE_CARD_MAX) {
-      omitted = index + 1
-      break
-    }
-    kept.unshift(blocks[index])
+  let result = header
+  // Re-render the retained tail so its first tool row always has its action
+  // label and every grouped fence closes, even when older rows are dropped.
+  for (let index = steps.length - 1; index >= 0; index--) {
+    const marker = index > 0 ? `\n-# ↑ ${index} earlier steps omitted` : ''
+    const candidate = `${header}${marker}\n\n${timelineBlocks(steps.slice(index))}`
+    if (candidate.length > TIMELINE_CARD_MAX) break
+    result = candidate
   }
-
-  if (!kept.length && blocks.length) {
-    kept.push(blocks.at(-1)!.slice(0, Math.max(0, TIMELINE_CARD_MAX - header.length - 80)))
-    omitted = Math.max(0, blocks.length - 1)
-  }
-  const marker = omitted > 0 ? `\n-# ↑ ${omitted} earlier steps omitted` : ''
-  return `${header}${marker}${kept.length ? `\n\n${kept.join('\n\n')}` : ''}`.slice(0, 2000)
+  return result
 }
