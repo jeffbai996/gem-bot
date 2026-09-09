@@ -257,7 +257,7 @@ describe('composeTrajectoryTimelineCard', () => {
       { kind: 'action', text: 'Read', detail: 'third.ts' },
     ] })
     assert.match(out, /5 steps/)
-    assert.match(out, /📖 Reading · first\.ts\n   second\.ts\n🌐 Searching · query\n```\n\n\*\*Checking results\*\*/)
+    assert.match(out, /📖 Reading · first\.ts\n {13}second\.ts\n🌐 Searching · query\n```\n\n\*\*Checking results\*\*/)
     assert.match(out, /Checking results\*\*\n\n\*\*Tool call\*\*\n```text\n📖 Reading · third\.ts/)
     assert.equal((out.match(/^```/gm) ?? []).length, 4)
   })
@@ -274,6 +274,15 @@ describe('composeTrajectoryTimelineCard', () => {
     assert.match(out, /file-79\.ts/)
     assert.equal((out.match(/^```/gm) ?? []).length, 2)
     assert.ok(out.endsWith('```'))
+  })
+
+  it('aligns every repeated target to the labelled running row', () => {
+    const out = composeTrajectoryTimelineCard({ label: 'Working', steps: [
+      { kind: 'action', text: 'Read', detail: 'first.ts', status: 'running' },
+      { kind: 'action', text: 'Read', detail: 'second.ts', status: 'done' },
+      { kind: 'action', text: 'Read', detail: 'third.ts', status: 'done' },
+    ] })
+    assert.match(out, /📖 Reading… · first\.ts\n {14}second\.ts\n {14}third\.ts/)
   })
 
   it('keeps tool fences intact with hostile backticks and a rolling mixed tail', () => {
