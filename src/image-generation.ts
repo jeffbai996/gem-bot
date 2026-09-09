@@ -61,7 +61,7 @@ export async function generateImage(
 ): Promise<ImageGenResult> {
   const startTime = Date.now()
 
-  let modelChoice = 'imagen-3'
+  let modelChoice = 'flash'
   let client: GoogleGenAI
 
   if (typeof modelOrClient === 'string') {
@@ -86,27 +86,34 @@ export async function generateImage(
 
   if (isImagen) {
     modelLabel = process.env.IMAGEN_MODEL || 'imagen-3.0-generate-002'
-    const response = await client.models.generateImages({
-      model: modelLabel,
-      prompt,
-      config: {
-        numberOfImages: 1,
-        aspectRatio: ratio,
-        outputMimeType: 'image/jpeg',
-      },
-    })
+    try {
+      const response = await client.models.generateImages({
+        model: modelLabel,
+        prompt,
+        config: {
+          numberOfImages: 1,
+          aspectRatio: ratio,
+          outputMimeType: 'image/jpeg',
+        },
+      })
 
-    const generatedImages = response.generatedImages ?? []
-    for (const [index, img] of generatedImages.entries()) {
-      const b64 = img.image?.imageBytes
-      if (!b64) continue
-      const file = path.join(os.tmpdir(), `gem-image-${Date.now()}-${index}.jpg`)
-      await fs.writeFile(file, Buffer.from(b64, 'base64'))
-      outputFiles.push(file)
-    }
-    if (outputFiles.length === 0) {
-      const rai = generatedImages[0]?.raiFilteredReason
-      throw new Error(rai ? `Filtered by safety policy: ${rai}` : 'Imagen 3 returned no images')
+      const generatedImages = response.generatedImages ?? []
+      for (const [index, img] of generatedImages.entries()) {
+        const b64 = img.image?.imageBytes
+        if (!b64) continue
+        const file = path.join(os.tmpdir(), `gem-image-${Date.now()}-${index}.jpg`)
+        await fs.writeFile(file, Buffer.from(b64, 'base64'))
+        outputFiles.push(file)
+      }
+      if (outputFiles.length === 0) {
+        const rai = generatedImages[0]?.raiFilteredReason
+        throw new Error(rai ? `Filtered by safety policy: ${rai}` : 'Imagen 3 returned no images')
+      }
+    } catch (err: any) {
+      if (err?.message?.includes('not found') || err?.status === 'NOT_FOUND' || err?.message?.includes('404')) {
+        return generateImage(apiKey, prompt, aspectRatio, 'flash', client)
+      }
+      throw err
     }
   } else {
     modelLabel = process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image'

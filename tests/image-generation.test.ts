@@ -103,3 +103,48 @@ test('backward compatibility: mock client with generateContent only falls back t
   await fs.unlink(files[0])
 })
 
+test('default model is flash when model parameter is omitted', async () => {
+  let request: any
+  const fake = {
+    models: {
+      generateContent: async (value: any) => {
+        request = value
+        return { candidates: [{ content: { parts: [
+          { inlineData: { mimeType: 'image/png', data: Buffer.from('default-art').toString('base64') } },
+        ] } }] }
+      },
+      generateImages: async () => {
+        throw new Error('should not be called')
+      },
+    },
+  }
+  const result = await generateImage('unused', 'a test prompt', '1:1', undefined, fake as any)
+  assert.equal(request.model, 'gemini-3.1-flash-image')
+  assert.match(result.footer, /gemini-3\.1-flash-image/)
+  await fs.unlink(result.files[0])
+})
+
+test('Imagen 3 falling back to flash when API returns 404', async () => {
+  let contentRequest: any
+  const fake = {
+    models: {
+      generateImages: async () => {
+        const err: any = new Error('models/imagen-3.0-generate-002 is not found for API version v1beta, or is not supported for predict.')
+        err.status = 'NOT_FOUND'
+        throw err
+      },
+      generateContent: async (value: any) => {
+        contentRequest = value
+        return { candidates: [{ content: { parts: [
+          { inlineData: { mimeType: 'image/png', data: Buffer.from('recovered-art').toString('base64') } },
+        ] } }] }
+      },
+    },
+  }
+  const result = await generateImage('unused', 'a prompt that failed imagen', '1:1', 'imagen-3', fake as any)
+  assert.equal(contentRequest.model, 'gemini-3.1-flash-image')
+  assert.equal(await fs.readFile(result.files[0], 'utf8'), 'recovered-art')
+  await fs.unlink(result.files[0])
+})
+
+

@@ -273,11 +273,11 @@ export const geminiCommand = new SlashCommandBuilder()
       .addStringOption(option =>
         option
           .setName('model')
-          .setDescription('Image model (default: imagen-3)')
+          .setDescription('Image model (default: flash)')
           .setRequired(false)
           .addChoices(
-            { name: 'Imagen 3 (photorealistic)', value: 'imagen-3' },
-            { name: 'Gemini 3.1 Flash Image', value: 'flash' },
+            { name: 'Gemini 3.1 Flash Image (fast, reliable)', value: 'flash' },
+            { name: 'Imagen 3 (legacy / Vertex)', value: 'imagen-3' },
           )
       )
       .addStringOption(option =>
