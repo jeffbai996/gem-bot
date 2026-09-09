@@ -43,7 +43,6 @@ import { PendingEditsStore } from './reactions/pending-edits.ts'
 import { applyLifecycle } from './reactions/lifecycle.ts'
 import { activeTurns } from './active-turns.ts'
 import { ChannelTurnRunner } from './channel-turns.ts'
-import { FAST_FORWARD_REACTION, LatestQueueMarker } from './queue-marker.ts'
 import { renderSteeredMessage } from './steering.ts'
 import { frameSteeredMessages } from './steer-context.ts'
 import { isHardStopMessage } from './stop-command.ts'
@@ -1826,7 +1825,6 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 // repeated until the queue drains. Result: exactly one thinking indicator per
 // active generation per channel. Cross-channel turns still run concurrently.
 interface QueuedChannelTurn { message: Message; opts: HandleOpts; steered: boolean }
-const queueMarker = new LatestQueueMarker(() => client.user?.id)
 const QUEUE_SETTLE_MS = Number(process.env.GEM_QUEUE_SETTLE_MS) || 0
 const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
   async (channelId, batch) => {
@@ -1846,12 +1844,11 @@ const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
     const combined = batch.some(item => item.steered)
       ? frameSteeredMessages(texts)
       : texts.join('\n')
-    void queueMarker.clear(channelId)
     await handleUserMessage(
       carrier,
-      batch.length === 1
+      batch.length === 1 && !batch[0].steered
         ? carrierItem.opts
-        : { combinedText: combined || undefined },
+        : { ...carrierItem.opts, combinedText: combined || undefined },
     )
   },
   channelId => activeTurns.consumeStopped(channelId),
@@ -1899,10 +1896,10 @@ async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<
   const effectiveOpts = systemText && opts.combinedText === undefined
     ? { ...opts, combinedText: [systemText, message.content].filter(Boolean).join('\n\n') }
     : opts
-  const outcome = await channelTurns.submit(cid, { message, opts: effectiveOpts, steered })
-  if (outcome === 'queued') {
-    void queueMarker.mark(cid, message)
-  }
+  // The current provider bridge cannot inject input into an active generation.
+  // Preserve its tool work and automatically drain guidance at turn completion,
+  // matching the fallback queue behavior of transports without live steering.
+  await channelTurns.submit(cid, { message, opts: effectiveOpts, steered })
 }
 
 async function dispatchInboundMessage(message: Message): Promise<void> {
@@ -1957,18 +1954,6 @@ async function handleInboundMessage(message: Message): Promise<void> {
       return
     }
 
-    // Barge-in (Jeff 2026-07-01/05): a new message takes over, but normal
-    // messages defer the stop until Gemma reaches a lifecycle/stream boundary.
-    // Explicit X/❌ above remains immediate. Deferring avoids half-rendered
-    // thinking/trace edits while still preventing long turns from holding the
-    // channel hostage.
-    if (channelTurns.isRunning(message.channelId) && activeTurns.canRequestBarge(message.channelId)) {
-      if (!(await ingestAndGate(message))) return
-      activeTurns.deferStopFor(message.channelId, { clearQueue: false })
-      channelTurns.enqueue(message.channelId, { message, opts: {}, steered: true })
-      void queueMarker.mark(message.channelId, message)
-      return
-    }
   }
 
   // Pending-edit check from ✏️ flow: if a bot message is marked as
@@ -1999,12 +1984,6 @@ client.on('messageReactionAdd', async (reaction, user) => {
   }
   if (user.partial) {
     try { await user.fetch() } catch { return }
-  }
-  if (reaction.emoji.name === FAST_FORWARD_REACTION && !user.bot
-      && reaction.message.author?.id === user.id
-      && queueMarker.isLatest(reaction.message.channelId, reaction.message.id)) {
-    activeTurns.stopFor(reaction.message.channelId, { clearQueue: false })
-    return
   }
   await handleReaction(reaction, user, {
     client,
