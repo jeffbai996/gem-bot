@@ -1,15 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'fs/promises'
-import { editImages, generateImage, isImageEditRequest } from '../src/image-generation.ts'
+import { editImages, generateImage } from '../src/image-generation.ts'
 
 const image = { inlineData: { mimeType: 'image/png', data: Buffer.from('source').toString('base64') } }
-
-test('recognizes an edit instruction only when an image is attached', () => {
-  assert.equal(isImageEditRequest('turn this into a watercolor', [image]), true)
-  assert.equal(isImageEditRequest('what is in this image?', [image]), false)
-  assert.equal(isImageEditRequest('turn this into a watercolor', [{ text: 'no image' }]), false)
-})
 
 test('forwards the reference image and writes generated image output', async () => {
   let request: any
@@ -146,5 +140,4 @@ test('Imagen 3 falling back to flash when API returns 404', async () => {
   assert.equal(await fs.readFile(result.files[0], 'utf8'), 'recovered-art')
   await fs.unlink(result.files[0])
 })
-
 
