@@ -245,7 +245,35 @@ describe('composeTrajectoryTimelineCard', () => {
     assert.match(out, /📖 Reading… · renderer\.ts/)
     assert.match(out, /🌐 Searching · current project · 842ms/)
     assert.match(out, /⚠️ Browsing failed · example\.com · 6\.2s/)
-    assert.equal((out.match(/^```/gm) ?? []).length, 6)
+    assert.equal((out.match(/^```/gm) ?? []).length, 2)
+  })
+
+  it('groups consecutive calls and resets repeated action labels after thinking', () => {
+    const out = composeTrajectoryTimelineCard({ label: 'Working', steps: [
+      { kind: 'action', text: 'Read', detail: 'first.ts' },
+      { kind: 'action', text: 'Read', detail: 'second.ts' },
+      { kind: 'action', text: 'Search', detail: 'query' },
+      { kind: 'thinking', text: '**Checking results**' },
+      { kind: 'action', text: 'Read', detail: 'third.ts' },
+    ] })
+    assert.match(out, /5 steps/)
+    assert.match(out, /📖 Reading · first\.ts\n   second\.ts\n🌐 Searching · query\n```\n\n\*\*Checking results\*\*/)
+    assert.match(out, /Checking results\*\*\n\n\*\*Tool call\*\*\n```text\n📖 Reading · third\.ts/)
+    assert.equal((out.match(/^```/gm) ?? []).length, 4)
+  })
+
+  it('keeps a long tool-only run bounded with a labelled first row and closed fence', () => {
+    const steps = Array.from({ length: 80 }, (_, index) => ({
+      kind: 'action' as const, text: 'Read', detail: `file-${index}.ts ` + 'long-path/'.repeat(15),
+    }))
+    const out = composeTrajectoryTimelineCard({ label: 'Working', steps })
+    assert.ok(out.length <= 1960)
+    assert.match(out, /80 steps/)
+    assert.match(out, /earlier steps omitted/)
+    assert.match(out, /```text\n📖 Reading · file-/)
+    assert.match(out, /file-79\.ts/)
+    assert.equal((out.match(/^```/gm) ?? []).length, 2)
+    assert.ok(out.endsWith('```'))
   })
 
   it('keeps tool fences intact with hostile backticks and a rolling mixed tail', () => {
