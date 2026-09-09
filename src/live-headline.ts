@@ -79,7 +79,7 @@ export function brainLine(thinking: string): string {
 /** Final compact snapshot for `thinking:live`. Full `thinking:on` remains
  * available separately for deliberate inspection of the complete trace. */
 export function composeLiveThinkingCard(seconds: number, thinking: string): string {
-  return `💭 **Thought for ${seconds}s**${brainLine(thinking)}`
+  return `💭 **Thought for ${seconds}s**\n${thinking.split(/\r?\n/).map(line => `> ${line}`).join('\n')}`
 }
 
 /** Compose the full 💭 spinner card: header + one 🧠 headline + the latest
@@ -139,11 +139,12 @@ function actionPresentation(text: string): { emoji: string, label: string } {
   return { emoji, label }
 }
 
-function timelineThinkingBlock(step: LiveTimelineStep): string {
+function timelineThinkingBlock(step: LiveTimelineStep, complete = false): string {
   const lines = step.text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
   const headingIndex = lines.findIndex(line => /^\*\*.+\*\*$/.test(line) || /^#{1,6}\s+\S/.test(line))
   const titleIndex = headingIndex >= 0 ? headingIndex : 0
-  const title = clipOnWordBoundary(cleanHeadlineLine(lines[titleIndex] ?? 'Working'), HEADLINE_MAX)
+  const rawTitle = cleanHeadlineLine(lines[titleIndex] ?? 'Working')
+  const title = complete ? rawTitle : clipOnWordBoundary(rawTitle, HEADLINE_MAX)
   const body = lines
     .filter((_, index) => index !== titleIndex)
     .map(cleanHeadlineLine)
@@ -151,7 +152,7 @@ function timelineThinkingBlock(step: LiveTimelineStep): string {
     .join(' ')
   const detail = step.detail?.trim() ?? ''
   const bodyParts = [body, detail && detail !== body ? detail : ''].filter(Boolean)
-  const summary = clipOnWordBoundary(bodyParts.join(' '), TIMELINE_BODY_MAX)
+  const summary = complete ? bodyParts.join(' ') : clipOnWordBoundary(bodyParts.join(' '), TIMELINE_BODY_MAX)
   return `**${title || 'Working'}**${summary ? `\n> ${summary}` : ''}`
 }
 
@@ -169,7 +170,7 @@ function timelineActionRow(step: LiveTimelineStep, previous?: LiveTimelineStep):
   return { left: left.replace(/`/g, 'ˋ'), right: right.replace(/`/g, 'ˋ') }
 }
 
-function timelineBlocks(steps: LiveTimelineStep[]): string {
+function timelineBlocks(steps: LiveTimelineStep[], complete = false): string {
   const blocks: string[] = []
   let rows: Array<{ left: string, right: string }> = []
   let previous: LiveTimelineStep | undefined
@@ -187,7 +188,7 @@ function timelineBlocks(steps: LiveTimelineStep[]): string {
   for (const step of steps) {
     if (step.kind === 'thinking') {
       flush()
-      blocks.push(timelineThinkingBlock(step))
+      blocks.push(timelineThinkingBlock(step, complete))
     } else if (step.diff) {
       flush()
       const { badge, body } = formatUnifiedDiffTrace(step.diff)
@@ -216,9 +217,12 @@ export function composeTrajectoryTimelineCard(opts: {
   glyph?: string
   dots?: string
   steps: LiveTimelineStep[]
+  complete?: boolean
 }): string {
   const { label, glyph = '✻', dots = '…', steps } = opts
   const header = `💭 ${glyph} **${label}${dots}**\n-# ${steps.length} step${steps.length === 1 ? '' : 's'}`
+  // The final renderer paginates this body; only the live preview needs a cap.
+  if (opts.complete) return `${header}\n${timelineBlocks(steps, true)}`
   let result = header
   // Re-render the retained tail so its first tool row always has its action
   // label and every grouped fence closes, even when older rows are dropped.
