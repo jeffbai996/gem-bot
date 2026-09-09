@@ -6,6 +6,7 @@ interface ToolFinish {
   failed: boolean
   durationMs?: number
   resultPreview?: string
+  diff?: string
 }
 
 interface ToolPresentation {
@@ -137,6 +138,7 @@ export class LiveTimelineBuffer {
     const step = this.steps[index]
     if (!step || step.kind !== 'action') return
     step.status = finish.failed ? 'failed' : 'done'
+    if (finish.diff) step.diff = finish.diff
     if (finish.durationMs && finish.durationMs > 0) step.durationMs = finish.durationMs
   }
 

@@ -4,6 +4,12 @@ import { describe, it } from 'node:test'
 import { LiveTimelineBuffer, visibleTimelineSteps, describeToolAction } from '../src/live-timeline.ts'
 
 describe('LiveTimelineBuffer', () => {
+  it('retains completed edit diffs in the live timeline', () => {
+    const timeline = new LiveTimelineBuffer()
+    timeline.startTool('edit_file', { path: 'example.ts' })
+    timeline.finishTool('edit_file', { failed: false, diff: '+new line' })
+    assert.equal(timeline.snapshot()[0].diff, '+new line')
+  })
   it('preserves shell targets for both AGY display names and native arguments', () => {
     assert.equal(describeToolAction('Bash(ls -la)').detail, 'ls -la')
     assert.equal(describeToolAction('run_command', { CommandLine: 'ls -la' }).detail, 'ls -la')

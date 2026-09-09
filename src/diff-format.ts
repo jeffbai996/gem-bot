@@ -17,6 +17,17 @@ import { TRACE_ROW_MAX, truncateDisplayWidth } from './tool-trace.ts'
 const _HUNK_RE = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/
 const DIFF_MEGA_LINE_MAX = 300
 
+/** Trace cards own their fence and file label. Preserve hunk line numbers;
+ * synthetic new-file additions from AGY begin at line one. */
+export function formatUnifiedDiffTrace(unified: string): { badge: string, body: string[] } {
+  const source = unified.replace(/\n+$/, '')
+  const numbered = /^@@ /m.test(source) ? source : '@@ -1 +1 @@\n' + source
+  const rendered = renderClaudeStyleDiff(numbered).split('\n')
+  const badgeIndex = rendered.findIndex(line => line.startsWith('⎿ '))
+  if (badgeIndex < 0) return { badge: '[+0, -0]', body: [] }
+  return { badge: rendered[badgeIndex].slice(2), body: rendered.slice(badgeIndex + 1, -1) }
+}
+
 /** Render ONE raw unified-diff string as a Claude-style line-numbered ```diff```
  *  block. Returns the input unchanged if it doesn't parse as a diff. */
 export function renderClaudeStyleDiff(diffText: string): string {

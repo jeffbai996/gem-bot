@@ -149,7 +149,7 @@ describe('parseAgyTrajectoryText live narration', () => {
         text: '**Fixing the choke point**\nThe provider events are already rich enough.',
         detail: 'I will update the bounded timeline.',
       },
-      { kind: 'action', text: 'Write', detail: 'timeline.ts' },
+      { kind: 'action', text: 'Write', detail: 'timeline.ts', diff: '+export {}' },
     ])
   })
 

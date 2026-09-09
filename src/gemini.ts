@@ -587,6 +587,7 @@ export interface LiveTimelineStep {
   detail?: string
   status?: 'running' | 'done' | 'failed'
   durationMs?: number
+  diff?: string
 }
 
 /**

@@ -13,6 +13,8 @@
 
 import type { LiveTimelineStep } from './gemini.ts'
 import { displayWidth } from './tool-trace.ts'
+import { renderTraceCards } from './tool-trace.ts'
+import { formatUnifiedDiffTrace } from './diff-format.ts'
 
 const HEADLINE_MAX = 120
 const DETAIL_MAX = 160
@@ -186,6 +188,15 @@ function timelineBlocks(steps: LiveTimelineStep[]): string {
     if (step.kind === 'thinking') {
       flush()
       blocks.push(timelineThinkingBlock(step))
+    } else if (step.diff) {
+      flush()
+      const { badge, body } = formatUnifiedDiffTrace(step.diff)
+      const name = step.detail || step.text
+      blocks.push(...renderTraceCards([
+        `${step.status === 'failed' ? '-' : '+'} ● Edit(${name})${step.status === 'failed' ? ' FAILED' : ''}`,
+        `  ⎿ ${badge}`,
+        ...body,
+      ], 'live'))
     } else {
       rows.push(timelineActionRow(step, previous))
       // Keep the labelled row as the indentation anchor throughout the run.

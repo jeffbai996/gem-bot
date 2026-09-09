@@ -903,6 +903,7 @@ export function parseAgyTrajectoryText(raw: string): AgyTrajParse {
           kind: 'action',
           text: displayMatch?.[1]?.trim() || displayName,
           ...(displayMatch?.[2]?.trim() ? { detail: displayMatch[2].trim() } : {}),
+          ...(diff ? { diff } : {}),
         })
       }
     } else if (!anyPlannerTools) {

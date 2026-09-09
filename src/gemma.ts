@@ -30,7 +30,7 @@ import {
   friendlyModelName,
   modelEffort,
 } from './models.ts'
-import { reformatUnifiedDiffs } from './diff-format.ts'
+import { reformatUnifiedDiffs, formatUnifiedDiffTrace } from './diff-format.ts'
 import { chunk } from './chunk.ts'
 import { stripToolTraceCard } from './render-cleanup.ts'
 import { geminiCommand, executeGeminiCommand } from './commands.ts'
@@ -317,15 +317,7 @@ function shortToolName(name: string): string {
 // (red '-' / green '+', context plain), minus the git '@@' / file-header noise.
 // Ported from gpt-bot/src/gpt.ts so the trace card can render file-edit diffs.
 function formatDiff(unified: string): { badge: string; body: string[] } {
-  let adds = 0, dels = 0
-  const body: string[] = []
-  for (const l of unified.replace(/\n+$/, '').split('\n')) {
-    if (l.startsWith('@@') || l.startsWith('+++') || l.startsWith('---')) continue
-    if (l.startsWith('+')) adds++
-    else if (l.startsWith('-')) dels++
-    body.push(l)
-  }
-  return { badge: `[+${adds}, -${dels}]`, body }
+  return formatUnifiedDiffTrace(unified)
 }
 
 // --- Dedicated 🔧 Tool-trace card (ported from gpt-bot) ---------------------
@@ -1140,6 +1132,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           failed: e.failed,
           durationMs: e.durationMs,
           resultPreview: e.resultPreview,
+          diff: e.diff,
         }, e.args ?? {})
         flushStream().catch(() => {})
         if (activeToolCount === 0) activeTurns.clearBusy(message.channelId)
