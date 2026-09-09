@@ -111,6 +111,7 @@ export function composeThinkingCard(opts: {
 
 const ACTION_LABELS: Record<string, string> = {
   bash: 'Running',
+  run: 'Running',
   browse: 'Browsing',
   click: 'Clicking',
   grep: 'Searching',
@@ -152,29 +153,32 @@ function timelineThinkingBlock(step: LiveTimelineStep): string {
   return `**${title || 'Working'}**${summary ? `\n> ${summary}` : ''}`
 }
 
-function timelineActionRow(step: LiveTimelineStep, previous?: LiveTimelineStep): string {
+function timelineActionRow(step: LiveTimelineStep, previous?: LiveTimelineStep): { left: string, right: string } {
   const { emoji, label } = actionPresentation(step.text)
-  const detail = step.detail ? ` · ${clipOnWordBoundary(step.detail.replace(/\s+/g, ' ').trim(), DETAIL_MAX)}` : ''
+  const detail = step.detail ? clipOnWordBoundary(step.detail.replace(/\s+/g, ' ').trim(), DETAIL_MAX) : ''
   const duration = !step.durationMs ? ''
-    : step.durationMs < 1000 ? ` · ${Math.round(step.durationMs)}ms`
-    : ` · ${(step.durationMs / 1000).toFixed(step.durationMs < 10_000 ? 1 : 0)}s`
+    : step.durationMs < 1000 ? `  ${Math.round(step.durationMs)}ms`
+    : `  ${(step.durationMs / 1000).toFixed(step.durationMs < 10_000 ? 1 : 0)}s`
   const repeated = previous && actionPresentation(previous.text).label === label && detail
-  const anchorPrefix = previous?.status === 'failed' ? `⚠️ ${label} failed · `
-    : `${emoji} ${label}${previous?.status === 'running' ? '…' : ''} · `
-  const row = step.status === 'failed' ? `⚠️ ${label} failed${detail}${duration}`
-    : repeated ? `${' '.repeat(displayWidth(anchorPrefix) + 1)}${detail.slice(3)}${step.status === 'running' ? '…' : ''}${duration}`
-    : step.status === 'running' ? `${emoji} ${label}…${detail}`
-    : `${emoji} ${label}${detail}${duration}`
+  const left = step.status === 'failed' ? `⚠️ ${label} failed`
+    : repeated ? '' : `${emoji} ${label}${step.status === 'running' ? '…' : ''}`
+  const right = detail + (repeated && step.status === 'running' ? '…' : '') + duration
   // Tool arguments can contain backticks; keep them from closing the fence.
-  return row.replace(/`/g, 'ˋ')
+  return { left: left.replace(/`/g, 'ˋ'), right: right.replace(/`/g, 'ˋ') }
 }
 
 function timelineBlocks(steps: LiveTimelineStep[]): string {
   const blocks: string[] = []
-  let rows: string[] = []
+  let rows: Array<{ left: string, right: string }> = []
   let previous: LiveTimelineStep | undefined
   const flush = () => {
-    if (rows.length) blocks.push('🔧 **Tool call**\n```text\n' + rows.join('\n') + '\n```')
+    if (rows.length) {
+      const column = Math.max(...rows.map(row => displayWidth(row.left))) + 2
+      const text = rows.map(row => row.right
+        ? row.left + ' '.repeat(column - displayWidth(row.left)) + row.right
+        : row.left).join('\n')
+      blocks.push('🔧 **Tool call**\n```text\n' + text + '\n```')
+    }
     rows = []
     previous = undefined
   }

@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { LiveTimelineBuffer, visibleTimelineSteps } from '../src/live-timeline.ts'
+import { LiveTimelineBuffer, visibleTimelineSteps, describeToolAction } from '../src/live-timeline.ts'
 
 describe('LiveTimelineBuffer', () => {
+  it('preserves shell targets for both AGY display names and native arguments', () => {
+    assert.equal(describeToolAction('Bash(ls -la)').detail, 'ls -la')
+    assert.equal(describeToolAction('run_command', { CommandLine: 'ls -la' }).detail, 'ls -la')
+    assert.equal(describeToolAction('exec_command', { cmd: 'pwd' }).detail, 'pwd')
+  })
   it('builds one chronological API timeline from thought and tool events', () => {
     const timeline = new LiveTimelineBuffer()
 
