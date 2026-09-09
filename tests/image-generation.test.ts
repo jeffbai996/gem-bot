@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'fs/promises'
-import { editImages, isImageEditRequest } from '../src/image-generation.ts'
+import { editImages } from '../src/image-generation.ts'
 
 const image = { inlineData: { mimeType: 'image/png', data: Buffer.from('source').toString('base64') } }
 
