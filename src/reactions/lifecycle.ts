@@ -81,7 +81,17 @@ const PREDECESSORS: Record<LifecycleState, LifecycleState[]> = {
  * Idempotent per-state: discord.js's `react()` is a PUT, so re-applying is
  * a no-op on Discord's side.
  */
-export async function applyLifecycle(message: Message, state: LifecycleState): Promise<void> {
+const transitions = new Map<string, Promise<void>>()
+
+export function applyLifecycle(message: Message, state: LifecycleState): Promise<void> {
+  const key = `${message.channelId}:${message.id}`
+  const next = (transitions.get(key) ?? Promise.resolve()).catch(() => {}).then(() => transition(message, state))
+  transitions.set(key, next)
+  void next.finally(() => { if (transitions.get(key) === next) transitions.delete(key) }).catch(() => {})
+  return next
+}
+
+async function transition(message: Message, state: LifecycleState): Promise<void> {
   const emoji = EMOJI[state]
 
   // Remove previous transients first so the row of reactions doesn't grow.
@@ -91,10 +101,10 @@ export async function applyLifecycle(message: Message, state: LifecycleState): P
     for (const prev of PREDECESSORS[state]) {
       const prevEmoji = EMOJI[prev]
       if (!prevEmoji || prevEmoji === emoji) continue
-      const r = message.reactions.cache.get(prevEmoji)
-      if (r) {
-        await r.users.remove(me.id).catch(() => { /* fire-and-forget */ })
-      }
+      // Gateway reaction events may lag REST writes; a cache miss is not proof
+      // that our reaction is absent. @me never deletes another user's reaction.
+      await message.client.rest.delete(`/channels/${message.channelId}/messages/${message.id}/reactions/${encodeURIComponent(prevEmoji)}/@me`)
+        .catch(error => { console.error(`[lifecycle] remove ${prevEmoji} failed:`, error) })
     }
   }
 
