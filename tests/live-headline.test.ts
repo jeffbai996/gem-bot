@@ -208,7 +208,7 @@ describe('composeTrajectoryTimelineCard', () => {
     assert.match(out, /\*\*Inspecting the renderer\*\*/)
     assert.match(out, /> The events are already present\./)
     assert.match(out, /I will compare the Discord and web renderers\./)
-    assert.match(out, /🔧 \*\*Tool call\*\*\n```text\n📖 Reading · live\.ts\n```/)
+    assert.match(out, /🔧 \*\*Tool call\*\*\n```text\n📖 Reading\n  live\.ts\n```/)
     assert.doesNotMatch(out, /• \*\*/)
     assert.ok(out.indexOf('Inspecting the renderer') < out.indexOf('📖'))
     assert.ok(out.indexOf('📖') < out.indexOf('Fixing the choke point'))
@@ -242,9 +242,9 @@ describe('composeTrajectoryTimelineCard', () => {
     })
 
     assert.match(out, /^💭 ✓ \*\*Worked for 12s\*\*/)
-    assert.match(out, /📖 Reading… · renderer\.ts/)
-    assert.match(out, /🌐 Searching · current project · 842ms/)
-    assert.match(out, /⚠️ Browsing failed · example\.com · 6\.2s/)
+    assert.match(out, /📖 Reading\n  renderer\.ts…/)
+    assert.match(out, /🌐 Searching\n  current project · 842ms/)
+    assert.match(out, /⚠️ Browsing failed\n  example\.com · 6\.2s/)
     assert.equal((out.match(/^```/gm) ?? []).length, 2)
   })
 
@@ -257,8 +257,8 @@ describe('composeTrajectoryTimelineCard', () => {
       { kind: 'action', text: 'Read', detail: 'third.ts' },
     ] })
     assert.match(out, /5 steps/)
-    assert.match(out, /📖 Reading · first\.ts\n {13}second\.ts\n🌐 Searching · query\n```\n\*\*Checking results\*\*/)
-    assert.match(out, /Checking results\*\*\n🔧 \*\*Tool call\*\*\n```text\n📖 Reading · third\.ts/)
+    assert.match(out, /📖 Reading\n  first\.ts\n  second\.ts\n🌐 Searching\n  query\n```\n\*\*Checking results\*\*/)
+    assert.match(out, /Checking results\*\*\n🔧 \*\*Tool call\*\*\n```text\n📖 Reading\n  third\.ts/)
     assert.doesNotMatch(out, /\n\n/)
     assert.equal((out.match(/^```/gm) ?? []).length, 4)
   })
@@ -271,7 +271,7 @@ describe('composeTrajectoryTimelineCard', () => {
     assert.ok(out.length <= 1960)
     assert.match(out, /80 steps/)
     assert.match(out, /earlier steps omitted/)
-    assert.match(out, /```text\n📖 Reading · file-/)
+    assert.match(out, /```text\n📖 Reading\n  file-/)
     assert.match(out, /file-79\.ts/)
     assert.equal((out.match(/^```/gm) ?? []).length, 2)
     assert.ok(out.endsWith('```'))
@@ -283,7 +283,7 @@ describe('composeTrajectoryTimelineCard', () => {
       { kind: 'action', text: 'Read', detail: 'second.ts', status: 'done' },
       { kind: 'action', text: 'Read', detail: 'third.ts', status: 'done' },
     ] })
-    assert.match(out, /📖 Reading… · first\.ts\n {14}second\.ts\n {14}third\.ts/)
+    assert.match(out, /📖 Reading\n  first\.ts…\n  second\.ts\n  third\.ts/)
   })
 
   it('keeps tool fences intact with hostile backticks and a rolling mixed tail', () => {
