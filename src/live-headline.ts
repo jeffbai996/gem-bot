@@ -142,8 +142,8 @@ function actionPresentation(text: string): { emoji: string, label: string } {
 function timelineThinkingBlock(step: LiveTimelineStep, complete = false): string {
   const lines = step.text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
   const headingIndex = lines.findIndex(line => /^\*\*.+\*\*$/.test(line) || /^#{1,6}\s+\S/.test(line))
-  const titleIndex = headingIndex >= 0 ? headingIndex : 0
-  const rawTitle = cleanHeadlineLine(lines[titleIndex] ?? 'Working')
+  const titleIndex = headingIndex
+  const rawTitle = headingIndex >= 0 ? cleanHeadlineLine(lines[headingIndex]) : ''
   const title = complete ? rawTitle : clipOnWordBoundary(rawTitle, HEADLINE_MAX)
   const body = lines
     .filter((_, index) => index !== titleIndex)
@@ -153,7 +153,7 @@ function timelineThinkingBlock(step: LiveTimelineStep, complete = false): string
   const detail = step.detail?.trim() ?? ''
   const bodyParts = [body, detail && detail !== body ? detail : ''].filter(Boolean)
   const summary = complete ? bodyParts.join(' ') : clipOnWordBoundary(bodyParts.join(' '), TIMELINE_BODY_MAX)
-  return `**${title || 'Working'}**${summary ? `\n> ${summary}` : ''}`
+  return [title ? `**${title}**` : '', summary ? `> ${summary}` : ''].filter(Boolean).join('\n')
 }
 
 function timelineActionRow(step: LiveTimelineStep, previous?: LiveTimelineStep): { left: string, right: string } {
