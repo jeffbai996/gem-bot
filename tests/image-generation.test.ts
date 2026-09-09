@@ -33,24 +33,73 @@ test('forwards the reference image and writes generated image output', async () 
   await fs.unlink(files[0])
 })
 
-test('generates image from prompt and respects aspect ratio', async () => {
+test('generates image using Imagen 3 with cost footer', async () => {
+  let request: any
+  const fake = {
+    models: {
+      generateImages: async (value: any) => {
+        request = value
+        return {
+          generatedImages: [
+            { image: { imageBytes: Buffer.from('imagen-art').toString('base64'), mimeType: 'image/jpeg' } },
+          ],
+        }
+      },
+    },
+  }
+  const result = await generateImage('unused', 'a cybernetic eagle', '16:9', 'imagen-3', fake as any)
+  assert.equal(request.model, 'imagen-3.0-generate-002')
+  assert.equal(request.prompt, 'a cybernetic eagle')
+  assert.equal(request.config.aspectRatio, '16:9')
+  assert.equal(await fs.readFile(result.files[0], 'utf8'), 'imagen-art')
+  assert.match(result.footer, /imagen-3\.0-generate-002/)
+  assert.match(result.footer, /\$0\.030/)
+  await fs.unlink(result.files[0])
+})
+
+test('generates image from prompt using flash with token & cost footer', async () => {
+  let request: any
+  const fake = {
+    models: {
+      generateContent: async (value: any) => {
+        request = value
+        return {
+          usageMetadata: { promptTokenCount: 15, candidatesTokenCount: 250 },
+          candidates: [{ content: { parts: [
+            { text: 'here is your image' },
+            { inlineData: { mimeType: 'image/png', data: Buffer.from('generated-art').toString('base64') } },
+          ] } }],
+        }
+      },
+    },
+  }
+  const result = await generateImage('unused', 'a sunset over the mountains', '16:9', 'flash', fake as any)
+  assert.equal(request.model, 'gemini-3.1-flash-image')
+  assert.deepEqual(request.config.responseModalities, ['TEXT', 'IMAGE'])
+  assert.equal(request.contents[0].parts[0].text, 'a sunset over the mountains (aspect ratio: 16:9)')
+  assert.equal(await fs.readFile(result.files[0], 'utf8'), 'generated-art')
+  assert.match(result.footer, /gemini-3\.1-flash-image/)
+  assert.match(result.footer, /↑ 15 · ↓ 250/)
+  assert.match(result.footer, /\$0\.030/)
+  await fs.unlink(result.files[0])
+})
+
+test('backward compatibility: mock client with generateContent only falls back to flash', async () => {
   let request: any
   const fake = {
     models: {
       generateContent: async (value: any) => {
         request = value
         return { candidates: [{ content: { parts: [
-          { text: 'here is your image' },
-          { inlineData: { mimeType: 'image/png', data: Buffer.from('generated-art').toString('base64') } },
+          { text: 'fallback' },
+          { inlineData: { mimeType: 'image/png', data: Buffer.from('fallback-art').toString('base64') } },
         ] } }] }
       },
     },
   }
-  const files = await generateImage('unused', 'a sunset over the mountains', '16:9', fake as any)
+  const files = await generateImage('unused', 'a dog playing fetch', '1:1', fake as any)
   assert.equal(request.model, 'gemini-3.1-flash-image')
-  assert.deepEqual(request.config.responseModalities, ['TEXT', 'IMAGE'])
-  assert.equal(request.contents[0].parts[0].text, 'a sunset over the mountains (aspect ratio: 16:9)')
-  assert.equal(await fs.readFile(files[0], 'utf8'), 'generated-art')
+  assert.equal(await fs.readFile(files[0], 'utf8'), 'fallback-art')
   await fs.unlink(files[0])
 })
 

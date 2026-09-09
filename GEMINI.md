@@ -14,7 +14,7 @@ A standalone Discord bot using Discord.js and the Gemini API (current default `g
 ## Multimodal & Image Pipeline
 - **Multimodal Input:** Supports images (PNG, JPEG, WebP, GIF, HEIC), video, audio, and documents (PDF, text, code). Handled via inline data or Google File API in `src/attachments.ts`.
 - **Image-to-Image Editing (`src/image-generation.ts`):** `isImageEditRequest` checks for edit verbs (`edit`, `change`, `replace`, `remove`, `add`, `make`, `turn`, `transform`, `restyle`, `recolor`, `swap`, etc.) **and** requires at least one attached image. When triggered, it calls `gemini-3.1-flash-image` with `responseModalities: ['TEXT', 'IMAGE']` and writes output images to disk to attach to the Discord reply.
-- **Text-to-Image Generation (`/gemini image`):** Dedicated slash command (`/gemini image prompt:<text> [ratio:<1:1|16:9|9:16|4:3|3:4]>`) wired via `generateImage` in `src/image-generation.ts`. Gated to allowlisted users, defers reply immediately, and posts generated images without false triggers in regular chat.
+- **Text-to-Image Generation (`/gemini image`):** Dedicated slash command (`/gemini image prompt:<text> [model:<imagen-3|flash>] [ratio:<1:1|16:9|9:16|4:3|3:4]>`) wired via `generateImage` in `src/image-generation.ts`. Supports Imagen 3 (`imagen-3.0-generate-002`, default) and Gemini 3.1 Flash Image (`gemini-3.1-flash-image`), renders with token and cost metadata footer (`~$0.030`), gated to allowlisted users, defers reply immediately, and posts generated images without false triggers in regular chat.
 
 
 ## Development Rules
