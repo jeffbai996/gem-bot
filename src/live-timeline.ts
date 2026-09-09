@@ -15,6 +15,7 @@ interface ToolPresentation {
 }
 
 const DETAIL_KEYS = [
+  'command', 'CommandLine', 'cmd',
   'query', 'Query', 'url', 'URL', 'AbsolutePath', 'path', 'file', 'filename',
   'DirectoryPath', 'pattern', 'symbol', 'symbols', 'ticker',
 ]
@@ -46,6 +47,10 @@ function unwrapTool(name: string, args: Record<string, unknown>): { name: string
 }
 
 export function describeToolAction(name: string, args: Record<string, unknown> = {}): ToolPresentation {
+  // AGY emits preformatted Verb(target) names before its authoritative snapshot.
+  // Preserve those targets rather than classifying the entire string as a tool.
+  const formatted = name.match(/^(Bash|Run|Read|Write|Search|Grep|List|Browse|Click|Type|ReadPage|Screenshot)\((.*)\)$/s)
+  if (formatted) return { key: name, text: formatted[1], detail: formatted[2] }
   const unwrapped = unwrapTool(name, args)
   const bare = unwrapped.name.toLocaleLowerCase('en-US').replace(/^mcp__[^_]+__/, '')
   const text = /screenshot|capture/.test(bare) ? 'Screenshot'
