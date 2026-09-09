@@ -12,6 +12,7 @@
 // `live` uses the compact current headline; `collapse` accumulates every line.
 
 import type { LiveTimelineStep } from './gemini.ts'
+import { displayWidth } from './tool-trace.ts'
 
 const HEADLINE_MAX = 120
 const DETAIL_MAX = 160
@@ -158,14 +159,12 @@ function timelineActionRow(step: LiveTimelineStep, previous?: LiveTimelineStep):
     : step.durationMs < 1000 ? ` · ${Math.round(step.durationMs)}ms`
     : ` · ${(step.durationMs / 1000).toFixed(step.durationMs < 10_000 ? 1 : 0)}s`
   const repeated = previous && actionPresentation(previous.text).label === label && detail
-  // Discord renders emoji at a different pixel width from monospace spaces.
-  // Put every target on its own identically indented line instead of padding
-  // continuation rows to an emoji-bearing prefix.
-  const target = detail ? `  ${detail.slice(3)}${step.status === 'running' ? '…' : ''}${duration}` : ''
-  const heading = step.status === 'failed' ? `⚠️ ${label} failed`
-    : `${emoji} ${label}`
-  const row = repeated && step.status !== 'failed' ? target
-    : target ? `${heading}\n${target}` : `${heading}${duration}`
+  const anchorPrefix = previous?.status === 'failed' ? `⚠️ ${label} failed · `
+    : `${emoji} ${label}${previous?.status === 'running' ? '…' : ''} · `
+  const row = step.status === 'failed' ? `⚠️ ${label} failed${detail}${duration}`
+    : repeated ? `${' '.repeat(displayWidth(anchorPrefix) + 1)}${detail.slice(3)}${step.status === 'running' ? '…' : ''}${duration}`
+    : step.status === 'running' ? `${emoji} ${label}…${detail}`
+    : `${emoji} ${label}${detail}${duration}`
   // Tool arguments can contain backticks; keep them from closing the fence.
   return row.replace(/`/g, 'ˋ')
 }
