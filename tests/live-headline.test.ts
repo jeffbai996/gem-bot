@@ -208,7 +208,7 @@ describe('composeTrajectoryTimelineCard', () => {
     assert.match(out, /\*\*Inspecting the renderer\*\*/)
     assert.match(out, /> The events are already present\./)
     assert.match(out, /I will compare the Discord and web renderers\./)
-    assert.match(out, /\*\*Tool call\*\*\n```text\n📖 Reading · live\.ts\n```/)
+    assert.match(out, /🔧 \*\*Tool call\*\*\n```text\n📖 Reading · live\.ts\n```/)
     assert.doesNotMatch(out, /• \*\*/)
     assert.ok(out.indexOf('Inspecting the renderer') < out.indexOf('📖'))
     assert.ok(out.indexOf('📖') < out.indexOf('Fixing the choke point'))
@@ -257,8 +257,9 @@ describe('composeTrajectoryTimelineCard', () => {
       { kind: 'action', text: 'Read', detail: 'third.ts' },
     ] })
     assert.match(out, /5 steps/)
-    assert.match(out, /📖 Reading · first\.ts\n {13}second\.ts\n🌐 Searching · query\n```\n\n\*\*Checking results\*\*/)
-    assert.match(out, /Checking results\*\*\n\n\*\*Tool call\*\*\n```text\n📖 Reading · third\.ts/)
+    assert.match(out, /📖 Reading · first\.ts\n {13}second\.ts\n🌐 Searching · query\n```\n\*\*Checking results\*\*/)
+    assert.match(out, /Checking results\*\*\n🔧 \*\*Tool call\*\*\n```text\n📖 Reading · third\.ts/)
+    assert.doesNotMatch(out, /\n\n/)
     assert.equal((out.match(/^```/gm) ?? []).length, 4)
   })
 

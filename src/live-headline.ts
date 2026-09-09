@@ -174,7 +174,7 @@ function timelineBlocks(steps: LiveTimelineStep[]): string {
   let rows: string[] = []
   let previous: LiveTimelineStep | undefined
   const flush = () => {
-    if (rows.length) blocks.push('**Tool call**\n```text\n' + rows.join('\n') + '\n```')
+    if (rows.length) blocks.push('🔧 **Tool call**\n```text\n' + rows.join('\n') + '\n```')
     rows = []
     previous = undefined
   }
@@ -190,7 +190,7 @@ function timelineBlocks(steps: LiveTimelineStep[]): string {
     }
   }
   flush()
-  return blocks.join('\n\n')
+  return blocks.join('\n')
 }
 
 /** One Discord-safe rolling trajectory. It preserves the ordered public
@@ -209,7 +209,7 @@ export function composeTrajectoryTimelineCard(opts: {
   // label and every grouped fence closes, even when older rows are dropped.
   for (let index = steps.length - 1; index >= 0; index--) {
     const marker = index > 0 ? `\n-# ↑ ${index} earlier steps omitted` : ''
-    const candidate = `${header}${marker}\n\n${timelineBlocks(steps.slice(index))}`
+    const candidate = `${header}${marker}\n${timelineBlocks(steps.slice(index))}`
     if (candidate.length > TIMELINE_CARD_MAX) break
     result = candidate
   }
