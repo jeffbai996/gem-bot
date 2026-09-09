@@ -4,19 +4,12 @@ import os from 'os'
 import path from 'path'
 import type { MediaPart } from './attachments.ts'
 
-const EDIT_RE = /\b(?:edit|change|replace|remove|add|make|turn|transform|convert|restyle|recolor|put|give|swap)\b/i
-
-export function isImageEditRequest(text: string, parts: MediaPart[]): boolean {
-  return EDIT_RE.test(text) && parts.some(part =>
-    'inlineData' in part && part.inlineData.mimeType.startsWith('image/')
-  )
-}
-
 export async function editImages(
   apiKey: string,
   prompt: string,
   parts: MediaPart[],
   client: GoogleGenAI = new GoogleGenAI({ apiKey }),
+  signal?: AbortSignal,
 ): Promise<string[]> {
   const images = parts.filter(part =>
     'inlineData' in part && part.inlineData.mimeType.startsWith('image/')
@@ -24,7 +17,7 @@ export async function editImages(
   const response = await client.models.generateContent({
     model: process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image',
     contents: [{ role: 'user', parts: [...images, { text: prompt }] }],
-    config: { responseModalities: ['TEXT', 'IMAGE'] },
+    config: { responseModalities: ['TEXT', 'IMAGE'], abortSignal: signal, httpOptions: { timeout: 300_000 } },
   })
 
   const output: string[] = []

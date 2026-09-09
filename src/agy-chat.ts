@@ -188,8 +188,8 @@ export function buildAgyPrompt(input: AgyChatInput): string {
     'account/positions/margin/quotes. This is LIVE financial data — only surface specifics where Jeff already is.\n' +
     '  • playwright — headless browser (`browser_navigate`, `browser_snapshot`, `browser_take_screenshot`, …).\n' +
     "Use them when the task needs them — actually call the tool, don't claim you can't. Two things still " +
-    'hold: you remain TEXT-only (no image/audio/video GENERATION — browser screenshots are fine, they\'re ' +
-    'captured not generated), and the core honesty rule is unchanged — never claim you ran something you ' +
+    'hold: image generation/editing uses the image_request reply handoff described in the system prompt ' +
+    '(do not generate through shell); audio/video generation is unavailable. Never claim you ran something you ' +
     "didn't. If a tool genuinely errors or a server is down, say so; but don't pre-refuse work you can do here. " +
     'For casual chat, greetings, acknowledgments, or "testing" turns, answer directly without opening browser, ' +
     'MCP, shell, filesystem, or search tools. When you write a file the user should see (a report, a doc, code), ' +

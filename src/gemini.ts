@@ -177,6 +177,7 @@ export function parseResponse(text: string, isPartial: boolean = false): ParsedR
       // leaves string contents untouched — only whitespace OUTSIDE string
       // literals is dropped.
       const obj = JSON.parse(normalizeJsonWhitespace(jsonStr))
+      if (Object.hasOwn(obj, 'image_request')) return { react: null, thinking: null, reply: JSON.stringify(obj) }
       // Gemini sometimes inserts whitespace INSIDE key names too —
       // e.g. `{"\nreact": ...}` parses as key "\nreact", not "react".
       // Trim keys and reassemble so obj.react lookups work.

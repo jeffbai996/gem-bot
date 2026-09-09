@@ -1,8 +1,10 @@
 import { PresenceOwner } from './presence-owner.ts'
+import { imageConversationInstruction, parseImageRequest, hideImageRequest, selectImageReference } from './image-conversation.ts'
 import { installLogTimestamps } from './log-timestamps.ts'
 installLogTimestamps()
 import { Client, GatewayIntentBits, Partials, ActivityType, REST, Routes, type Message } from 'discord.js'
 import path from 'path'
+import { unlink } from 'node:fs/promises'
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import os from 'os'
 import dotenv from 'dotenv'
@@ -67,7 +69,7 @@ import {
 } from './tool-trace.ts'
 import { extractPresenceDirective } from './presence.ts'
 import { GemStats } from './stats.ts'
-import { editImages, isImageEditRequest } from './image-generation.ts'
+import { editImages } from './image-generation.ts'
 import { formatSkippedAttachments } from './discord-card.ts'
 import {
   GRACEFUL_SHUTDOWN_DEADLINE_MS,
@@ -793,6 +795,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // Register before the first awaited pre-processing call. Stops sent while
   // history/media ingestion is still running must abort this turn before it
   // reaches Gemini/agy, not get queued behind it.
+  const generatedImageFiles: string[] = []
   const stopController = new AbortController()
   activeTurns.register(message.channelId, () => stopController.abort())
   const throwIfStopped = () => {
@@ -826,9 +829,16 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     const threadContext = await resolveThreadContext(message)
     const parentChannelId = message.channel.isThread() ? message.channel.parentId : null
     const currentAttachments = [...message.attachments.values(), ...extractRichMedia(message)]
-    const inputAttachments = currentAttachments.length > 0
+    let inputAttachments = currentAttachments.length > 0
       ? currentAttachments
       : replyContext?.attachments ?? pinContext?.message?.attachments ?? threadContext?.source?.attachments ?? []
+    if (!inputAttachments.length) {
+      const recent = await message.channel.messages.fetch({ limit: 50, before: message.id })
+      const reference = selectImageReference([...recent.values()].map(m => ({
+        id: m.id, authorId: m.author.id, createdTimestamp: m.createdTimestamp, attachments: [...m.attachments.values()],
+      })), message.author.id, client.user!.id, message.content, sinceMessageId)
+      if (reference) inputAttachments = [reference]
+    }
     const hasIngest = inputAttachments.length > 0 || /youtu/i.test(message.content)
     if (hasIngest) {
       applyLifecycle(message, 'ingesting').catch(() => {})
@@ -1180,6 +1190,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       voiceManager.startThinking()
     }
     const systemPrompt = persona.buildSystemPrompt(message.channelId, message.guildId)
+      + imageConversationInstruction
       + (speaking ? SPOKEN_MODE_INSTRUCTION : '')
 
     // The full system prompt the API path uses (persona + date + mandatory JSON
@@ -1214,7 +1225,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     }, (partial) => {
       if (activeTurns.stopIfPending(message.channelId)) return
       const visible = extractPresenceDirective(partial.reply)
-      latestParsed = { ...partial, reply: visible.reply }
+      latestParsed = { ...partial, reply: hideImageRequest(visible.reply) ?? null }
     }, onLifecycleEvent, combinedSignal)
 
     // OPTIONAL agy chat engine: route turns through the Antigravity CLI
@@ -1239,22 +1250,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     let agyFellBack = false
     let agyFallbackReason = ''
 
-    if (isImageEditRequest(userText, allParts)) {
-      const generated = await editImages(GEMINI_API_KEY, userText, allParts)
-      parsed = { react: null, thinking: null, reply: 'Done — image edit attached.' }
-      meta = {
-        groundingSources: [],
-        codeArtifacts: [],
-        usage: null,
-        finishReason: 'STOP',
-        flaggedSafety: [],
-        searchQueries: [],
-        nativeThoughts: null,
-        toolCalls: [],
-        searchEntryPointHtml: null,
-        writtenFiles: generated,
-      }
-    } else if (useAgy) {
+    if (useAgy) {
       try {
         throwIfStopped();
         ({ parsed, meta } = await respondViaAgy({
@@ -1307,6 +1303,23 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     } else {
       throwIfStopped();
       ({ parsed, meta } = await apiRespond())
+    }
+    const imageRequest = parseImageRequest(parsed.reply)
+    if (imageRequest) {
+      throwIfStopped()
+      latestParsed = { ...parsed, reply: '🎨 Generating image…' }
+      if (imageRequest.useReference) {
+        await attachmentResult.prepareApiParts()
+        allParts = [...attachmentResult.parts, ...ytResult.parts]
+        if (!allParts.some(p => 'inlineData' in p && p.inlineData.mimeType.startsWith('image/'))) {
+          throw new Error('Reference image unavailable. Reply to the image or attach it again.')
+        }
+      }
+      const generated = await editImages(GEMINI_API_KEY, imageRequest.prompt, imageRequest.useReference ? allParts : [], undefined, combinedSignal)
+      generatedImageFiles.push(...generated)
+      throwIfStopped()
+      meta.writtenFiles = [...(meta.writtenFiles ?? []), ...generated]
+      parsed = { ...parsed, reply: '🎨 Image attached.' }
     }
     // Keep flushStream's view in sync with the real result. apiRespond's
     // streaming callback already does this incrementally (line ~917), but the
@@ -1793,6 +1806,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     } catch { /* nothing to do */ }
   } finally {
     activeTurns.done(message.channelId)
+    await Promise.all(generatedImageFiles.map(file => unlink(file).catch(() => {})))
     clearInFlightTurn(message.channelId)
     await stopThinkingAnim()
     if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }

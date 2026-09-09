@@ -5,12 +5,6 @@ import { editImages, isImageEditRequest } from '../src/image-generation.ts'
 
 const image = { inlineData: { mimeType: 'image/png', data: Buffer.from('source').toString('base64') } }
 
-test('recognizes an edit instruction only when an image is attached', () => {
-  assert.equal(isImageEditRequest('turn this into a watercolor', [image]), true)
-  assert.equal(isImageEditRequest('what is in this image?', [image]), false)
-  assert.equal(isImageEditRequest('turn this into a watercolor', [{ text: 'no image' }]), false)
-})
-
 test('forwards the reference image and writes generated image output', async () => {
   let request: any
   const fake = {
