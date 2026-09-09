@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'fs/promises'
-import { editImages, isImageEditRequest } from '../src/image-generation.ts'
+import { editImages, generateImage, isImageEditRequest } from '../src/image-generation.ts'
 
 const image = { inlineData: { mimeType: 'image/png', data: Buffer.from('source').toString('base64') } }
 
@@ -32,3 +32,25 @@ test('forwards the reference image and writes generated image output', async () 
   assert.equal(await fs.readFile(files[0], 'utf8'), 'result')
   await fs.unlink(files[0])
 })
+
+test('generates image from prompt and respects aspect ratio', async () => {
+  let request: any
+  const fake = {
+    models: {
+      generateContent: async (value: any) => {
+        request = value
+        return { candidates: [{ content: { parts: [
+          { text: 'here is your image' },
+          { inlineData: { mimeType: 'image/png', data: Buffer.from('generated-art').toString('base64') } },
+        ] } }] }
+      },
+    },
+  }
+  const files = await generateImage('unused', 'a sunset over the mountains', '16:9', fake as any)
+  assert.equal(request.model, 'gemini-3.1-flash-image')
+  assert.deepEqual(request.config.responseModalities, ['TEXT', 'IMAGE'])
+  assert.equal(request.contents[0].parts[0].text, 'a sunset over the mountains (aspect ratio: 16:9)')
+  assert.equal(await fs.readFile(files[0], 'utf8'), 'generated-art')
+  await fs.unlink(files[0])
+})
+

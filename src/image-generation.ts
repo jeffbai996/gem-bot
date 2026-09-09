@@ -39,3 +39,30 @@ export async function editImages(
   if (output.length === 0) throw new Error('Gemini image model returned no image')
   return output
 }
+
+export async function generateImage(
+  apiKey: string,
+  prompt: string,
+  aspectRatio?: string,
+  client: GoogleGenAI = new GoogleGenAI({ apiKey }),
+): Promise<string[]> {
+  const textPrompt = aspectRatio ? `${prompt} (aspect ratio: ${aspectRatio})` : prompt
+  const response = await client.models.generateContent({
+    model: process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image',
+    contents: [{ role: 'user', parts: [{ text: textPrompt }] }],
+    config: { responseModalities: ['TEXT', 'IMAGE'] },
+  })
+
+  const output: string[] = []
+  for (const [index, part] of (response.candidates?.[0]?.content?.parts ?? []).entries()) {
+    const inline = (part as any).inlineData
+    if (!inline?.data || !String(inline.mimeType ?? '').startsWith('image/')) continue
+    const ext = inline.mimeType === 'image/jpeg' ? 'jpg' : 'png'
+    const file = path.join(os.tmpdir(), `gem-image-${Date.now()}-${index}.${ext}`)
+    await fs.writeFile(file, Buffer.from(inline.data, 'base64'))
+    output.push(file)
+  }
+  if (output.length === 0) throw new Error('Gemini image model returned no image')
+  return output
+}
+

@@ -11,6 +11,12 @@ A standalone Discord bot using Discord.js and the Gemini API (current default `g
 - **Bot Persona:** "Gem" — helpful, concise, responds to allowlisted users/channels.
 - **Admin Control:** Discord Slash Commands (`/gemini`) control permissions to avoid manual JSON edits.
 
+## Multimodal & Image Pipeline
+- **Multimodal Input:** Supports images (PNG, JPEG, WebP, GIF, HEIC), video, audio, and documents (PDF, text, code). Handled via inline data or Google File API in `src/attachments.ts`.
+- **Image-to-Image Editing (`src/image-generation.ts`):** `isImageEditRequest` checks for edit verbs (`edit`, `change`, `replace`, `remove`, `add`, `make`, `turn`, `transform`, `restyle`, `recolor`, `swap`, etc.) **and** requires at least one attached image. When triggered, it calls `gemini-3.1-flash-image` with `responseModalities: ['TEXT', 'IMAGE']` and writes output images to disk to attach to the Discord reply.
+- **Text-to-Image Generation (`/gemini image`):** Dedicated slash command (`/gemini image prompt:<text> [ratio:<1:1|16:9|9:16|4:3|3:4]>`) wired via `generateImage` in `src/image-generation.ts`. Gated to allowlisted users, defers reply immediately, and posts generated images without false triggers in regular chat.
+
+
 ## Development Rules
 - Use `tsx` for running the bot locally (`npm run start`).
 - Use `node:test` for testing (`npm run test`).
