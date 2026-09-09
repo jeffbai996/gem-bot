@@ -12,6 +12,7 @@
 // `live` uses the compact current headline; `collapse` accumulates every line.
 
 import type { LiveTimelineStep } from './gemini.ts'
+import { displayWidth } from './tool-trace.ts'
 
 const HEADLINE_MAX = 120
 const DETAIL_MAX = 160
@@ -158,8 +159,10 @@ function timelineActionRow(step: LiveTimelineStep, previous?: LiveTimelineStep):
     : step.durationMs < 1000 ? ` · ${Math.round(step.durationMs)}ms`
     : ` · ${(step.durationMs / 1000).toFixed(step.durationMs < 10_000 ? 1 : 0)}s`
   const repeated = previous && actionPresentation(previous.text).label === label && detail
+  const anchorPrefix = previous?.status === 'failed' ? `⚠️ ${label} failed · `
+    : `${emoji} ${label}${previous?.status === 'running' ? '…' : ''} · `
   const row = step.status === 'failed' ? `⚠️ ${label} failed${detail}${duration}`
-    : repeated ? `   ${detail.slice(3)}${step.status === 'running' ? '…' : ''}${duration}`
+    : repeated ? `${' '.repeat(displayWidth(anchorPrefix))}${detail.slice(3)}${step.status === 'running' ? '…' : ''}${duration}`
     : step.status === 'running' ? `${emoji} ${label}…${detail}`
     : `${emoji} ${label}${detail}${duration}`
   // Tool arguments can contain backticks; keep them from closing the fence.
@@ -181,7 +184,9 @@ function timelineBlocks(steps: LiveTimelineStep[]): string {
       blocks.push(timelineThinkingBlock(step))
     } else {
       rows.push(timelineActionRow(step, previous))
-      previous = step
+      // Keep the labelled row as the indentation anchor throughout the run.
+      if (!previous || actionPresentation(previous.text).label !== actionPresentation(step.text).label
+          || step.status === 'failed') previous = step
     }
   }
   flush()
