@@ -134,7 +134,10 @@ function rollingTracePage(blocks: string[][]): string[] {
 
 export function renderTraceCards(rawLines: string[], mode: TraceDisplayMode): string[] {
   if (mode === 'off') return []
-  const lines = rawLines.map(line => truncateDisplayWidth(redactTraceSensitiveData(line), TRACE_ROW_MAX))
+  const lines = rawLines.map(line => truncateDisplayWidth(
+    redactTraceSensitiveData(line).replace(/`{3,}/g, run => [...run].join('\u200b')),
+    TRACE_ROW_MAX,
+  ))
   const blocks = splitTraceBlocks(lines)
   const pages = mode === 'live'
     ? [rollingTracePage(blocks)]

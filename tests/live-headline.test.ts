@@ -184,6 +184,29 @@ describe('composeLiveThinkingCard', () => {
 })
 
 describe('composeTrajectoryTimelineCard', () => {
+  it('renders a numbered edit preview between ordinary tool groups', () => {
+    const out = composeTrajectoryTimelineCard({ label: 'Working', steps: [
+      { kind: 'action', text: 'Read', detail: 'example.ts' },
+      { kind: 'action', text: 'Write', detail: 'example.ts', diff: '@@ -2,2 +2,2 @@\n context\n-old\n+new' },
+      { kind: 'action', text: 'Run', detail: 'npm test' },
+    ] })
+    assert.match(out, /3 steps/)
+    assert.match(out, /```diff\n\+ ● Edit\(example.ts\)\n  ⎿ \[\+1, -1\]/)
+    assert.match(out, /- 3 old\n\+ 3 new/)
+    assert.ok(out.indexOf('Reading') < out.indexOf('Edit(example.ts)'))
+    assert.ok(out.indexOf('Edit(example.ts)') < out.indexOf('Running'))
+    assert.equal((out.match(/^```/gm) ?? []).length, 6)
+  })
+
+  it('bounds a large edit preview and keeps embedded code fences inside it', () => {
+    const diff = '@@ -1 +1,100 @@\n-old\n' + Array.from({ length: 100 }, (_, i) => '+line ' + i).join('\n') + '\n+```text'
+    const out = composeTrajectoryTimelineCard({ label: 'Working', steps: [
+      { kind: 'action', text: 'Write', detail: 'example.ts', diff },
+    ] })
+    assert.ok(out.length <= 2000)
+    assert.match(out, /Edit\(example.ts\)/)
+    assert.equal((out.match(/^```/gm) ?? []).length, 2)
+  })
   it('aligns all targets to one column across labels and continuations without dots', () => {
     const out = composeTrajectoryTimelineCard({ label: 'Working', steps: [
       { kind: 'action', text: 'Run', detail: 'target-a' },
