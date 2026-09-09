@@ -148,7 +148,7 @@ function timelineThinkingBlock(step: LiveTimelineStep): string {
   const detail = step.detail?.trim() ?? ''
   const bodyParts = [body, detail && detail !== body ? detail : ''].filter(Boolean)
   const summary = clipOnWordBoundary(bodyParts.join(' '), TIMELINE_BODY_MAX)
-  return `• **${title || 'Working'}**${summary ? `\n> ${summary}` : ''}`
+  return `**${title || 'Working'}**${summary ? `\n> ${summary}` : ''}`
 }
 
 function timelineActionBlock(step: LiveTimelineStep): string {
@@ -157,9 +157,11 @@ function timelineActionBlock(step: LiveTimelineStep): string {
   const duration = !step.durationMs ? ''
     : step.durationMs < 1000 ? ` · ${Math.round(step.durationMs)}ms`
     : ` · ${(step.durationMs / 1000).toFixed(step.durationMs < 10_000 ? 1 : 0)}s`
-  if (step.status === 'failed') return `⚠️ **${label} failed**${detail}${duration}`
-  if (step.status === 'running') return `${emoji} **${label}…**${detail}`
-  return `${emoji} **${label}**${detail}${duration}`
+  const row = step.status === 'failed' ? `⚠️ ${label} failed${detail}${duration}`
+    : step.status === 'running' ? `${emoji} ${label}…${detail}`
+    : `${emoji} ${label}${detail}${duration}`
+  // Tool arguments can contain backticks; keep them from closing the fence.
+  return '**Tool call**\n```text\n' + row.replace(/`/g, 'ˋ') + '\n```'
 }
 
 /** One Discord-safe rolling trajectory. It preserves the ordered public

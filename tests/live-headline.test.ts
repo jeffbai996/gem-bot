@@ -208,7 +208,8 @@ describe('composeTrajectoryTimelineCard', () => {
     assert.match(out, /\*\*Inspecting the renderer\*\*/)
     assert.match(out, /> The events are already present\./)
     assert.match(out, /I will compare the Discord and web renderers\./)
-    assert.match(out, /📖 \*\*Reading\*\* · live\.ts/)
+    assert.match(out, /\*\*Tool call\*\*\n```text\n📖 Reading · live\.ts\n```/)
+    assert.doesNotMatch(out, /• \*\*/)
     assert.ok(out.indexOf('Inspecting the renderer') < out.indexOf('📖'))
     assert.ok(out.indexOf('📖') < out.indexOf('Fixing the choke point'))
   })
@@ -241,8 +242,22 @@ describe('composeTrajectoryTimelineCard', () => {
     })
 
     assert.match(out, /^💭 ✓ \*\*Worked for 12s\*\*/)
-    assert.match(out, /📖 \*\*Reading…\*\* · renderer\.ts/)
-    assert.match(out, /🌐 \*\*Searching\*\* · current project · 842ms/)
-    assert.match(out, /⚠️ \*\*Browsing failed\*\* · example\.com · 6\.2s/)
+    assert.match(out, /📖 Reading… · renderer\.ts/)
+    assert.match(out, /🌐 Searching · current project · 842ms/)
+    assert.match(out, /⚠️ Browsing failed · example\.com · 6\.2s/)
+    assert.equal((out.match(/^```/gm) ?? []).length, 6)
+  })
+
+  it('keeps tool fences intact with hostile backticks and a rolling mixed tail', () => {
+    const steps = Array.from({ length: 40 }, (_, index) => index % 2 === 0
+      ? { kind: 'thinking' as const, text: `**Stage ${index}**\nChecking the result.` }
+      : { kind: 'action' as const, text: 'Bash', detail: 'echo ```example``` ' + 'argument '.repeat(50) })
+    const out = composeTrajectoryTimelineCard({ label: 'Working', steps })
+    assert.ok(out.length <= 2000)
+    assert.match(out, /40 steps/)
+    assert.match(out, /earlier steps omitted/)
+    assert.doesNotMatch(out, /• \*\*|```example/)
+    assert.equal((out.match(/^```/gm) ?? []).length % 2, 0)
+    assert.match(out, /\*\*Stage 38\*\*[\s\S]*\*\*Tool call\*\*\n```text/)
   })
 })
