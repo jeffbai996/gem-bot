@@ -183,6 +183,16 @@ describe('composeLiveThinkingCard', () => {
 })
 
 describe('composeTrajectoryTimelineCard', () => {
+  it('quotes unheaded prose instead of promoting it to a bold heading', () => {
+    const prose = 'Checking the requested settings and their current values.'
+    for (const complete of [false, true]) {
+      const out = composeTrajectoryTimelineCard({ label: 'Working', complete, steps: [
+        { kind: 'thinking', text: prose },
+      ] })
+      assert.ok(out.includes(`> ${prose}`))
+      assert.ok(!out.includes(`**${prose}**`))
+    }
+  })
   it('retains long completed text and earlier steps for message pagination', () => {
     const body = 'Complete progress detail. '.repeat(150) + 'END-OF-TRACE'
     const out = composeTrajectoryTimelineCard({ label: 'Worked', complete: true, steps: [
