@@ -168,22 +168,32 @@ describe('thinkingTraceLines', () => {
 })
 
 describe('composeLiveThinkingCard', () => {
-  it('finishes with only the latest Antigravity heading, not its accumulated wall', () => {
+  it('preserves all supplied text on the completed card', () => {
     const out = composeLiveThinkingCard(42, [
       '**Checking System Guidelines**',
       'I am reviewing every instruction in a long internal paragraph.',
       '**Fixing The Renderer**',
       'I am now reasoning through every implementation detail at length.',
     ].join('\n'))
-    assert.equal(
-      out,
-      '💭 **Thought for 42s**\n> 🧠 *fixing the renderer*',
-    )
-    assert.doesNotMatch(out, /every instruction|implementation detail/)
+    assert.match(out, /Thought for 42s/)
+    assert.match(out, /Checking System Guidelines/)
+    assert.match(out, /every instruction/)
+    assert.match(out, /implementation detail at length\./)
   })
 })
 
 describe('composeTrajectoryTimelineCard', () => {
+  it('retains long completed text and earlier steps for message pagination', () => {
+    const body = 'Complete progress detail. '.repeat(150) + 'END-OF-TRACE'
+    const out = composeTrajectoryTimelineCard({ label: 'Worked', complete: true, steps: [
+      { kind: 'thinking', text: '**First step**\n' + body },
+      { kind: 'thinking', text: '**Last step**\nFinished.' },
+    ] })
+    assert.ok(out.length > 2000)
+    assert.match(out, /First step/)
+    assert.match(out, /END-OF-TRACE/)
+    assert.doesNotMatch(out, /earlier steps omitted/)
+  })
   it('renders a numbered edit preview between ordinary tool groups', () => {
     const out = composeTrajectoryTimelineCard({ label: 'Working', steps: [
       { kind: 'action', text: 'Read', detail: 'example.ts' },

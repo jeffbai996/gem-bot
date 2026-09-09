@@ -1487,6 +1487,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       if (flags.thinking === 'live' && timelineSteps.length > 0) {
         thinkingMessage += composeTrajectoryTimelineCard({
           label: `Worked for ${thoughtSecs}s`,
+          complete: true,
           glyph: '✓',
           dots: '',
           steps: timelineSteps,
