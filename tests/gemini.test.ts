@@ -90,6 +90,55 @@ describe('respond() live trajectory events', () => {
     ])
   })
 
+  test('does not replay a thought summary the final aggregated chunk repeats', async () => {
+    // Gemini's trailing aggregated chunk carries the whole candidate, replaying
+    // parts already streamed. Unguarded, the repeated summary was emitted twice
+    // to the trajectory AND joined twice into nativeThoughts, rendering as two
+    // byte-identical thought blocks (seen 2026-09-09).
+    const registry = { getDeclarations: () => [], dispatch: async () => ({}) }
+    const client = new GeminiClient('dummy-key', 'gemini-3.7-flash', registry as any)
+    const first = '**Confirming Tool Availability**\nThe user is asking about a tool.'
+    const second = '**Confirming Tool Functionality**\nThe tool is available as an MCP tool.'
+    const chunks = [
+      { candidates: [{ content: { parts: [{ thought: true, text: first }] } }] },
+      {
+        candidates: [{
+          content: { parts: [
+            { thought: true, text: first },   // <- the replay
+            { thought: true, text: second },
+            { text: '{"react":null,"thinking":null,"reply":"yeah"}' },
+          ] },
+          finishReason: 'STOP',
+        }],
+      },
+    ]
+    ;(client as any).client = {
+      models: {
+        generateContentStream: async () => (async function * () {
+          for (const chunk of chunks) yield chunk
+        })(),
+      },
+    }
+
+    const events: any[] = []
+    const result = await client.respond({
+      systemPrompt: 'Be concise.',
+      history: [],
+      userMessageText: 'anyways you have vecgrep right',
+      userMediaParts: [],
+      userName: 'Alice',
+      thinkingMode: 'live',
+      cacheEnabled: false,
+    }, () => {}, event => events.push(event))
+
+    const thoughts = events.filter(e => e.type === 'native_thinking').map(e => e.text)
+    assert.deepEqual(thoughts, [first, second], 'each summary must reach the trajectory once')
+
+    const native = result.meta.nativeThoughts ?? ''
+    assert.equal(native.split('Confirming Tool Availability').length - 1, 1)
+    assert.equal(native.split('Confirming Tool Functionality').length - 1, 1)
+  })
+
   test('surfaces server-side search and code execution as live actions', async () => {
     const registry = { getDeclarations: () => [], dispatch: async () => ({}) }
     const client = new GeminiClient('dummy-key', 'gemini-3.7-flash', registry as any)

@@ -193,6 +193,28 @@ describe('composeTrajectoryTimelineCard', () => {
       assert.ok(!out.includes(`**${prose}**`))
     }
   })
+  it('quotes the heading so a thought renders in one gray block', () => {
+    // A bare **heading** sits at column 0 in Discord's default text colour
+    // while its body is grayed inside the quote — the same thought in two
+    // visual registers, and a second trace style beside the fully-quoted card.
+    for (const complete of [false, true]) {
+      const out = composeTrajectoryTimelineCard({ label: 'Working', complete, steps: [
+        { kind: 'thinking', text: '**Assessing the request**\nThe query is vague.' },
+      ] })
+      assert.ok(out.includes('> **Assessing the request**'))
+      assert.doesNotMatch(out, /^\*\*Assessing the request\*\*/m)
+    }
+  })
+  it('drops a trailing full stop from the heading but keeps ellipsis and ? !', () => {
+    const heading = (text: string) => composeTrajectoryTimelineCard({
+      label: 'Working', complete: true, steps: [{ kind: 'thinking', text: `**${text}**\nBody.` }],
+    })
+    assert.ok(heading('Assessing the information request.').includes('> **Assessing the information request**'))
+    assert.ok(heading('Still weighing it...').includes('> **Still weighing it...**'))
+    assert.ok(heading('Is the tool available?').includes('> **Is the tool available?**'))
+    // Body prose keeps its punctuation — the strip is title-only.
+    assert.ok(heading('Assessing the information request.').includes('> Body.'))
+  })
   it('retains long completed text and earlier steps for message pagination', () => {
     const body = 'Complete progress detail. '.repeat(150) + 'END-OF-TRACE'
     const out = composeTrajectoryTimelineCard({ label: 'Worked', complete: true, steps: [
@@ -317,7 +339,7 @@ describe('composeTrajectoryTimelineCard', () => {
       { kind: 'action', text: 'Read', detail: 'third.ts' },
     ] })
     assert.match(out, /5 steps/)
-    assert.match(out, /📖 Reading + first\.ts\n {14}second\.ts\n🌐 Searching + query\n```\n\*\*Checking results\*\*/)
+    assert.match(out, /📖 Reading + first\.ts\n {14}second\.ts\n🌐 Searching + query\n```\n> \*\*Checking results\*\*/)
     assert.match(out, /Checking results\*\*\n🔧 \*\*Tool call\*\*\n```text\n📖 Reading + third\.ts/)
     assert.doesNotMatch(out, /\n\n/)
     assert.equal((out.match(/^```/gm) ?? []).length, 4)
