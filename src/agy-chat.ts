@@ -91,17 +91,22 @@ export function agyWatchdogPolicy(): { idleTimeoutMs: number; hardTimeoutMs: num
 }
 
 // Shared-memory access is deliberately opt-in. A public clone must not assume
-// the name or location of a private local service.
-const SQUAD_STORE_BIN = process.env.GEMMA_SHARED_MEMORY_BIN || process.env.GEMMA_SQUAD_STORE_BIN || ''
+// the name or location of a private local service. Resolved lazily so module
+// load before dotenv.config() does not pin an empty string.
+const squadStoreBin = (): string => process.env.GEMMA_SHARED_MEMORY_BIN || process.env.GEMMA_SQUAD_STORE_BIN || ''
 const SQUAD_STORE_URL = process.env.SQUAD_STORE_URL || 'http://127.0.0.1:5005'
 const VECGREP_BIN = process.env.GEMMA_VECGREP_BIN || join(homedir(), '.local', 'bin', 'vecgrep')
 // Derive the optional grant from the configured command path.
-const SQUAD_STORE_DIR = SQUAD_STORE_BIN ? SQUAD_STORE_BIN.replace(/\/[^/]+$/, '') : null
-const SQUAD_STORE_TARGET_DIR = (() => {
-  if (!SQUAD_STORE_BIN) return null
-  try { return dirname(realpathSync(SQUAD_STORE_BIN)) }
-  catch { return SQUAD_STORE_DIR }
-})()
+const squadStoreDir = (): string | null => {
+  const bin = squadStoreBin()
+  return bin ? bin.replace(/\/[^/]+$/, '') : null
+}
+const squadStoreTargetDir = (): string | null => {
+  const bin = squadStoreBin()
+  if (!bin) return null
+  try { return dirname(realpathSync(bin)) }
+  catch { return squadStoreDir() }
+}
 
 export interface AgyChatInput {
   // The same fully-assembled system prompt gemma.ts hands gemini.respond()
@@ -229,7 +234,8 @@ export function buildAgyPrompt(input: AgyChatInput): string {
       ].join('\n')
     : ''
 
-  const memoryMutationContext = SQUAD_STORE_BIN && input.channelId && input.messageId
+  const squadBin = squadStoreBin()
+  const memoryMutationContext = squadBin && input.channelId && input.messageId
     ? [
         '--- Shared-memory mutations — mandatory Discord card path ---',
         'For every memory, journal, todo, or file mutation, invoke the configured shared-memory CLI itself. ' +
@@ -238,7 +244,7 @@ export function buildAgyPrompt(input: AgyChatInput): string {
         'Shared-memory JSON files are databases, not normal files. NEVER use `write_to_file`, `replace_file_content`, ' +
           'shell redirection, or any file-edit tool on `memories.json`, `journal.json`, `todos.json`, `ephemeral.json`, ' +
           'the files manifest, or anything under the store data directory. This overrides the general file-edit rule above.',
-        `For a memory edit, use exactly: ${SQUAD_STORE_BIN} memory edit <id> "<new body>" ` +
+        `For a memory edit, use exactly: ${squadBin} memory edit <id> "<new body>" ` +
           `--discord-chat-id "${input.channelId}" --discord-message-id "${input.messageId}"`,
         'Use those same two Discord flags on every other mutating shared-memory subcommand. ' +
           'A mutation is not complete unless the CLI reports success and posts its card.',
@@ -254,9 +260,9 @@ export function buildAgyPrompt(input: AgyChatInput): string {
     '',
     '--- You are chatting in a Discord conversation. Recent history (oldest first): ---',
     transcript || '(no prior messages)',
-    ...(SQUAD_STORE_BIN ? [
+    ...(squadBin ? [
       '--- Shared memory (use when configured) ---',
-      `You can search configured shared long-term memory by running:\n  ${SQUAD_STORE_BIN} recall "<search query>"\nRun it before replying only when the message turns on stored facts, preferences, projects, or prior context. Skip it for general knowledge, code, or casual chat.`,
+      `You can search configured shared long-term memory by running:\n  ${squadBin} recall "<search query>"\nRun it before replying only when the message turns on stored facts, preferences, projects, or prior context. Skip it for general knowledge, code, or casual chat.`,
     ] : []),
     memoryMutationContext,
     '--- vecgrep (semantic search) ---',
@@ -286,7 +292,7 @@ export function buildAgyArgs(additionalDirs: string[] = [], prompt = ''): string
   const watchdog = agyWatchdogPolicy()
   const printTimeout = `${Math.max(1, Math.ceil(watchdog.printTimeoutMs / 1000))}s`
   const grantedDirs = [...new Set(
-    [SQUAD_STORE_DIR, SQUAD_STORE_TARGET_DIR, ...additionalDirs]
+    [squadStoreDir(), squadStoreTargetDir(), ...additionalDirs]
       .filter((dir): dir is string => Boolean(dir)),
   )]
   return [
@@ -940,7 +946,8 @@ export function parseAgyTrajectoryText(raw: string): AgyTrajParse {
 // real Discord turn doesn't hit the cold-start auth race (exit code 1).
 export function warmAgy(): void {
   if (process.env.GEMMA_AGY_CHAT !== '1') return
-  const grantedDirArgs = SQUAD_STORE_DIR ? ['--add-dir', SQUAD_STORE_DIR] : []
+  const storeDir = squadStoreDir()
+  const grantedDirArgs = storeDir ? ['--add-dir', storeDir] : []
   const child = spawn(AGY_BIN, [
     '--sandbox', ...grantedDirArgs,
     '--model', agyModel(),
