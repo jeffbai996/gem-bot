@@ -185,15 +185,22 @@ function formatStepDuration(durationMs?: number): string {
 }
 
 function timelineActionRow(step: LiveTimelineStep): { left: string, detail: string, duration: string } {
-  const { emoji, label } = actionPresentation(step.text)
+  const { label } = actionPresentation(step.text)
   const detail = step.detail ? clipOnWordBoundary(step.detail.replace(/\s+/g, ' ').trim(), DETAIL_MAX) : ''
   // Every row keeps its own action. Consecutive calls of the same kind used to
   // have the label blanked out, which left a bare command floating under the
   // one above it with nothing to say what it was — and, since the anchor row
   // led with an emoji and the orphan led with spaces, not even lined up with
   // it. Repeating six characters is worth a card you can read.
-  const left = step.status === 'failed' ? `⚠️ ${label} failed`
-    : `${emoji} ${label}${step.status === 'running' ? '…' : ''}`
+  // No per-row emoji. Discord renders them from the emoji font, not the code
+  // font, and different ones take different advance widths — 📖 and ⌨️ are not
+  // the same width, so two labelled rows still failed to line up even after
+  // the orphans were fixed (Jeff 2026-09-10: "even more misaligned now"). No
+  // run of spaces is the width of an emoji either, which is why nothing could
+  // pad around it. The card's own 🔧 header keeps the glyph; the rows keep the
+  // alignment, and the label already says what ran.
+  const left = step.status === 'failed' ? `${label} failed`
+    : `${label}${step.status === 'running' ? '…' : ''}`
   // Tool arguments can contain backticks; keep them from closing the fence.
   return {
     left: left.replace(/`/g, 'ˋ'),
