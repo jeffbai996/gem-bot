@@ -1,6 +1,8 @@
 import { SlashCommandBuilder, PermissionFlagsBits, ChatInputCommandInteraction, TextChannel } from 'discord.js'
 import path from 'node:path'
 import os from 'node:os'
+import fs from 'node:fs/promises'
+import { generateImage } from './image-generation.ts'
 import {
   AccessManager,
   type ChannelConfig,
@@ -258,6 +260,41 @@ export const geminiCommand = new SlashCommandBuilder()
       .setName('stop')
       .setDescription('Abort the in-flight turn for this channel (kills agy/API generation mid-stream)')
   )
+  .addSubcommand(subcommand =>
+    subcommand
+      .setName('image')
+      .setDescription('Generate an image from a text prompt')
+      .addStringOption(option =>
+        option
+          .setName('prompt')
+          .setDescription('Prompt describing the image to generate')
+          .setRequired(true)
+      )
+      .addStringOption(option =>
+        option
+          .setName('model')
+          .setDescription('Image model (default: flash)')
+          .setRequired(false)
+          .addChoices(
+            { name: 'Gemini 3.1 Flash Image (fast, reliable)', value: 'flash' },
+            { name: 'Imagen 3 (legacy / Vertex)', value: 'imagen-3' },
+          )
+      )
+      .addStringOption(option =>
+        option
+          .setName('ratio')
+          .setDescription('Aspect ratio (default 1:1)')
+          .setRequired(false)
+          .addChoices(
+            { name: 'Square (1:1)', value: '1:1' },
+            { name: 'Landscape (16:9)', value: '16:9' },
+            { name: 'Portrait (9:16)', value: '9:16' },
+            { name: 'Standard (4:3)', value: '4:3' },
+            { name: 'Tall (3:4)', value: '3:4' },
+          )
+      )
+  )
+
 
 // Compact "Xs / Xm Ys / Xh Ym" rendering for the cache info card. Avoids
 // pulling in a date-fns dependency for one display surface.
@@ -362,15 +399,41 @@ export function formatCacheInfo(
 }
 
   export async function executeGeminiCommand(interaction: ChatInputCommandInteraction, access: AccessManager, persona: PersonaLoader, gemini: GeminiClient, adminUserId: string | undefined, deps: ExtraDeps) {
+  const subcommand = interaction.options.getSubcommand()
+
+  if (subcommand === 'image') {
+    if (!access.isUserAllowed(interaction.user.id)) {
+      return interaction.reply({ content: "🔒 You need to be on Gem's allowlist to generate images.", ephemeral: true })
+    }
+    const prompt = interaction.options.getString('prompt', true)
+    const ratio = interaction.options.getString('ratio') ?? undefined
+    const model = interaction.options.getString('model') ?? undefined
+
+    await interaction.deferReply()
+    try {
+      const apiKey = process.env.GEMINI_API_KEY || ''
+      const result = await generateImage(apiKey, prompt, ratio, model)
+      await interaction.editReply({
+        content: `> ${prompt}${ratio ? ` (${ratio})` : ''}\n\n${result.footer}`,
+        files: result.files,
+      })
+      for (const file of result.files) {
+        await fs.unlink(file).catch(() => {})
+      }
+    } catch (err: any) {
+      await interaction.editReply({ content: `❌ Failed to generate image: ${err?.message ?? err}` })
+    }
+    return
+  }
+
   // Extra layer of security: only specific user ID from .env can use this, 
   // or anyone with Server Admin if no specific ID is set.
   if (adminUserId && interaction.user.id !== adminUserId) {
     return interaction.reply({ content: 'Unauthorized. You are not the designated bot admin.', ephemeral: true })
   }
 
-  const subcommand = interaction.options.getSubcommand()
-
   try {
+
     if (subcommand === 'allow') {
       const targetUser = interaction.options.getUser('user', true)
       await access.allowUser(targetUser.id)

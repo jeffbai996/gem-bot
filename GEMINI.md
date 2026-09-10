@@ -3,13 +3,19 @@
 This document provides context for agents working on `gem-bot`.
 
 ## Project Overview
-A standalone Discord bot using Discord.js and the Gemini API (current default `gemini-3.7-flash`, with `gemini-3.1-pro-preview` also selectable via `/gemini model`). It acts as an intelligent assistant with access to Gemini tools (Google Search, Code Execution) and supports full multimodal input (Images, Video, Audio, Documents).
+A standalone Discord bot using Discord.js and the Gemini API (current default `gemini-3.8-flash`, with `gemini-3.1-pro-preview` also selectable via `/gemini model`). It acts as an intelligent assistant with access to Gemini tools (Google Search, Code Execution) and supports full multimodal input (Images, Video, Audio, Documents).
 
 ## Core Architecture
 - **Language/Runtime:** TypeScript + Node.js (via `tsx`).
 - **State Management:** All state (`.env`, `access.json`, `GEMINI.md`, legacy `persona.md`) lives in `~/.gemini/channels/discord/`.
 - **Bot Persona:** "Gem" — helpful, concise, responds to allowlisted users/channels.
 - **Admin Control:** Discord Slash Commands (`/gemini`) control permissions to avoid manual JSON edits.
+
+## Multimodal & Image Pipeline
+- **Multimodal Input:** Supports images (PNG, JPEG, WebP, GIF, HEIC), video, audio, and documents (PDF, text, code). Handled via inline data or Google File API in `src/attachments.ts`.
+- **Image-to-Image Editing (`src/image-generation.ts`):** `isImageEditRequest` checks for edit verbs (`edit`, `change`, `replace`, `remove`, `add`, `make`, `turn`, `transform`, `restyle`, `recolor`, `swap`, etc.) **and** requires at least one attached image. When triggered, it calls `gemini-3.1-flash-image` with `responseModalities: ['TEXT', 'IMAGE']` and writes output images to disk to attach to the Discord reply.
+- **Text-to-Image Generation (`/gemini image`):** Dedicated slash command (`/gemini image prompt:<text> [model:<imagen-3|flash>] [ratio:<1:1|16:9|9:16|4:3|3:4]>`) wired via `generateImage` in `src/image-generation.ts`. Supports Imagen 3 (`imagen-3.0-generate-002`, default) and Gemini 3.1 Flash Image (`gemini-3.1-flash-image`), renders with token and cost metadata footer (`~$0.030`), gated to allowlisted users, defers reply immediately, and posts generated images without false triggers in regular chat.
+
 
 ## Development Rules
 - Use `tsx` for running the bot locally (`npm run start`).

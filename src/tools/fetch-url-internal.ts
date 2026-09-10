@@ -1,5 +1,6 @@
 import { JSDOM } from 'jsdom'
 import { Readability } from '@mozilla/readability'
+import { BlockList, isIP } from 'node:net'
 
 export interface ValidatedUrl { url: URL }
 
@@ -12,30 +13,36 @@ export function validateUrl(raw: string): ValidatedUrl {
   return { url }
 }
 
-// IPv4 private/loopback/link-local + IPv6 equivalents.
+const NON_GLOBAL_V4 = new BlockList()
+for (const [network, prefix] of [
+  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10],
+  ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12],
+  ['192.0.0.0', 24], ['192.0.2.0', 24], ['192.88.99.0', 24],
+  ['192.168.0.0', 16], ['198.18.0.0', 15], ['198.51.100.0', 24],
+  ['203.0.113.0', 24], ['224.0.0.0', 4], ['240.0.0.0', 4],
+] as const) NON_GLOBAL_V4.addSubnet(network, prefix, 'ipv4')
+
+const GLOBAL_V6 = new BlockList()
+GLOBAL_V6.addSubnet('2000::', 3, 'ipv6')
+const NON_GLOBAL_V6 = new BlockList()
+for (const [network, prefix] of [
+  ['2001::', 23],       // protocol assignments, including Teredo
+  ['2001:db8::', 32],   // documentation
+  ['2002::', 16],       // 6to4 can tunnel otherwise blocked IPv4
+  ['3fff::', 20],       // documentation
+] as const) NON_GLOBAL_V6.addSubnet(network, prefix, 'ipv6')
+
+// Fail closed for every non-global address, not only the common RFC1918 set.
 export function isPrivateIp(ip: string): boolean {
-  // IPv4-mapped IPv6 like "::ffff:127.0.0.1" — fall through to IPv4 check.
-  const mapped = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i)
-  if (mapped) return isPrivateIp(mapped[1])
-
-  if (ip.includes(':')) {
-    const lower = ip.toLowerCase()
-    if (lower === '::1' || lower === '::') return true
-    if (/^fc[0-9a-f]{2}:/.test(lower) || /^fd[0-9a-f]{2}:/.test(lower)) return true  // ULA fc00::/7
-    if (/^fe[89ab][0-9a-f]:/.test(lower)) return true                                  // link-local fe80::/10
-    return false
+  const value = ip.replace(/^\[|\]$/g, '')
+  const family = isIP(value)
+  if (family === 4) return NON_GLOBAL_V4.check(value, 'ipv4')
+  if (family === 6) {
+    // IPv4-mapped, NAT64, ULA, link-local, multicast, and unspecified forms
+    // all sit outside the currently allocated global-unicast 2000::/3 block.
+    return !GLOBAL_V6.check(value, 'ipv6') || NON_GLOBAL_V6.check(value, 'ipv6')
   }
-
-  const parts = ip.split('.').map(p => parseInt(p, 10))
-  if (parts.length !== 4 || parts.some(p => isNaN(p) || p < 0 || p > 255)) return false
-  const [a, b] = parts
-  if (a === 10) return true
-  if (a === 127) return true
-  if (a === 0) return true
-  if (a === 169 && b === 254) return true
-  if (a === 172 && b >= 16 && b <= 31) return true
-  if (a === 192 && b === 168) return true
-  return false
+  return true
 }
 
 export interface ExtractedContent {

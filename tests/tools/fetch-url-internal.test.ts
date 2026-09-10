@@ -39,9 +39,9 @@ describe('isPrivateIp', () => {
   test('IPv6 public', () => {
     assert.equal(isPrivateIp('2606:4700:4700::1111'), false)
   })
-  test('IPv4-mapped IPv6 falls through to IPv4 check', () => {
+  test('IPv4-mapped IPv6 fails closed, including mapped public addresses', () => {
     assert.equal(isPrivateIp('::ffff:127.0.0.1'), true)
-    assert.equal(isPrivateIp('::ffff:8.8.8.8'), false)
+    assert.equal(isPrivateIp('::ffff:8.8.8.8'), true)
   })
 })
 

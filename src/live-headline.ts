@@ -38,6 +38,17 @@ function cleanHeadlineLine(line: string): string {
     .trim()
 }
 
+/** A heading is a label, not a sentence. Gemini's thought summaries are
+ * inconsistent about it — "Confirming Tool Availability" and "Assessing the
+ * information request." arrive from the same model on the same turn — so the
+ * trailing full stop is dropped here rather than left to the model. Ellipsis
+ * is meaningful (a trailing-off thought) and survives; ? and ! are load-bearing
+ * in a heading and survive too. Deliberately not part of cleanHeadlineLine,
+ * which also runs over body prose where the stop belongs. */
+function stripTrailingStop(title: string): string {
+  return title.endsWith('...') ? title : title.replace(/\.$/, '')
+}
+
 /** Every cleaned non-empty reasoning line, preserving arrival order for the
  * explicit full-trace collapse mode. */
 export function thinkingTraceLines(parts: string[]): string[] {
@@ -143,7 +154,7 @@ function timelineThinkingBlock(step: LiveTimelineStep, complete = false): string
   const lines = step.text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
   const headingIndex = lines.findIndex(line => /^\*\*.+\*\*$/.test(line) || /^#{1,6}\s+\S/.test(line))
   const titleIndex = headingIndex
-  const rawTitle = headingIndex >= 0 ? cleanHeadlineLine(lines[headingIndex]) : ''
+  const rawTitle = headingIndex >= 0 ? stripTrailingStop(cleanHeadlineLine(lines[headingIndex])) : ''
   const title = complete ? rawTitle : clipOnWordBoundary(rawTitle, HEADLINE_MAX)
   const body = lines
     .filter((_, index) => index !== titleIndex)
@@ -153,7 +164,12 @@ function timelineThinkingBlock(step: LiveTimelineStep, complete = false): string
   const detail = step.detail?.trim() ?? ''
   const bodyParts = [body, detail && detail !== body ? detail : ''].filter(Boolean)
   const summary = complete ? bodyParts.join(' ') : clipOnWordBoundary(bodyParts.join(' '), TIMELINE_BODY_MAX)
-  return [title ? `**${title}**` : '', summary ? `> ${summary}` : ''].filter(Boolean).join('\n')
+  // Quoted, not bare. A bare `**title**` renders at column 0 in Discord's
+  // default text colour while the body sits grayed inside the quote — one
+  // thought split across two visual registers, and a second trace style next
+  // to renderThoughtBlock's fully-quoted card. Quoting the heading puts the
+  // whole step in one gray block and leaves exactly one trace look.
+  return [title ? `> **${title}**` : '', summary ? `> ${summary}` : ''].filter(Boolean).join('\n')
 }
 
 function timelineActionRow(step: LiveTimelineStep, previous?: LiveTimelineStep): { left: string, right: string } {

@@ -534,8 +534,19 @@ function extractSearchQueries(candidate: any): string[] {
 function extractNativeThoughts(parts: Array<{ text?: string, thought?: boolean }> | undefined): string {
   if (!parts) return ''
   const chunks: string[] = []
+  // The caller passes the FINAL AGGREGATED candidate's parts, and that chunk
+  // replays parts already seen earlier in the stream — the same hazard the
+  // executableCode and searchQueries loops below already guard against. Left
+  // unguarded here, a summary emitted mid-stream and replayed at the end was
+  // joined twice and rendered as two byte-identical thought blocks (seen
+  // 2026-09-09: "Confirming Tool Availability" printed twice in a row).
+  // Dedupe on the whole part text across the set, not just adjacent pairs —
+  // the replay is not necessarily next to the original.
+  const seen = new Set<string>()
   for (const p of parts) {
     if (p?.thought === true && typeof p.text === 'string') {
+      if (seen.has(p.text)) continue
+      seen.add(p.text)
       chunks.push(p.text)
     }
   }
@@ -871,6 +882,10 @@ export class GeminiClient {
         let functionCallPartReceived: any = null
         let lastChunk: any = null
         const seenCodeExecutions = new Set<string>()
+        // Thought summaries replay in the final aggregated chunk too. Keyed by
+        // text, not by event type: several DIFFERENT thoughts per turn is the
+        // normal case, so emitOnce's type-level guard is the wrong shape here.
+        const seenThoughts = new Set<string>()
         const pendingCodeExecutions: string[] = []
         // De-dupe one-shot events across chunks within this turn.
         const emitted = new Set<LifecycleEvent['type']>()
@@ -891,6 +906,8 @@ export class GeminiClient {
           // the whole stream to a boolean "thinking started" light.
           for (const part of parts ?? []) {
             if (part?.thought === true && typeof part.text === 'string' && part.text) {
+              if (seenThoughts.has(part.text)) continue
+              seenThoughts.add(part.text)
               if (onEvent) {
                 try { onEvent({ type: 'native_thinking', text: part.text }) }
                 catch (err) { console.error('[onEvent]', err) }
