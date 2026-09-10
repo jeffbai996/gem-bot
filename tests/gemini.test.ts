@@ -38,7 +38,7 @@ describe('respond() live trajectory events', () => {
       getDeclarations: () => [],
       dispatch: async () => ({ matches: ['one result'] }),
     }
-    const client = new GeminiClient('dummy-key', 'gemini-3.7-flash', registry as any)
+    const client = new GeminiClient('dummy-key', 'gemini-3.8-flash', registry as any)
     const turns = [
       [
         { candidates: [{ content: { parts: [{ thought: true, text: '**Checking squad context**' }] } }] },
@@ -96,7 +96,7 @@ describe('respond() live trajectory events', () => {
     // to the trajectory AND joined twice into nativeThoughts, rendering as two
     // byte-identical thought blocks (seen 2026-09-09).
     const registry = { getDeclarations: () => [], dispatch: async () => ({}) }
-    const client = new GeminiClient('dummy-key', 'gemini-3.7-flash', registry as any)
+    const client = new GeminiClient('dummy-key', 'gemini-3.8-flash', registry as any)
     const first = '**Confirming Tool Availability**\nThe user is asking about a tool.'
     const second = '**Confirming Tool Functionality**\nThe tool is available as an MCP tool.'
     const chunks = [
@@ -141,7 +141,7 @@ describe('respond() live trajectory events', () => {
 
   test('surfaces server-side search and code execution as live actions', async () => {
     const registry = { getDeclarations: () => [], dispatch: async () => ({}) }
-    const client = new GeminiClient('dummy-key', 'gemini-3.7-flash', registry as any)
+    const client = new GeminiClient('dummy-key', 'gemini-3.8-flash', registry as any)
     const chunks = [
       { candidates: [{ groundingMetadata: { webSearchQueries: ['current release notes'] }, content: { parts: [] } }] },
       { candidates: [{ content: { parts: [{ executableCode: { language: 'PYTHON', code: 'print(6 * 7)' } }] } }] },
