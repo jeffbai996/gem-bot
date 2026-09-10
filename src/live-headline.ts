@@ -172,34 +172,55 @@ function timelineThinkingBlock(step: LiveTimelineStep, complete = false): string
   return [title ? `> **${title}**` : '', summary ? `> ${summary}` : ''].filter(Boolean).join('\n')
 }
 
-function timelineActionRow(step: LiveTimelineStep, previous?: LiveTimelineStep): { left: string, right: string } {
+/** How long it took, in a bracket of its own.
+ *
+ * Jeff 2026-09-10: "the raw number is in ms, so display the ms in square
+ * brackets like [235ms], or [3.2s] if using actual seconds (1 decimal)". One
+ * decimal all the way up, so the column never changes shape mid-run. */
+function formatStepDuration(durationMs?: number): string {
+  if (!durationMs) return ''
+  return durationMs < 1000
+    ? `[${Math.round(durationMs)}ms]`
+    : `[${(durationMs / 1000).toFixed(1)}s]`
+}
+
+function timelineActionRow(step: LiveTimelineStep): { left: string, detail: string, duration: string } {
   const { emoji, label } = actionPresentation(step.text)
   const detail = step.detail ? clipOnWordBoundary(step.detail.replace(/\s+/g, ' ').trim(), DETAIL_MAX) : ''
-  const duration = !step.durationMs ? ''
-    : step.durationMs < 1000 ? `  ${Math.round(step.durationMs)}ms`
-    : `  ${(step.durationMs / 1000).toFixed(step.durationMs < 10_000 ? 1 : 0)}s`
-  const repeated = previous && actionPresentation(previous.text).label === label && detail
+  // Every row keeps its own action. Consecutive calls of the same kind used to
+  // have the label blanked out, which left a bare command floating under the
+  // one above it with nothing to say what it was — and, since the anchor row
+  // led with an emoji and the orphan led with spaces, not even lined up with
+  // it. Repeating six characters is worth a card you can read.
   const left = step.status === 'failed' ? `⚠️ ${label} failed`
-    : repeated ? '' : `${emoji} ${label}${step.status === 'running' ? '…' : ''}`
-  const right = detail + (repeated && step.status === 'running' ? '…' : '') + duration
+    : `${emoji} ${label}${step.status === 'running' ? '…' : ''}`
   // Tool arguments can contain backticks; keep them from closing the fence.
-  return { left: left.replace(/`/g, 'ˋ'), right: right.replace(/`/g, 'ˋ') }
+  return {
+    left: left.replace(/`/g, 'ˋ'),
+    detail: detail.replace(/`/g, 'ˋ'),
+    duration: formatStepDuration(step.durationMs),
+  }
 }
 
 function timelineBlocks(steps: LiveTimelineStep[], complete = false): string {
   const blocks: string[] = []
-  let rows: Array<{ left: string, right: string }> = []
-  let previous: LiveTimelineStep | undefined
+  let rows: Array<{ left: string, detail: string, duration: string }> = []
   const flush = () => {
     if (rows.length) {
-      const column = Math.max(...rows.map(row => displayWidth(row.left))) + 2
-      const text = rows.map(row => row.right
-        ? row.left + ' '.repeat(column - displayWidth(row.left)) + row.right
-        : row.left).join('\n')
+      // Two columns, both measured across the whole block: the argument starts
+      // clear of the longest action, and the duration starts clear of the
+      // longest argument, so the brackets read as one column down the card.
+      const argAt = Math.max(...rows.map(row => displayWidth(row.left))) + 2
+      const heads = rows.map(row => row.detail
+        ? row.left + ' '.repeat(argAt - displayWidth(row.left)) + row.detail
+        : row.left)
+      const durAt = Math.max(...heads.map(displayWidth)) + 2
+      const text = rows.map((row, i) => row.duration
+        ? heads[i] + ' '.repeat(durAt - displayWidth(heads[i])) + row.duration
+        : heads[i]).join('\n')
       blocks.push('🔧 **Tool call**\n```text\n' + text + '\n```')
     }
     rows = []
-    previous = undefined
   }
   for (const step of steps) {
     if (step.kind === 'thinking') {
@@ -215,10 +236,7 @@ function timelineBlocks(steps: LiveTimelineStep[], complete = false): string {
         ...body,
       ], 'live'))
     } else {
-      rows.push(timelineActionRow(step, previous))
-      // Keep the labelled row as the indentation anchor throughout the run.
-      if (!previous || actionPresentation(previous.text).label !== actionPresentation(step.text).label
-          || step.status === 'failed') previous = step
+      rows.push(timelineActionRow(step))
     }
   }
   flush()

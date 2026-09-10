@@ -249,7 +249,7 @@ describe('composeTrajectoryTimelineCard', () => {
     assert.match(out, /Edit\(example.ts\)/)
     assert.equal((out.match(/^```/gm) ?? []).length, 2)
   })
-  it('aligns all targets to one column across labels and continuations without dots', () => {
+  it('aligns all targets to one column, every row carrying its own label', () => {
     const out = composeTrajectoryTimelineCard({ label: 'Working', steps: [
       { kind: 'action', text: 'Run', detail: 'target-a' },
       { kind: 'action', text: 'Run', detail: 'target-b' },
@@ -263,7 +263,10 @@ describe('composeTrajectoryTimelineCard', () => {
     assert.equal(rows.length, 5)
     assert.doesNotMatch(out, / · /)
     assert.match(out, /⌨️ Running/)
-    assert.equal((out.match(/Running/g) ?? []).length, 1)
+    // Both Run steps say "Running". The second one used to have its label
+    // blanked to mark it as a continuation, which left a bare argument under
+    // the first with nothing to say what it was (Jeff 2026-09-10).
+    assert.equal((out.match(/Running/g) ?? []).length, 2)
   })
   it('renders ordered reasoning summaries and actions in one live card', () => {
     const out = composeTrajectoryTimelineCard({
@@ -325,12 +328,12 @@ describe('composeTrajectoryTimelineCard', () => {
 
     assert.match(out, /^💭 ✓ \*\*Worked for 12s\*\*/)
     assert.match(out, /📖 Reading… + renderer\.ts/)
-    assert.match(out, /🌐 Searching + current project +842ms/)
-    assert.match(out, /⚠️ Browsing failed + example\.com +6\.2s/)
+    assert.match(out, /🌐 Searching + current project +\[842ms\]/)
+    assert.match(out, /⚠️ Browsing failed + example\.com +\[6\.2s\]/)
     assert.equal((out.match(/^```/gm) ?? []).length, 2)
   })
 
-  it('groups consecutive calls and resets repeated action labels after thinking', () => {
+  it('labels every consecutive call and starts a new block after thinking', () => {
     const out = composeTrajectoryTimelineCard({ label: 'Working', steps: [
       { kind: 'action', text: 'Read', detail: 'first.ts' },
       { kind: 'action', text: 'Read', detail: 'second.ts' },
@@ -339,7 +342,7 @@ describe('composeTrajectoryTimelineCard', () => {
       { kind: 'action', text: 'Read', detail: 'third.ts' },
     ] })
     assert.match(out, /5 steps/)
-    assert.match(out, /📖 Reading + first\.ts\n {14}second\.ts\n🌐 Searching + query\n```\n> \*\*Checking results\*\*/)
+    assert.match(out, /📖 Reading + first\.ts\n📖 Reading + second\.ts\n🌐 Searching + query\n```\n> \*\*Checking results\*\*/)
     assert.match(out, /Checking results\*\*\n🔧 \*\*Tool call\*\*\n```text\n📖 Reading + third\.ts/)
     assert.doesNotMatch(out, /\n\n/)
     assert.equal((out.match(/^```/gm) ?? []).length, 4)
@@ -359,13 +362,19 @@ describe('composeTrajectoryTimelineCard', () => {
     assert.ok(out.endsWith('```'))
   })
 
-  it('aligns every repeated target to the labelled running row', () => {
+  it('aligns every target to one column when the labels differ in width', () => {
     const out = composeTrajectoryTimelineCard({ label: 'Working', steps: [
       { kind: 'action', text: 'Read', detail: 'first.ts', status: 'running' },
       { kind: 'action', text: 'Read', detail: 'second.ts', status: 'done' },
       { kind: 'action', text: 'Read', detail: 'third.ts', status: 'done' },
     ] })
-    assert.match(out, /📖 Reading… + first\.ts\n {13}second\.ts\n {13}third\.ts/)
+    // "Reading…" is wider than "Reading", so the shorter rows take the slack
+    // and all three arguments still start in the same column.
+    const rows = out.split('\n').filter(row => row.includes('.ts'))
+    const columns = rows.map(row => displayWidth(row.slice(0, row.search(/\S+\.ts/))))
+    assert.equal(rows.length, 3)
+    assert.equal(new Set(columns).size, 1)
+    assert.match(out, /📖 Reading… + first\.ts/)
   })
 
   it('keeps tool fences intact with hostile backticks and a rolling mixed tail', () => {
@@ -379,5 +388,56 @@ describe('composeTrajectoryTimelineCard', () => {
     assert.doesNotMatch(out, /• \*\*|```example/)
     assert.equal((out.match(/^```/gm) ?? []).length % 2, 0)
     assert.match(out, /\*\*Stage 38\*\*[\s\S]*\*\*Tool call\*\*\n```text/)
+  })
+})
+
+describe('tool call rows', () => {
+  const card = (steps: any[]) => composeTrajectoryTimelineCard({
+    label: 'Working', steps, complete: true,
+  })
+  const rows = (steps: any[]) => card(steps)
+    .split('\n').filter(l => l.includes('['))
+
+  it('brackets a sub-second duration in ms', () => {
+    const out = card([{ kind: 'tool', text: 'search', detail: 'gemini flash', durationMs: 235 }])
+    assert.match(out, /\[235ms\]/)
+  })
+
+  it('brackets a second-scale duration to one decimal', () => {
+    const out = card([{ kind: 'tool', text: 'search', detail: 'gemini flash', durationMs: 3200 }])
+    assert.match(out, /\[3\.2s\]/)
+  })
+
+  it('keeps one decimal past ten seconds rather than dropping to whole seconds', () => {
+    const out = card([{ kind: 'tool', text: 'search', detail: 'x', durationMs: 42_500 }])
+    assert.match(out, /\[42\.5s\]/)
+  })
+
+  it('gives every row its own action, so none is left as an orphan argument', () => {
+    // Two runs in a row used to collapse the second one's label away, leaving a
+    // bare command floating under the first (Jeff 2026-09-10: "clusterfucks
+    // like this").
+    const out = card([
+      { kind: 'tool', text: 'run', detail: 'ls -la ~/repos', durationMs: 1000 },
+      { kind: 'tool', text: 'run', detail: 'systemctl --user list-units', durationMs: 2000 },
+    ])
+    const lines = out.split('\n').filter(l => l.includes('systemctl'))
+    assert.equal(lines.length, 1)
+    assert.match(lines[0], /Running/)
+  })
+
+  it('right-aligns the durations into one column', () => {
+    const out = card([
+      { kind: 'tool', text: 'search', detail: 'a short one', durationMs: 235 },
+      { kind: 'tool', text: 'run', detail: 'a considerably longer argument here', durationMs: 3200 },
+    ])
+    const at = out.split('\n').filter(l => l.includes('[')).map(l => displayWidth(l.slice(0, l.indexOf('['))))
+    assert.equal(at.length, 2)
+    assert.equal(at[0], at[1])
+  })
+
+  it('omits the bracket entirely when there is no duration', () => {
+    const out = card([{ kind: 'tool', text: 'search', detail: 'gemini flash' }])
+    assert.doesNotMatch(out, /\[/)
   })
 })
