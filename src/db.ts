@@ -10,6 +10,14 @@ const DB_PATH = path.join(STATE_DIR, 'memory.db')
 
 const db = new Database(DB_PATH)
 
+// The vss index makes every commit touch many pages of a ~100 MB file; DELETE
+// journal mode doubled that and was burning the host's write-budgeted root SSD
+// (measured ~50-70 MB per active minute, 2026-09-10). WAL + NORMAL is the same
+// posture the squad's other hot SQLite files run.
+db.pragma('journal_mode = WAL')
+db.pragma('synchronous = NORMAL')
+db.pragma('wal_autocheckpoint = 8000')
+
 // Load the sqlite-vss extension
 sqliteVss.load(db)
 
