@@ -9,6 +9,7 @@ import {
   composeThinkingCard,
   composeTrajectoryTimelineCard,
   thinkingTraceLines,
+  assertUniformEmojiWidth,
 } from '../src/live-headline.js'
 
 describe('latestThinkingHeadline', () => {
@@ -262,7 +263,7 @@ describe('composeTrajectoryTimelineCard', () => {
     assert.equal(new Set(columns).size, 1)
     assert.equal(rows.length, 5)
     assert.doesNotMatch(out, / · /)
-    assert.match(out, /^Running/m)
+    assert.match(out, /^💻 Running/m)
     // Both Run steps say "Running". The second one used to have its label
     // blanked to mark it as a continuation, which left a bare argument under
     // the first with nothing to say what it was (Jeff 2026-09-10).
@@ -292,7 +293,7 @@ describe('composeTrajectoryTimelineCard', () => {
     assert.match(out, /3 steps/)
     assert.match(out, /\*\*Inspecting the renderer\*\*/)
     assert.match(out, /> The events are already present\./)
-    assert.match(out, /🔧 \*\*Tool call\*\*\n```text\nReading + live\.ts\n```/)
+    assert.match(out, /🔧 \*\*Tool call\*\*\n```text\n📖 Reading + live\.ts\n```/)
     assert.doesNotMatch(out, /• \*\*/)
     assert.ok(out.indexOf('Inspecting the renderer') < out.indexOf('Reading'))
     assert.ok(out.indexOf('Reading') < out.indexOf('Fixing the choke point'))
@@ -326,9 +327,9 @@ describe('composeTrajectoryTimelineCard', () => {
     })
 
     assert.match(out, /^💭 ✓ \*\*Worked for 12s\*\*/)
-    assert.match(out, /^Reading… + renderer\.ts/m)
-    assert.match(out, /^Searching + current project$/m)
-    assert.match(out, /^Browsing failed + example\.com$/m)
+    assert.match(out, /^📖 Reading… + renderer\.ts/m)
+    assert.match(out, /^🌐 Searching + current project$/m)
+    assert.match(out, /^❌ Browsing failed + example\.com$/m)
     assert.equal((out.match(/^```/gm) ?? []).length, 2)
   })
 
@@ -340,8 +341,8 @@ describe('composeTrajectoryTimelineCard', () => {
       { kind: 'thinking', text: '**Checking results**' },
       { kind: 'action', text: 'Read', detail: 'third.ts' },
     ] })
-    assert.match(out, /Reading + first\.ts\nReading + second\.ts\nSearching + query\n```\n> \*\*Checking results\*\*/)
-    assert.match(out, /Checking results\*\*\n🔧 \*\*Tool call\*\*\n```text\nReading + third\.ts/)
+    assert.match(out, /📖 Reading + first\.ts\n📖 Reading + second\.ts\n🌐 Searching + query\n```\n> \*\*Checking results\*\*/)
+    assert.match(out, /Checking results\*\*\n🔧 \*\*Tool call\*\*\n```text\n📖 Reading + third\.ts/)
     assert.doesNotMatch(out, /\n\n/)
     assert.equal((out.match(/^```/gm) ?? []).length, 4)
   })
@@ -354,7 +355,7 @@ describe('composeTrajectoryTimelineCard', () => {
     assert.ok(out.length <= 1960)
     assert.match(out, /80 steps/)
     assert.match(out, /earlier steps omitted/)
-    assert.match(out, /```text\nReading + file-/)
+    assert.match(out, /```text\n📖 Reading + file-/)
     assert.match(out, /file-79\.ts/)
     assert.equal((out.match(/^```/gm) ?? []).length, 2)
     assert.ok(out.endsWith('```'))
@@ -372,7 +373,7 @@ describe('composeTrajectoryTimelineCard', () => {
     const columns = rows.map(row => displayWidth(row.slice(0, row.search(/\S+\.ts/))))
     assert.equal(rows.length, 3)
     assert.equal(new Set(columns).size, 1)
-    assert.match(out, /^Reading… + first\.ts/m)
+    assert.match(out, /^📖 Reading… + first\.ts/m)
   })
 
   it('keeps tool fences intact with hostile backticks and a rolling mixed tail', () => {
@@ -386,6 +387,32 @@ describe('composeTrajectoryTimelineCard', () => {
     assert.doesNotMatch(out, /• \*\*|```example/)
     assert.equal((out.match(/^```/gm) ?? []).length % 2, 0)
     assert.match(out, /\*\*Stage 38\*\*[\s\S]*\*\*Tool call\*\*\n```text/)
+  })
+})
+
+describe('trace row emoji', () => {
+  it('only uses glyphs that default to emoji presentation', () => {
+    // The rows line up because each opens with one glyph of the same rendered
+    // width, so whatever Discord gives an emoji cancels out down the block. A
+    // text-presentation character wearing U+FE0F (⌨️, ✍️, ⚠️) draws narrower
+    // than a native emoji and knocks the whole column out -- which is why the
+    // emoji were removed entirely on 2026-09-10 before being picked properly.
+    assert.doesNotThrow(assertUniformEmojiWidth)
+  })
+
+  it('gives the fallback and the failure a glyph too', () => {
+    // A row without one starts two columns left of its neighbours, so there is
+    // no "this action has no icon" case.
+    const out = composeTrajectoryTimelineCard({ label: 'Working', complete: true, steps: [
+      { kind: 'action', text: 'Task', status: 'done' },
+      { kind: 'action', text: 'Browse', detail: 'example.com', status: 'failed' },
+      { kind: 'action', text: 'Read', detail: 'a.ts', status: 'done' },
+    ] })
+    const rows = out.split('```text\n')[1].split('\n```')[0].split('\n')
+    assert.equal(rows.length, 3)
+    for (const row of rows) {
+      assert.match(row, /^\p{Emoji_Presentation} /u, row)
+    }
   })
 })
 

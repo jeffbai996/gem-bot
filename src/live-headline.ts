@@ -137,16 +137,45 @@ const ACTION_LABELS: Record<string, string> = {
   write: 'Writing',
 }
 
+/** EVERY GLYPH HERE MUST DEFAULT TO EMOJI PRESENTATION.
+ *
+ * The rows line up only because each one opens with a single glyph of the same
+ * rendered width, so whatever width Discord gives an emoji cancels out across
+ * the block. That breaks the moment one of them is a TEXT-presentation
+ * character wearing a variation selector: ⌨️ is U+2328 + U+FE0F, ✍️ is U+270D +
+ * U+FE0F, and clients draw those narrower than a native emoji like 📖. That is
+ * the whole of the misalignment the emoji were removed for on 2026-09-10 —
+ * `\p{Extended_Pictographic}` calls both two columns wide and only one of them
+ * is. Pick replacements from U+1F300 and up (Emoji_Presentation=Yes); never
+ * reach for a dingbat with a U+FE0F glued on.
+ *
+ * `assertUniformEmojiWidth` below is the guard, and a test calls it. */
+const ACTION_EMOJI: Array<[RegExp, string]> = [
+  [/read|list/, '📖'],
+  [/search|grep|browse/, '🌐'],
+  [/write/, '📝'],
+  [/bash|run/, '💻'],
+  [/click|type/, '👆'],
+  [/screen/, '📸'],
+]
+const FALLBACK_EMOJI = '🔧'
+const FAILED_EMOJI = '❌'
+
+/** Throws on any glyph that would need a variation selector to look like an
+ * emoji, i.e. any that would render at a different width from the rest. */
+export function assertUniformEmojiWidth(): void {
+  const glyphs = [...ACTION_EMOJI.map(([, e]) => e), FALLBACK_EMOJI, FAILED_EMOJI]
+  const ragged = glyphs.filter(g => g.includes('\uFE0F')
+    || !/^\p{Emoji_Presentation}$/u.test(g))
+  if (ragged.length) {
+    throw new Error(`trace emoji render at mixed widths: ${ragged.join(' ')}`)
+  }
+}
+
 function actionPresentation(text: string): { emoji: string, label: string } {
   const key = text.trim().toLocaleLowerCase('en-US')
   const label = ACTION_LABELS[key] ?? (text.trim() || 'Using tool')
-  const emoji = /read|list/.test(key) ? '📖'
-    : /search|grep|browse/.test(key) ? '🌐'
-    : /write/.test(key) ? '✍️'
-    : /bash|run/.test(key) ? '⌨️'
-    : /click|type/.test(key) ? '🖱️'
-    : /screen/.test(key) ? '📸'
-    : '🔧'
+  const emoji = ACTION_EMOJI.find(([re]) => re.test(key))?.[1] ?? FALLBACK_EMOJI
   return { emoji, label }
 }
 
@@ -179,22 +208,19 @@ function timelineThinkingBlock(step: LiveTimelineStep, complete = false): string
 // overall elapsed in the header. Per-call timing still exists where it is
 // actually read: the `[Nms]` badges on the 🔧 Tool trace card.
 function timelineActionRow(step: LiveTimelineStep): { left: string, detail: string } {
-  const { label } = actionPresentation(step.text)
+  const { emoji, label } = actionPresentation(step.text)
   const detail = step.detail ? clipOnWordBoundary(step.detail.replace(/\s+/g, ' ').trim(), DETAIL_MAX) : ''
   // Every row keeps its own action. Consecutive calls of the same kind used to
   // have the label blanked out, which left a bare command floating under the
   // one above it with nothing to say what it was — and, since the anchor row
   // led with an emoji and the orphan led with spaces, not even lined up with
   // it. Repeating six characters is worth a card you can read.
-  // No per-row emoji. Discord renders them from the emoji font, not the code
-  // font, and different ones take different advance widths — 📖 and ⌨️ are not
-  // the same width, so two labelled rows still failed to line up even after
-  // the orphans were fixed (Jeff 2026-09-10: "even more misaligned now"). No
-  // run of spaces is the width of an emoji either, which is why nothing could
-  // pad around it. The card's own 🔧 header keeps the glyph; the rows keep the
-  // alignment, and the label already says what ran.
-  const left = step.status === 'failed' ? `${label} failed`
-    : `${label}${step.status === 'running' ? '…' : ''}`
+  // One emoji per row, every row — including the fallback and the failure. A
+  // row without one would start two columns to the left of its neighbours, so
+  // there is no "this action has no icon" case. See ACTION_EMOJI for why they
+  // all have to come from the same presentation class.
+  const left = step.status === 'failed' ? `${FAILED_EMOJI} ${label} failed`
+    : `${emoji} ${label}${step.status === 'running' ? '…' : ''}`
   // Tool arguments can contain backticks; keep them from closing the fence.
   return {
     left: left.replace(/`/g, 'ˋ'),
