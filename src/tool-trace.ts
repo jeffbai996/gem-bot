@@ -50,8 +50,14 @@ export function truncateDisplayWidthClean(value: string, maxWidth: number): stri
   return out
 }
 
+// The ellipsis is inside the budget, not added to it: a digest clipped here
+// sits in a width-measured column, so growing the string by one would push the
+// column out. Same convention as the other bots' trace rows.
 export function truncateDigest(value: string, maxLength: number): string {
-  return value.length > maxLength ? value.slice(0, Math.max(0, maxLength)) : value
+  if (value.length <= maxLength) return value
+  // A zero budget means no room for anything, the mark included.
+  if (maxLength <= 0) return ''
+  return value.slice(0, maxLength - 1) + '…'
 }
 
 export function formatAggregateTraceMarker(dropped: number): string {

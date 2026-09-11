@@ -172,19 +172,13 @@ function timelineThinkingBlock(step: LiveTimelineStep, complete = false): string
   return [title ? `> **${title}**` : '', summary ? `> ${summary}` : ''].filter(Boolean).join('\n')
 }
 
-/** How long it took, in a bracket of its own.
- *
- * Jeff 2026-09-10: "the raw number is in ms, so display the ms in square
- * brackets like [235ms], or [3.2s] if using actual seconds (1 decimal)". One
- * decimal all the way up, so the column never changes shape mid-run. */
-function formatStepDuration(durationMs?: number): string {
-  if (!durationMs) return ''
-  return durationMs < 1000
-    ? `[${Math.round(durationMs)}ms]`
-    : `[${(durationMs / 1000).toFixed(1)}s]`
-}
-
-function timelineActionRow(step: LiveTimelineStep): { left: string, detail: string, duration: string } {
+// NO PER-ROW DURATION on this card. It had one for a few hours on 2026-09-10
+// and Jeff dropped it the same evening: "just drop the time like the 1.0s and
+// all that". The live card is a running account of what the bot is DOING, and
+// the other bots' equivalent card carries no per-call timing either — only the
+// overall elapsed in the header. Per-call timing still exists where it is
+// actually read: the `[Nms]` badges on the 🔧 Tool trace card.
+function timelineActionRow(step: LiveTimelineStep): { left: string, detail: string } {
   const { label } = actionPresentation(step.text)
   const detail = step.detail ? clipOnWordBoundary(step.detail.replace(/\s+/g, ' ').trim(), DETAIL_MAX) : ''
   // Every row keeps its own action. Consecutive calls of the same kind used to
@@ -205,26 +199,20 @@ function timelineActionRow(step: LiveTimelineStep): { left: string, detail: stri
   return {
     left: left.replace(/`/g, 'ˋ'),
     detail: detail.replace(/`/g, 'ˋ'),
-    duration: formatStepDuration(step.durationMs),
   }
 }
 
 function timelineBlocks(steps: LiveTimelineStep[], complete = false): string {
   const blocks: string[] = []
-  let rows: Array<{ left: string, detail: string, duration: string }> = []
+  let rows: Array<{ left: string, detail: string }> = []
   const flush = () => {
     if (rows.length) {
-      // Two columns, both measured across the whole block: the argument starts
-      // clear of the longest action, and the duration starts clear of the
-      // longest argument, so the brackets read as one column down the card.
+      // One column, measured across the whole block: every argument starts
+      // clear of the longest action, so the commands read down the card.
       const argAt = Math.max(...rows.map(row => displayWidth(row.left))) + 2
-      const heads = rows.map(row => row.detail
+      const text = rows.map(row => row.detail
         ? row.left + ' '.repeat(argAt - displayWidth(row.left)) + row.detail
-        : row.left)
-      const durAt = Math.max(...heads.map(displayWidth)) + 2
-      const text = rows.map((row, i) => row.duration
-        ? heads[i] + ' '.repeat(durAt - displayWidth(heads[i])) + row.duration
-        : heads[i]).join('\n')
+        : row.left).join('\n')
       blocks.push('🔧 **Tool call**\n```text\n' + text + '\n```')
     }
     rows = []

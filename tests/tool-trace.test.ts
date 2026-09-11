@@ -25,8 +25,13 @@ test('running tool calls do not spend trace width on synthetic ellipses', async 
   assert.doesNotMatch(source, /call\.running\s*\?\s*['"]\.\.\.['"]/) // no synthetic live suffix
 })
 
-test('truncated tool arguments end cleanly without an ellipsis', () => {
-  assert.equal(truncateDigest('abcdefgh', 5), 'abcde')
+test('a truncated tool argument says it was truncated', () => {
+  // Reverses fa9497f (2026-07-29), which stripped the ellipsis from argument
+  // clips. Jeff 2026-09-10, on a trace row reading `find ... -name
+  // "image-generation.`: "for calls that are too long, use … like the other
+  // bots". A silent cut reads as a command that was genuinely that strange.
+  // The mark comes out of the same budget, so no column moves.
+  assert.equal(truncateDigest('abcdefgh', 5), 'abcd…')
   assert.equal(truncateDigest('abc', 5), 'abc')
   assert.equal(truncateDigest('abc', 0), '')
 })
@@ -38,12 +43,13 @@ test('final tool-call row truncation does not restore an ellipsis', () => {
   assert.ok(!rendered.endsWith('…'))
 })
 
-test('agy tool display truncation does not bake in an ellipsis', () => {
+test('agy tool display marks a clipped argument', () => {
   const rendered = agyToolDisplayName('view_file', {
     AbsolutePath: `/tmp/${'x'.repeat(100)}`,
   })
-  assert.match(rendered, /^Read\(.+\)$/)
-  assert.ok(!rendered.includes('…'))
+  assert.match(rendered, /^Read\(.+…\)$/)
+  // The whole row still fits the column it was budgeted for.
+  assert.ok(rendered.length <= 62 + 'Read('.length)
 })
 
 test('aggregate call marker is not styled as a tool invocation', () => {

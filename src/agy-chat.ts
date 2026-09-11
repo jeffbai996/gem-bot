@@ -615,6 +615,19 @@ const AGY_TOOL_SPEC: Record<string, { verb: string; argKey?: string; basename?: 
   browser_take_screenshot: { verb: 'Screenshot' },
 }
 
+/** Clip a tool argument to `max` display characters, marking the cut.
+ *
+ * A bare `slice` left commands ending mid-word with nothing to say they had
+ * been cut, so `find ... -name "image-generation.` read as a command that was
+ * genuinely that strange rather than one that ran off the edge. The ellipsis
+ * costs one character of the same budget, which is why the slice is max - 1:
+ * the row's total width is unchanged. Same convention as the other bots. */
+function clipDetail(detail: string, max: number): string {
+  if (detail.length <= max) return detail
+  if (max <= 0) return ''
+  return detail.slice(0, max - 1) + '…'
+}
+
 export function agyToolDisplayName(
   name: string,
   args: Record<string, unknown> | undefined
@@ -671,10 +684,7 @@ export function agyToolDisplayName(
       if (detail) {
         detail = detail.replace(/\s+/g, ' ')
         if (innerSpec.basename) detail = detail.replace(/\/+$/, '').split('/').pop() || detail
-        const maxDetailLen = 62 - verb.length
-        if (detail.length > maxDetailLen) {
-          detail = detail.slice(0, Math.max(0, maxDetailLen))
-        }
+        detail = clipDetail(detail, 62 - verb.length)
         return `${verb}(${detail})`
       }
       return verb
@@ -695,10 +705,7 @@ export function agyToolDisplayName(
       // Total line limit is 76. Prefix "+ ● " is 4. Assume max tail is 8.
       // Verb(detail) has spec.verb.length + 2 + detail.length.
       // So detail.length <= 76 - 4 - 8 - spec.verb.length - 2 = 62 - spec.verb.length.
-      const maxDetailLen = 62 - spec.verb.length
-      if (detail.length > maxDetailLen) {
-        detail = detail.slice(0, Math.max(0, maxDetailLen))
-      }
+      detail = clipDetail(detail, 62 - spec.verb.length)
     }
   }
   return detail ? `${spec.verb}(${detail})` : spec.verb

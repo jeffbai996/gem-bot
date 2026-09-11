@@ -327,8 +327,8 @@ describe('composeTrajectoryTimelineCard', () => {
 
     assert.match(out, /^💭 ✓ \*\*Worked for 12s\*\*/)
     assert.match(out, /^Reading… + renderer\.ts/m)
-    assert.match(out, /^Searching + current project +\[842ms\]/m)
-    assert.match(out, /^Browsing failed + example\.com +\[6\.2s\]/m)
+    assert.match(out, /^Searching + current project$/m)
+    assert.match(out, /^Browsing failed + example\.com$/m)
     assert.equal((out.match(/^```/gm) ?? []).length, 2)
   })
 
@@ -393,22 +393,16 @@ describe('tool call rows', () => {
   const card = (steps: any[]) => composeTrajectoryTimelineCard({
     label: 'Working', steps, complete: true,
   })
-  const rows = (steps: any[]) => card(steps)
-    .split('\n').filter(l => l.includes('['))
 
-  it('brackets a sub-second duration in ms', () => {
-    const out = card([{ kind: 'tool', text: 'search', detail: 'gemini flash', durationMs: 235 }])
-    assert.match(out, /\[235ms\]/)
-  })
-
-  it('brackets a second-scale duration to one decimal', () => {
-    const out = card([{ kind: 'tool', text: 'search', detail: 'gemini flash', durationMs: 3200 }])
-    assert.match(out, /\[3\.2s\]/)
-  })
-
-  it('keeps one decimal past ten seconds rather than dropping to whole seconds', () => {
-    const out = card([{ kind: 'tool', text: 'search', detail: 'x', durationMs: 42_500 }])
-    assert.match(out, /\[42\.5s\]/)
+  it('carries no per-row timing at all', () => {
+    // Jeff 2026-09-10, on the bracketed duration column shipped hours earlier:
+    // "just drop the time like the 1.0s and all that". Per-call timing lives on
+    // the 🔧 Tool trace card; this one says what is running, not how long it took.
+    const out = card([
+      { kind: 'tool', text: 'search', detail: 'gemini flash', durationMs: 235 },
+      { kind: 'tool', text: 'run', detail: 'ls -la ~/repos', durationMs: 42_500 },
+    ])
+    assert.doesNotMatch(out, /235ms|42\.5s|\[/)
   })
 
   it('gives every row its own action, so none is left as an orphan argument', () => {
@@ -424,18 +418,15 @@ describe('tool call rows', () => {
     assert.match(lines[0], /Running/)
   })
 
-  it('right-aligns the durations into one column', () => {
+  it('starts every argument in the same column', () => {
     const out = card([
       { kind: 'tool', text: 'search', detail: 'a short one', durationMs: 235 },
       { kind: 'tool', text: 'run', detail: 'a considerably longer argument here', durationMs: 3200 },
     ])
-    const at = out.split('\n').filter(l => l.includes('[')).map(l => displayWidth(l.slice(0, l.indexOf('['))))
+    const at = ['a short one', 'a considerably longer']
+      .map(arg => out.split('\n').find(l => l.includes(arg)) ?? '')
+      .map(l => displayWidth(l.slice(0, l.indexOf('a '))))
     assert.equal(at.length, 2)
     assert.equal(at[0], at[1])
-  })
-
-  it('omits the bracket entirely when there is no duration', () => {
-    const out = card([{ kind: 'tool', text: 'search', detail: 'gemini flash' }])
-    assert.doesNotMatch(out, /\[/)
   })
 })
