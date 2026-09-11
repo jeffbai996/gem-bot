@@ -70,7 +70,7 @@ import {
 } from './tool-trace.ts'
 import { extractPresenceDirective } from './presence.ts'
 import { GemStats } from './stats.ts'
-import { editImages } from './image-generation.ts'
+import { editImages, quoteImagePrompt } from './image-generation.ts'
 import { formatSkippedAttachments } from './discord-card.ts'
 import {
   GRACEFUL_SHUTDOWN_DEADLINE_MS,
@@ -1330,7 +1330,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // resolves references ("make it blue") into a full prompt the asker
       // never typed and would otherwise never see (Jeff 2026-09-10: the prompt
       // belongs above the image). `/gemini image` already quoted it this way.
-      parsed = { ...parsed, reply: `> ${imageRequest.prompt.replace(/\n/g, '\n> ')}` }
+      parsed = { ...parsed, reply: quoteImagePrompt(imageRequest.prompt) }
     }
     // Keep flushStream's view in sync with the real result. apiRespond's
     // streaming callback already does this incrementally (line ~917), but the

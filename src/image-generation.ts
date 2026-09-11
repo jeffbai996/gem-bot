@@ -154,3 +154,17 @@ export async function generateImage(
 
   return result
 }
+
+// Discord caps a message at 2000 characters, and a resolved image prompt can be
+// long, so the quote has to be bounded or the reply fails to send and the
+// generated image is lost after it has already been paid for.
+const QUOTED_PROMPT_MAX = 1_500
+
+/** The prompt as a Discord blockquote, bounded so the message can be sent. */
+export function quoteImagePrompt(prompt: string): string {
+  const clean = prompt.trim()
+  const shown = clean.length > QUOTED_PROMPT_MAX
+    ? clean.slice(0, QUOTED_PROMPT_MAX - 1) + '…'
+    : clean
+  return shown.split('\n').map(line => `> ${line}`).join('\n')
+}

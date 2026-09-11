@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'fs/promises'
-import { editImages, generateImage } from '../src/image-generation.ts'
+import { editImages, generateImage, quoteImagePrompt } from '../src/image-generation.ts'
 
 const image = { inlineData: { mimeType: 'image/png', data: Buffer.from('source').toString('base64') } }
 
@@ -141,3 +141,13 @@ test('Imagen 3 falling back to flash when API returns 404', async () => {
   await fs.unlink(result.files[0])
 })
 
+
+test('a quoted image prompt stays inside Discord message limits', () => {
+  // A resolved prompt can be long; a Discord message holds 2000 characters.
+  // An over-long quote means the reply never sends and a generated image is
+  // lost after it has already been paid for.
+  const quoted = quoteImagePrompt('x'.repeat(4_000))
+  assert.ok(quoted.length < 1_600, String(quoted.length))
+  assert.ok(quoted.endsWith('…'))
+  assert.equal(quoteImagePrompt('one\ntwo'), '> one\n> two')
+})
