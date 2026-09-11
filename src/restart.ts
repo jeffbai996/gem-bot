@@ -37,6 +37,7 @@ export async function waitForIdleOrDeadline(
 interface RestartCoordinatorOptions {
   deadlineMs?: number
   onDeadline?: () => void
+  isIdle?: () => boolean
 }
 
 /** Admission stays open while a restart is pending, then closes atomically at idle. */
@@ -83,6 +84,10 @@ export class ShutdownGate {
   isDraining(): boolean {
     return this.draining
   }
+
+  isIdle(): boolean {
+    return this.active === 0
+  }
 }
 
 export class RestartCoordinator {
@@ -90,6 +95,7 @@ export class RestartCoordinator {
   private launched = false
   private readonly deadlineMs: number
   private readonly onDeadline: () => void
+  private readonly isIdleNow: () => boolean
 
   constructor(
     private readonly waitForIdle: WaitForIdle,
@@ -99,6 +105,7 @@ export class RestartCoordinator {
   ) {
     this.deadlineMs = opts.deadlineMs ?? RESTART_DRAIN_DEADLINE_MS
     this.onDeadline = opts.onDeadline ?? (() => {})
+    this.isIdleNow = opts.isIdle ?? (() => true)
   }
 
   request(): boolean {
@@ -109,17 +116,27 @@ export class RestartCoordinator {
     }, this.deadlineMs)
     timer.unref?.()
 
-    void this.waitForIdle()
-      .then(() => {
-        clearTimeout(timer)
-        this.fire()
-      })
+    void this.waitUntilIdle(timer)
       .catch(error => {
         clearTimeout(timer)
         this.pending = false
         console.error('[restart] failed while waiting for idle:', error)
       })
     return true
+  }
+
+  private async waitUntilIdle(timer: ReturnType<typeof setTimeout>): Promise<void> {
+    while (!this.launched) {
+      await this.waitForIdle()
+      // Independent waiters can settle across different idle gaps. Re-check
+      // the complete live state before closing intake and asking systemd in.
+      if (this.isIdleNow()) {
+        clearTimeout(timer)
+        this.fire()
+        return
+      }
+      await new Promise<void>(resolve => setImmediate(resolve))
+    }
   }
 
   private fire(): void {

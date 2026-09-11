@@ -109,6 +109,34 @@ describe('RestartCoordinator', () => {
     assert.equal(gate.enter(), null)
   })
 
+  test('requires every idle signal to be true at the same instant', async () => {
+    let firstActive = true
+    let secondActive = true
+    let releaseFirst!: () => void
+    let releaseSecond!: () => void
+    const firstIdle = new Promise<void>(resolve => { releaseFirst = resolve })
+    const secondIdle = new Promise<void>(resolve => { releaseSecond = resolve })
+    let pass = 0
+    let launches = 0
+    const coordinator = new RestartCoordinator(
+      () => pass++ === 0 ? firstIdle : secondIdle,
+      () => { launches++ },
+      () => {},
+      { isIdle: () => !firstActive && !secondActive },
+    )
+
+    coordinator.request()
+    firstActive = false
+    releaseFirst()
+    await tick(0)
+    assert.equal(launches, 0, 'a historical idle receipt must not authorize restart')
+
+    secondActive = false
+    releaseSecond()
+    await tick(0)
+    assert.equal(launches, 1)
+  })
+
   test('warns on an overrun without closing intake or launching', async () => {
     const gate = new ShutdownGate()
     let expired = 0

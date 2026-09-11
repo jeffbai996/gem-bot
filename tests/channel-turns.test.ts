@@ -73,6 +73,18 @@ test('guidance waits for active work, drains automatically, and stays channel-lo
   await runner.waitForIdle()
 })
 
+test('isIdle reflects running work synchronously', async () => {
+  const work = deferred()
+  const runner = new ChannelTurnRunner<string>(async () => work.promise)
+
+  assert.equal(runner.isIdle(), true)
+  const turn = runner.submit('channel', 'work')
+  assert.equal(runner.isIdle(), false)
+  work.resolve()
+  await turn
+  assert.equal(runner.isIdle(), true)
+})
+
 test('Discord queues silently and frames even a single queued steer', async () => {
   const source = await readFile(new URL('../src/gemma.ts', import.meta.url), 'utf8')
   assert.doesNotMatch(source, /queueMarker|FAST_FORWARD_REACTION|activeTurns\.deferStopFor/)

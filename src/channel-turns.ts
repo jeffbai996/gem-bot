@@ -71,8 +71,12 @@ export class ChannelTurnRunner<T> {
     return this.states.get(channelId)?.running === true
   }
 
+  isIdle(): boolean {
+    return this.states.size === 0
+  }
+
   waitForIdle(): Promise<void> {
-    if (this.states.size === 0) return Promise.resolve()
+    if (this.isIdle()) return Promise.resolve()
     return new Promise(resolve => this.idleWaiters.add(resolve))
   }
 
@@ -86,7 +90,7 @@ export class ChannelTurnRunner<T> {
   }
 
   private resolveIdleIfNeeded(): void {
-    if (this.states.size > 0) return
+    if (!this.isIdle()) return
     const waiters = [...this.idleWaiters]
     this.idleWaiters.clear()
     for (const resolve of waiters) resolve()

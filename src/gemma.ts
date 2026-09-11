@@ -1883,6 +1883,9 @@ const restartCoordinator = new RestartCoordinator(
   () => scheduleSelfRestart('gemma', 250),
   () => shutdownGate.beginDrain(),
   {
+    isIdle: () => shutdownGate.isIdle()
+      && activeTurns.isIdle()
+      && channelTurns.isIdle(),
     onDeadline: () => {
       console.error('[restart] drain exceeded its warning deadline; continuing to wait for active work')
     },
