@@ -1326,7 +1326,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       generatedImageFiles.push(...generated)
       throwIfStopped()
       meta.writtenFiles = [...(meta.writtenFiles ?? []), ...generated]
-      parsed = { ...parsed, reply: '🎨 Image attached.' }
+      // Say what was drawn, not that something was. The conversational path
+      // resolves references ("make it blue") into a full prompt the asker
+      // never typed and would otherwise never see (Jeff 2026-09-10: the prompt
+      // belongs above the image). `/gemini image` already quoted it this way.
+      parsed = { ...parsed, reply: `> ${imageRequest.prompt.replace(/\n/g, '\n> ')}` }
     }
     // Keep flushStream's view in sync with the real result. apiRespond's
     // streaming callback already does this incrementally (line ~917), but the
