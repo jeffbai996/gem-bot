@@ -43,7 +43,7 @@ import { insertMessage } from './db.ts'
 import { shouldEmbed } from './embed-throttle.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
 import { PendingEditsStore } from './reactions/pending-edits.ts'
-import { applyLifecycle } from './reactions/lifecycle.ts'
+import { applyLifecycle, clearAllTransients, clearAfterDrain } from './reactions/lifecycle.ts'
 import { activeTurns } from './active-turns.ts'
 import { ChannelTurnRunner } from './channel-turns.ts'
 import { renderSteeredMessage } from './steering.ts'
@@ -572,6 +572,7 @@ client.once('ready', async () => {
         if (turn.user_message_id) {
           try {
             const userMsg = await channel.messages.fetch(turn.user_message_id)
+            await clearAllTransients(userMsg)
             await userMsg.react('❌')
           } catch { /* original message gone */ }
         }
@@ -888,7 +889,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       : (process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL)
     const modelFriendly = friendlyModelName(activeModel)
     const effort = modelEffort(activeModel)
-    const thinkingLabel = effort ? `Thinking with ${effort} effort` : `Thinking with ${modelFriendly}`
+    const cleanFriendly = modelFriendly.replace(/\s*\(Thinking\)/i, '')
+    const thinkingLabel = effort ? `Thinking with ${effort} effort` : `Thinking with ${cleanFriendly}`
 
     let latestParsed: ParsedResponse = { react: null, thinking: null, reply: null }
     let lastFlushedFullReply = ''
@@ -1419,6 +1421,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       console.error(`[silent] channel=${message.channelId} message=${message.id} — model returned nothing, exiting clean`)
       // Strip 👀/🤔/etc without applying any final emoji.
       applyLifecycle(message, 'silenced').catch(() => {})
+      clearAfterDrain(message).catch(() => {})
       // Delete the "💭 **Thinking…**" placeholder — no orphan above the silence.
       for (const m of activeMessages) {
         await m.delete().catch(err => console.error('silent-exit placeholder delete failed:', err))
@@ -1487,7 +1490,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       const thoughtSecs = Math.round(respondElapsedMs / 1000)
       const header = `💭 **Thought for ${thoughtSecs}s**`
       const timelineSteps = visibleTimeline()
-      const finalThinking = parsed.thinking || meta.nativeThoughts
+      const lastTimelineThought = timelineSteps.filter(step => step.kind === 'thinking').at(-1)?.text
+      const finalThinking = parsed.thinking || meta.nativeThoughts || lastTimelineThought
       if (flags.thinking === 'live' && timelineSteps.length > 0) {
         thinkingMessage += composeTrajectoryTimelineCard({
           label: `Worked for ${thoughtSecs}s`,
@@ -1743,6 +1747,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     await Promise.all([attachmentResult.cleanup(), ytResult.cleanup()])
 
+    // Belt-and-suspenders: drain the serialized lifecycle queue (so any
+    // pending 'tooling' transition that would re-add 🔧 finishes first),
+    // then sweep all transients with a retry for rate-limit resilience.
+    clearAfterDrain(message).catch(() => {})
+
     // Fire-and-forget: kick off conversation summarization if the channel
     // has accumulated enough new messages. Single-flight per channel inside
     // the scheduler — safe to call on every reply.
@@ -1760,6 +1769,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       console.log(`[voice] turn superseded by barge-in (channel=${message.channelId})`)
       await stopThinkingAnim()
       applyLifecycle(message, 'silenced').catch(() => {})
+      clearAfterDrain(message).catch(() => {})
       const steeredAfter = activeTurns.consumeSteered(message.channelId)
       if (steeredAfter !== null && activeMessages.length) {
         const last = activeMessages[activeMessages.length - 1]
@@ -1787,6 +1797,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // Lifecycle: ⚠️ for rate-limit / quota (denied semantics), ❌ for
     // anything else. Both clean up all transients.
     applyLifecycle(message, isRateLimit ? 'denied' : 'errored').catch(() => {})
+    clearAfterDrain(message).catch(() => {})
     let msg: string
     if (e instanceof GeminiRequestRejected) {
       // Surface the actual rejection reason — usually unsupported mime type

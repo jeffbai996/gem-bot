@@ -55,6 +55,24 @@ const ALL_TRANSIENTS: LifecycleState[] = [
   'searching', 'tooling', 'delegating',
 ]
 
+/**
+ * Remove ALL transient lifecycle emojis from `message`. Used at startup to
+ * scrub orphaned reactions left by a previous process that died mid-turn
+ * (crash, OOM, SIGKILL) before its terminal state could fire. Best-effort:
+ * errors are logged but never thrown.
+ */
+export async function clearAllTransients(message: Message): Promise<void> {
+  const me = message.client.user
+  if (!me) return
+  for (const state of ALL_TRANSIENTS) {
+    const emoji = EMOJI[state]
+    if (!emoji) continue
+    await message.client.rest.delete(
+      `/channels/${message.channelId}/messages/${message.id}/reactions/${encodeURIComponent(emoji)}/@me`,
+    ).catch(error => { console.error(`[lifecycle] startup clear ${emoji} failed:`, error) })
+  }
+}
+
 const PREDECESSORS: Record<LifecycleState, LifecycleState[]> = {
   // Transients only clear strict predecessors (so e.g. 🌐 mid-stream
   // doesn't wipe 🤔 — they coexist briefly until 🌐 finishes and 🤔 is
@@ -89,6 +107,42 @@ export function applyLifecycle(message: Message, state: LifecycleState): Promise
   transitions.set(key, next)
   void next.finally(() => { if (transitions.get(key) === next) transitions.delete(key) }).catch(() => {})
   return next
+}
+
+/**
+ * Chain a full transient sweep onto the per-message transition queue, then
+ * retry once after a short delay. Guarantees that no pending `tooling` or
+ * `searching` transition can re-add an emoji AFTER the sweep runs — the
+ * queue is serial, so this sweep is the last thing to execute.
+ *
+ * Use this at the END of a turn (success, error, or silence) instead of a
+ * bare `clearAllTransients` which races the queue.
+ */
+export function clearAfterDrain(message: Message): Promise<void> {
+  const key = `${message.channelId}:${message.id}`
+  const next = (transitions.get(key) ?? Promise.resolve())
+    .catch(() => {})
+    .then(() => removeAllTransientEmoji(message))
+    // Retry once after 500ms — catches Discord 429s from the preceding
+    // burst of transition REST calls that may not have cleared yet.
+    .then(() => new Promise<void>(r => setTimeout(r, 500)))
+    .then(() => removeAllTransientEmoji(message))
+  transitions.set(key, next)
+  void next.finally(() => { if (transitions.get(key) === next) transitions.delete(key) }).catch(() => {})
+  return next
+}
+
+/** Raw sweep: DELETE every transient emoji the bot owns on `message`. */
+async function removeAllTransientEmoji(message: Message): Promise<void> {
+  const me = message.client.user
+  if (!me) return
+  for (const state of ALL_TRANSIENTS) {
+    const emoji = EMOJI[state]
+    if (!emoji) continue
+    await message.client.rest.delete(
+      `/channels/${message.channelId}/messages/${message.id}/reactions/${encodeURIComponent(emoji)}/@me`,
+    ).catch(() => { /* best-effort — logged by the caller if needed */ })
+  }
 }
 
 async function transition(message: Message, state: LifecycleState): Promise<void> {
