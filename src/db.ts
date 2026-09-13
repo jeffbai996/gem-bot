@@ -16,7 +16,10 @@ const db = new Database(DB_PATH)
 // posture the squad's other hot SQLite files run.
 db.pragma('journal_mode = WAL')
 db.pragma('synchronous = NORMAL')
-db.pragma('wal_autocheckpoint = 8000')
+db.pragma('wal_autocheckpoint = 2000')
+// The WAL sat pinned at ~110 MB and was rewritten in place; truncate it back
+// after a checkpoint so a busy hour does not keep a 100 MB file hot.
+db.pragma('journal_size_limit = 33554432')
 
 // Load the sqlite-vss extension
 sqliteVss.load(db)
@@ -86,6 +89,47 @@ const insertVssStmt = db.prepare(`
   VALUES (?, ?)
 `)
 
+// vss0 serialises its whole faiss index on every commit that touches it, so
+// one embedded message cost ~100 MB of writes and gemma was the largest
+// steady writer on the host's write-budgeted root SSD (16 GB/day, measured
+// 2026-09-12). Embeddings therefore queue in memory and land in ONE
+// transaction per batch: the message row itself is written immediately (it
+// is cheap and the summariser reads it), only the vector index waits. Search
+// lags the newest messages by at most one batch.
+// 15 min / 50 rows: recent messages are already in the model's context window,
+// so the vector index only needs them for the long tail.
+const VSS_BATCH_SIZE = Math.max(1, Number(process.env.VSS_BATCH_SIZE ?? 50))
+const VSS_FLUSH_MS = Math.max(0, Number(process.env.VSS_FLUSH_MS ?? 900_000))
+const pendingVss: Array<{ rowid: number | bigint; embeddingJson: string }> = []
+let flushTimer: NodeJS.Timeout | null = null
+
+const flushVssTxn = db.transaction((rows: typeof pendingVss) => {
+  for (const r of rows) insertVssStmt.run(r.rowid, r.embeddingJson)
+})
+
+/** Land every queued embedding in one commit. Returns how many landed. */
+export function flushEmbeddings(): number {
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
+  if (pendingVss.length === 0) return 0
+  const rows = pendingVss.splice(0, pendingVss.length)
+  flushVssTxn(rows)
+  return rows.length
+}
+
+export function pendingEmbeddings(): number {
+  return pendingVss.length
+}
+
+export function countVssRows(): number {
+  return (db.prepare('SELECT count(*) AS n FROM vss_messages').get() as { n: number }).n
+}
+
+function scheduleFlush() {
+  if (flushTimer || VSS_FLUSH_MS === 0) return
+  flushTimer = setTimeout(() => { flushTimer = null; flushEmbeddings() }, VSS_FLUSH_MS)
+  flushTimer.unref()
+}
+
 export function insertMessage(
   id: string,
   channelId: string,
@@ -94,23 +138,23 @@ export function insertMessage(
   timestamp: string,
   embeddingArray: number[]
 ) {
-  // Convert embedding array to a JSON string or buffer depending on what vss0 expects.
   // sqlite-vss expects a JSON array string representation.
   const embeddingJson = JSON.stringify(embeddingArray)
-
-  const transaction = db.transaction(() => {
-    const info = insertMsgStmt.run(id, channelId, authorName, content, timestamp)
-    // Use lastInsertRowid to map the vss row back to the message table.
-    // However, since id is a TEXT (Discord ID), we need a rowid binding.
-    // Let's alter the schema slightly or use a mapping table, OR just rely on SQLite's internal rowid.
-    // better-sqlite3 info.lastInsertRowid gives the rowid of the newly inserted message.
-    if (info.changes > 0) {
-      insertVssStmt.run(info.lastInsertRowid, embeddingJson)
-    }
-  })
-
-  transaction()
+  const info = insertMsgStmt.run(id, channelId, authorName, content, timestamp)
+  // better-sqlite3 info.lastInsertRowid maps the vss row back to the message
+  // row; a duplicate Discord id inserts nothing and queues nothing.
+  if (info.changes > 0) {
+    pendingVss.push({ rowid: info.lastInsertRowid, embeddingJson })
+    if (pendingVss.length >= VSS_BATCH_SIZE) flushEmbeddings()
+    else scheduleFlush()
+  }
 }
+
+// Whatever is queued when the process is asked to stop must not be lost.
+for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+  process.once(sig, () => { try { flushEmbeddings() } catch { /* exiting anyway */ } })
+}
+process.on('beforeExit', () => { try { flushEmbeddings() } catch { /* exiting anyway */ } })
 
 export interface SearchResult {
   id: string
@@ -129,6 +173,9 @@ const searchStmt = db.prepare(`
   AND m.channel_id = ?
 `)
 
+// Deliberately does NOT flush the embedding queue: rows younger than one batch
+// are still in the live context window, and flushing per search would put the
+// index rewrite back on every turn.
 export function searchMessages(channelId: string, queryEmbedding: number[], limit: number = 10): SearchResult[] {
   const queryJson = JSON.stringify(queryEmbedding)
   return searchStmt.all(queryJson, limit, channelId) as SearchResult[]
