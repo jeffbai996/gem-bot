@@ -51,3 +51,9 @@ test('/gemini trace exposes persistent, rolling-live, and full-collapse modes', 
   assert.match(value?.choices?.find((choice: any) => choice.value === 'live')?.name ?? '', /one rolling/)
   assert.match(value?.choices?.find((choice: any) => choice.value === 'collapse')?.name ?? '', /full trace/)
 })
+
+test('text API routing is absent from slash commands', () => {
+  const options: any[] = geminiCommand.toJSON().options ?? []
+  assert.equal(options.find(o => o.name === 'engine'), undefined)
+  assert.deepEqual(options.find(o => o.name === 'model').options.map((o: any) => o.name), ['agy'])
+})

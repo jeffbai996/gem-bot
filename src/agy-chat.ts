@@ -1,3 +1,4 @@
+import { completedAgyAnswer, parseAgyPrintResult } from './agy-completion.ts'
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { readdirSync, statSync, readFileSync, realpathSync } from 'node:fs'
@@ -17,12 +18,9 @@ import type {
   ToolCall,
 } from './gemini.ts'
 
-// Thrown on any agy failure (timeout / empty output / spawn error) so the
-// gemma.ts callsite can fall back to the metered Gemini API — the bot never
-// goes dark just because the flat-sub CLI hiccuped. Mirrors codex-chat.ts's
-// throw-and-fall-back contract; we keep it a plain Error since there's no
-// user-facing "stop"/"interrupted" distinction to draw on this path.
-class AgyChatError extends Error {
+// Carries the original failure to the user; text never changes engines.
+export class AgyChatError extends Error {
+  conversationId?: string
   constructor(message: string, public readonly afterMs: number) {
     super(message)
     this.name = 'AgyChatError'
@@ -179,14 +177,14 @@ export function buildAgyPrompt(input: AgyChatInput): string {
   // CAPABILITY OVERRIDE for the agy path (Jeff 2026-06-29). The base persona
   // tells gemma she has NO shell, NO file read/write, can't restart herself,
   // etc. — true on the native Gemini API engine, FALSE here. On agy she's a
-  // real coding agent with run_command (full shell on the host), file
+  // coding agent with sandboxed run_command, file
   // read/write, and MCP tools. So she was wrongly refusing ("I have no
   // filesystem access") on the very engine that does. Append an override that
   // supersedes the persona's "you don't have" list for THIS turn only.
   const agyCapabilities =
     '## Engine override — you are running as agy (coding agent) this turn\n' +
-    "Ignore any earlier claim that you lack shell, filesystem, or MCP access. On THIS engine you DO " +
-    'have a full shell on this machine (run_command → run `ls`, `cat`, `git`, `systemctl`, `curl`, ' +
+    "This engine provides shell and filesystem tools within its sandbox workspace " +
+    ' (run_command → run `ls`, `cat`, `git`, `systemctl`, `curl`, ' +
     'read and write files, inspect logs). You ALSO have these MCP tool servers wired in (use them ' +
     'directly, they are real tools this turn — not something you must shell out for):\n' +
     '  • vecgrep — semantic search (`search`, `list_corpora`, `get_corpus`): find code/docs by meaning.\n' +
@@ -202,26 +200,16 @@ export function buildAgyPrompt(input: AgyChatInput): string {
     'just describe it in your reply by name/purpose — never paste a `file://` link or any local filesystem path; ' +
     'the file is attached to your Discord reply automatically, so a raw path is dead weight to the user.'
 
-  // TOOL-ECONOMY directive (Jeff 2026-06-29 "thinking too much"). agy's planner
-  // tends to explore exhaustively — re-reading the same file, running git diffs
-  // multiple times, looping on stash operations — before answering. For a Discord
-  // chat bot that's pure overhead: the user is waiting, and 50+ tool calls for a
-  // simple task is a shitshow. Hard rule: plan first, then act in ≤10 targeted
-  // steps. Read a file ONCE. Run a command ONCE. Don't verify what you just did.
   const toolEconomy =
-    '## Tool discipline — read before using any tool\n' +
-    'You are running in a Discord chat. PLAN before acting, then execute in as FEW tool calls as possible — target ≤10. Hard rules:\n' +
-    '- Read a file ONCE. Never re-read what you just read.\n' +
-    '- Run a shell command ONCE per operation. Never re-run to "verify" it worked.\n' +
-    '- Do NOT loop on git operations (stash/apply/diff). Do what is needed, once.\n' +
-    '- To CHANGE a file, use the write_to_file tool — NOT a shell `sed`/redirect/`patch`, and do NOT ' +
-    "run `diff` and paste its output into your reply. write_to_file's edit is surfaced automatically as a " +
-    "clean line-numbered diff card above your reply (like the Claude bots), so the user always SEES the change; " +
-    'a shelled diff or pasted patch is redundant and ugly. Just make the edit with write_to_file and describe it in prose.\n' +
-    '- If the task is simple (explain, answer, summarize, general knowledge, or conversational chat), do NOT open any tools at all — just reply directly from your training data or context. "here" refers to the user\'s real-world location (British Columbia/Pacific Northwest), NOT the codebase or system workspace. Do NOT grep the codebase for conversational/real-world words (like "invasives" or "beans").\n' +
-    '- After ≤3 tool calls, stop, synthesize what you found, and write your reply.\n' +
-    '- Prefer the MCP tools (vecgrep, ibkr) over shelling out when they apply — they are one call, not a shell loop.\n' +
-    'Violating this rule means the user waits 5+ minutes for a simple answer. Be fast and decisive.'
+    '## Execution discipline\n' +
+    'For implementation requests, make the edits, run focused verification, and report the completed result. ' +
+    'Do not substitute a tutorial or a promise to check logs for execution. ' +
+    'Keep working until the task is complete or a concrete blocker prevents progress. ' +
+    'Preserve the original task across side questions. Do not repeat a search or read unless new evidence changes the next action. ' +
+    'Batch independent reads, keep edits scoped, and verify changes. There is no three-tool stopping rule. ' +
+    'Use the explicit workspace directory provided below; the default AGY brain directory is not the project. ' +
+    'Shell tools run inside a sandbox; host services and paths may differ. Report the actual tool error instead of assuming unrestricted host access.\n' +
+    `Workspace directory: ${process.cwd()}`
 
   const mediaContext = input.mediaFiles?.length
     ? [
@@ -292,7 +280,7 @@ export function buildAgyArgs(additionalDirs: string[] = [], prompt = ''): string
   const watchdog = agyWatchdogPolicy()
   const printTimeout = `${Math.max(1, Math.ceil(watchdog.printTimeoutMs / 1000))}s`
   const grantedDirs = [...new Set(
-    [squadStoreDir(), squadStoreTargetDir(), ...additionalDirs]
+    [process.cwd(), squadStoreDir(), squadStoreTargetDir(), ...additionalDirs]
       .filter((dir): dir is string => Boolean(dir)),
   )]
   return [
@@ -300,6 +288,7 @@ export function buildAgyArgs(additionalDirs: string[] = [], prompt = ''): string
     '--dangerously-skip-permissions',
     ...grantedDirs.flatMap(dir => ['--add-dir', dir]),
     '--model', agyModel(),
+    '--output-format', 'json',
     '--print-timeout', printTimeout,
     '-p', prompt,
   ]
@@ -344,6 +333,7 @@ async function runAgy(
   fingerprint?: string,
   additionalDirs: string[] = [],
   signal?: AbortSignal,
+  conversationId?: string,
 ): Promise<string> {
   const t0 = Date.now()
   const quotaFailure = await checkAgyQuota(agyModel())
@@ -360,6 +350,7 @@ async function runAgy(
   // configured shared-memory bin dir so agy can run the recall CLI.
   const watchdog = agyWatchdogPolicy()
   const args = buildAgyArgs(additionalDirs, prompt)
+  if (conversationId) args.unshift('--conversation', conversationId)
 
   return new Promise<string>((resolve, reject) => {
     let child
@@ -462,12 +453,20 @@ async function runAgy(
       }, 1200)
     }
     const stopPoll = () => { if (livePoll) { clearInterval(livePoll); livePoll = null } }
+    const endEmittedTools = (failed: boolean) => {
+      for (const key of emittedTools) {
+        try { onEvent?.({ type: 'tool_call_end', name: key.slice(key.indexOf(':') + 1), failed }) } catch { /* UI callback */ }
+      }
+      emittedTools.clear()
+    }
+
     const clearTimers = () => {
       clearTimeout(hardTimer)
       clearInterval(idleTimer)
     }
 
     child.on('error', (e) => {
+      endEmittedTools(true)
       clearTimers()
       clearAbort()
       stopPoll()
@@ -478,15 +477,18 @@ async function runAgy(
       clearAbort()
       stopPoll()
       if (stoppedByUser) {
+        endEmittedTools(true)
         // User /gemini stop killed it — a distinct error so the caller does NOT
         // fall back to the API engine (which would answer anyway, defeating the
         // stop). gemma.ts recognizes this via the AbortSignal being aborted.
         return reject(new AgyChatError('agy stopped by user', Date.now() - t0))
       }
       if (timedOut) {
+        endEmittedTools(true)
         return reject(new AgyChatError(`agy ${timeoutKind ?? 'runaway'} watchdog fired after ${Math.round((Date.now() - t0) / 1000)}s`, Date.now() - t0))
       }
       if (code !== 0) {
+        endEmittedTools(true)
         const why = closeSignal ? `signal ${closeSignal}` : `code ${code}`
         // agy often exits non-zero with EMPTY stderr but writes the real error to
         // STDOUT (its CLI prints failures to stdout). Surface both so "(no stderr)"
@@ -495,15 +497,29 @@ async function runAgy(
         const detail = err.trim().slice(0, 300) || out.trim().slice(-400) || '(no output)'
         return reject(new AgyChatError(`agy exited ${why}: ${detail}`, Date.now() - t0))
       }
-      const text = out.trim()
-      if (!text) {
-        return reject(new AgyChatError(`agy produced no output (stderr: ${err.trim().slice(0, 200) || 'none'})`, Date.now() - t0))
+      let text: string
+      try {
+        // JSON status and this exact conversation's terminal planner must both
+        // confirm completion. stdout narration alone is never a final answer.
+        const result = parseAgyPrintResult(out.trim())
+        const transcript = join(AGY_BRAIN_DIR, result.conversation_id, '.system_generated', 'logs', 'transcript_full.jsonl')
+        text = completedAgyAnswer(readFileSync(transcript, 'utf8'))
+      } catch (cause) {
+        endEmittedTools(true)
+        const failure = new AgyChatError(cause instanceof Error ? cause.message : String(cause), Date.now() - t0)
+        try {
+          const id = JSON.parse(out.trim()).conversation_id
+          if (/^[a-f0-9-]{36}$/i.test(id ?? '')) failure.conversationId = id
+        } catch { /* invalid or empty structured output */ }
+        return reject(failure)
       }
+
       // A successful run used to log NOTHING. Failures carried a duration in
       // AgyChatError; successes were silent — so the runs that actually spend
       // the quota left no trace at all, and "what consumed it" was
       // unanswerable after the fact (Jeff 2026-08-27, agy quota wall).
       console.error(`[agy] run ok in ${Math.round((Date.now() - t0) / 1000)}s, ${text.length} chars`)
+      endEmittedTools(false)
       resolve(text)
     })
   })
@@ -952,7 +968,6 @@ export function parseAgyTrajectoryText(raw: string): AgyTrajParse {
 // Fire a trivial agy -p to prime the long-lived server process so the first
 // real Discord turn doesn't hit the cold-start auth race (exit code 1).
 export function warmAgy(): void {
-  if (process.env.GEMMA_AGY_CHAT !== '1') return
   const storeDir = squadStoreDir()
   const grantedDirArgs = storeDir ? ['--add-dir', storeDir] : []
   const child = spawn(AGY_BIN, [
@@ -984,7 +999,7 @@ export function normalizeAgyThinkingChunk(text: string): string {
 // Run a chat turn through the Antigravity CLI (`agy`) instead of the Gemini
 // API. Returns a RespondResult shaped exactly like GeminiClient.respond(), so
 // the gemma.ts callsite consumes { parsed, meta } interchangeably. THROWS on any
-// failure so the caller falls back to the API — this never silently returns junk.
+// failure so the caller reports a stopped task without changing engines.
 //
 // `parse` is injected (gemini.ts's parseResponse) rather than imported so this
 // engine stays a thin one-job module: it owns the subprocess + prompt, not the
@@ -992,6 +1007,7 @@ export function normalizeAgyThinkingChunk(text: string): string {
 export async function respondViaAgy(
   input: AgyChatInput,
   parse: (text: string) => ParsedResponse,
+  run: typeof runAgy = runAgy,
 ): Promise<RespondResult> {
   // Signal that thinking has started so the gemma.ts lifecycle (👀→🤔→✅) still
   // advances on this path. The trajectory parse below restores the real thinking
@@ -1006,33 +1022,23 @@ export async function respondViaAgy(
   const mediaDirs = [...new Set((input.mediaFiles ?? []).map(file => dirname(file.path)))]
   // Pass trajBefore + the user message as fingerprint so runAgy can tail THIS
   // run's trajectory live and stream tool_call_start events as agy works.
-  // Retry once on fast exits (code 1, no stderr) — root cause is agy's OAuth
-  // token expiry race: the long-lived server process loses auth briefly during
-  // token refresh, exits immediately with code 1 and no stderr. A 3s pause is
-  // usually enough for the server to re-authenticate before we retry.
-  let text: string
-  try {
-    text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText, mediaDirs, input.signal)
-  } catch (firstErr: any) {
-    // Retry once on a transient agy failure before giving up to the tool-less API
-    // engine (Jeff 2026-06-30: agy keeps dying mid-flight with exit code 1, which
-    // then silently degrades the turn to the API path that can't run tools). The
-    // original guard only caught the <5s auth-race; broaden it to ANY clean exit-1
-    // / empty-output / spawn blip — those are overwhelmingly transient (token
-    // refresh, a flaky MCP init, a backend hiccup) and a single retry recovers
-    // them. A genuine hard error reproduces on the retry and still falls through.
-    // Never retry a user stop — the abort was intentional; re-running would
-    // resurrect the turn the user just killed (Jeff 2026-07-01).
-    if (input.signal?.aborted || firstErr.message?.includes('stopped by user')) throw firstErr
-    const retriable = firstErr instanceof AgyChatError && (
-      firstErr.message.includes('(no stderr)') ||
-      firstErr.message.includes('(no output)') ||
-      firstErr.message.includes('exited code 1') ||
-      firstErr.message.includes('spawn'))
-    if (!retriable) throw firstErr
-    console.error(`[agy] transient failure, retrying once: ${firstErr.message.slice(0, 200)}`)
-    await new Promise(r => setTimeout(r, 3000))
-    text = await runAgy(prompt, input.onEvent, trajBefore, input.userMessageText, mediaDirs, input.signal)
+  let text = ''
+  let conversationId: string | undefined
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      text = await run(
+        conversationId
+          ? 'Continue the unfinished task in this conversation. Preserve completed work, do not repeat mutations, and finish verification. Return a final result or concrete blocker, not an action announcement.'
+          : prompt,
+        input.onEvent, trajBefore, input.userMessageText, mediaDirs, input.signal, conversationId,
+      )
+      break
+    } catch (error) {
+      if (input.signal?.aborted || !(error instanceof AgyChatError) || !error.conversationId || !/unfinished|no final answer|progress-only|STEP_LIMIT|MAX_STEPS|INCOMPLETE/.test(error.message) || attempt === 2) throw error
+      conversationId = error.conversationId
+      console.error(`[agy] channel=${input.channelId} message=${input.messageId} resuming conversation=${conversationId}: ${error.message}`)
+      input.onEvent?.({ type: 'agy_progress', thinking: '', detail: 'AGY stopped early; resuming the same task.' })
+    }
   }
   let parsed = parse(text)
 
@@ -1093,12 +1099,8 @@ export async function respondViaAgy(
     const trajPath = findAgyTrajectory(trajBefore, input.userMessageText)
     if (trajPath) {
       const traj = parseAgyTrajectory(trajPath)
-      // Emit a start/end pair per tool call so the 🔧 trace fires on agy turns,
-      // exactly like gemini.ts emits at its dispatch site. (No failure signal in
-      // the trajectory — these are completed calls — so failed:false.)
+      // Final metadata only: replaying starts would duplicate live tool events.
       for (const { name, durationMs, diff } of traj.tools) {
-        input.onEvent?.({ type: 'tool_call_start', name })
-        input.onEvent?.({ type: 'tool_call_end', name, failed: false, durationMs, diff })
         toolCalls.push({ name, args: {}, durationMs, resultPreview: '', failed: false, ...(diff ? { diff } : {}) })
       }
       writtenFiles = traj.writtenFiles
@@ -1110,17 +1112,7 @@ export async function respondViaAgy(
       if (traj.thinking) {
         parsed.thinking = traj.thinking
       }
-      // Prefer the trajectory's FINAL-step answer over the raw stdout reply when
-      // they diverge (Jeff 2026-06-29 "fucked it bad" screenshot): on a multi-step
-      // agentic turn, agy's stdout carried the running "I'll do X" action
-      // narration from every intermediate step — a wall. The last planner step's
-      // content is the clean answer; the per-step narration is now in traj.thinking
-      // (the observable Thinking block). Only override when the trajectory answer
-      // is materially SHORTER (the wall is longer than the clean answer) so a
-      // 0/1-step turn — where stdout already IS the clean answer — is untouched.
-      if (traj.answer && parsed.reply && traj.answer.length < parsed.reply.trim().length) {
-        parsed.reply = traj.answer
-      }
+
     }
   } catch (e) {
     // Trace restore is additive + best-effort: on any failure keep the plain
@@ -1128,8 +1120,7 @@ export async function respondViaAgy(
     console.error('[agy] trajectory trace parse failed (non-fatal):', e instanceof Error ? e.message : e)
   }
 
-  // Empty answer after a clean exit → treat as failure so we fall back to the
-  // API. parseResponse never throws, but it can return an all-null parse if the
+  // Empty answer after a clean exit is a failed task. parseResponse never throws, but it can return an all-null parse if the
   // model emitted nothing usable.
   if (!parsed.reply && !parsed.thinking && !parsed.react) {
     throw new AgyChatError('agy returned an unparseable / empty reply', 0)

@@ -7,7 +7,6 @@ import {
   AccessManager,
   type ChannelConfig,
   type ThinkingMode,
-  type ChatEngine,
   type CounterMode,
   type TraceMode,
 } from './access.ts'
@@ -19,9 +18,7 @@ import { rewriteEnvVar } from './restart.ts'
 import { activeTurns } from './active-turns.ts'
 import {
   AGY_MODEL_CHOICES,
-  API_MODEL_CHOICES,
   DEFAULT_AGY_MODEL,
-  DEFAULT_GEMINI_MODEL,
   isValidAgyModel,
 } from './models.ts'
 import { formatStats, type GemStats } from './stats.ts'
@@ -58,35 +55,11 @@ export const geminiCommand = new SlashCommandBuilder()
       .setDescription('Hot-swap the bot persona')
       .addStringOption(option => option.setName('filename').setDescription('The persona filename (e.g. GEMINI.md)').setRequired(true))
   )
-  // Switch the GEMINI_MODEL env var and auto-restart so the new model takes
-  // effect. Choices are pinned to known-good IDs — Gemini's model namespace
-  // mutates often (deprecations, alias renames) so we don't accept arbitrary
-  // strings. Add new entries here when a new model is qualified.
-  // /gemini model api|agy — split into a subcommand group (Jeff 2026-06-30:
-  // "aren't forced to pick an engine and a model at the same time, engine
-  // already has its own command"). Each subcommand IS its engine — no
-  // separate `engine` string to fill in or infer from, no ambiguity with the
-  // unrelated /gemini engine (that one sets the channel's active chat
-  // engine; this sets which model string that engine uses). Picking `api`
-  // only ever rewrites GEMINI_MODEL; picking `agy` only ever rewrites
-  // GEMMA_AGY_MODEL — the other engine's setting is never touched.
+  // Text chat has one engine; image and voice models have their own controls.
   .addSubcommandGroup(group =>
     group
       .setName('model')
-      .setDescription('Switch the api or agy model (auto-restarts gemma)')
-      .addSubcommand(s => s
-        .setName('api')
-        .setDescription('Metered Gemini API model (GEMINI_MODEL)')
-        // Pinned to known-good Gemini ids — the namespace mutates
-        // (deprecations, alias renames), so we don't accept arbitrary strings.
-        // Add entries here as new models qualify.
-        .addStringOption(option => option
-          .setName('id')
-          .setDescription('omit to show current')
-          .setRequired(false)
-          .addChoices(...API_MODEL_CHOICES)
-        )
-      )
+      .setDescription('Switch the agy text model (auto-restarts gemma)')
       .addSubcommand(s => s
         .setName('agy')
         .setDescription('Antigravity CLI flat-sub model (GEMMA_AGY_MODEL)')
@@ -143,26 +116,6 @@ export const geminiCommand = new SlashCommandBuilder()
           { name: 'on — keep the full paginated trace', value: 'on' },
           { name: 'live — one rolling trace window', value: 'live' },
           { name: 'collapse — full trace, delete after the reply', value: 'collapse' },
-        )
-      )
-      .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
-  )
-  // Per-channel chat engine. agy = Antigravity CLI (flat Google sub; trajectory
-  // trace/thinking restored when available); api = the metered Gemini API.
-  // `default` clears the per-channel pick so the GEMMA_AGY_CHAT env default
-  // applies. agy ingests current-message media through local view_file paths.
-  .addSubcommand(subcommand =>
-    subcommand
-      .setName('engine')
-      .setDescription('Set this channel chat engine: agy (flat sub) | api (metered) | default (env).')
-      .addStringOption(option => option
-        .setName('value')
-        .setDescription('omit to show current engine; else agy | api | default')
-        .setRequired(false)
-        .addChoices(
-          { name: 'agy — Antigravity CLI / flat Google sub', value: 'agy' },
-          { name: 'api — metered Gemini API (full tools + grounding + trace)', value: 'api' },
-          { name: 'default — clear pick, use the GEMMA_AGY_CHAT env default', value: 'default' },
         )
       )
       .addChannelOption(option => option.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
@@ -322,16 +275,10 @@ interface ExtraDeps {
 // (Jeff 2026-07-27 copy-edit run).
 function settingsCard(access: AccessManager, channelId: string): string {
   const f = access.channelFlags(channelId)
-  // Engine: per-channel pick, else the GEMMA_AGY_CHAT env default.
-  const envEngine = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
-  const engine = f.engine ?? `${envEngine} (env default)`
-  // Models are env-level (not per-channel): show the one for the active engine.
-  const apiModel = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL
   const agyModel = process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL
   const lingerMs = Number(process.env.GEMINI_THOUGHT_LINGER_MS) || 60_000
   const rows: Array<[string, string]> = [
-    ['engine', String(engine)],
-    ['api model', apiModel],
+    ['engine', 'agy'],
     ['agy model', agyModel],
     ['thinking', `${f.thinking} (default live)`],
     ['trace', `${f.trace} (default collapse)`],
@@ -474,19 +421,16 @@ export function formatCacheInfo(
     // Each verb only ever touches its own env var; the other engine's model
     // is never read or written here.
     if (interaction.options.getSubcommandGroup(false) === 'model') {
-      const targetEngine = subcommand as ChatEngine // 'api' | 'agy', enforced by the two subcommand names
-      const envKey = targetEngine === 'agy' ? 'GEMMA_AGY_MODEL' : 'GEMINI_MODEL'
-      const newModel = targetEngine === 'agy'
-        ? interaction.options.getString('agy_model')
-        : interaction.options.getString('id')
+      if (subcommand !== 'agy') return interaction.reply({ content: 'Text API routing has been removed. Use /gemini model agy.', ephemeral: true })
+      const targetEngine = 'agy'
+      const envKey = 'GEMMA_AGY_MODEL'
+      const newModel = interaction.options.getString('agy_model')
 
       if (!newModel) {
         // No value -> show this engine's current model. Doesn't touch or
         // mention the other engine's model at all.
-        const cur = targetEngine === 'agy'
-          ? (process.env.GEMMA_AGY_MODEL || `(default — ${DEFAULT_AGY_MODEL})`)
-          : (process.env.GEMINI_MODEL || `(default — ${DEFAULT_GEMINI_MODEL})`)
-        const valOpt = targetEngine === 'agy' ? 'agy_model' : 'id'
+        const cur = process.env.GEMMA_AGY_MODEL || `(default — ${DEFAULT_AGY_MODEL})`
+        const valOpt = 'agy_model'
         return interaction.reply({
           content: `\ud83e\udd16 Current **${targetEngine}** model (${envKey}): \`${cur}\`\nPass \`${valOpt}\` to change it.`,
           ephemeral: true,
@@ -494,7 +438,7 @@ export function formatCacheInfo(
       }
 
       // Guard against stale/raw option payloads outside the registered picker.
-      if (targetEngine === 'agy' && !isValidAgyModel(newModel)) {
+      if (!isValidAgyModel(newModel)) {
         return interaction.reply({
           content: `❌ \`${newModel}\` is not a valid agy model. Use an exact id from \`agy models\` (e.g. \`${DEFAULT_AGY_MODEL}\`).`,
           ephemeral: true,
@@ -503,9 +447,7 @@ export function formatCacheInfo(
 
       const stateDir = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
       const envPath = path.join(stateDir, '.env')
-      const previousModel = targetEngine === 'agy'
-        ? (process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL)
-        : (process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL)
+      const previousModel = process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL
       try {
         await rewriteEnvVar(envPath, envKey, newModel)
       } catch (e: any) {
@@ -559,40 +501,6 @@ export function formatCacheInfo(
         const previous = access.channelFlags(channel.id).trace
         const updated = await access.setChannelFlags(channel.id, { trace: value as TraceMode })
         return interaction.reply({ content: `${fmtSettingChange('trace', updated.trace!, previous)}\n\n${settingsCard(access, channel.id)}`, ephemeral: true })
-      } catch (e: any) {
-        return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
-      }
-    }
-
-    // /gemini engine agy|api|default — per-channel chat engine pick. 'default'
-    // is the null sentinel: it clears the per-channel override so the
-    // GEMMA_AGY_CHAT env default takes over. Mirrors gpt-bot's /gpt engine.
-    if (subcommand === 'engine') {
-      const value = interaction.options.getString('value')?.trim().toLowerCase()
-      const channel = interaction.options.getChannel('channel') ?? interaction.channel
-      if (!channel) {
-        return interaction.reply({ content: '❌ No channel resolved (run from inside a channel or pass the channel arg).', ephemeral: true })
-      }
-      // No value → show the channel's CURRENT effective engine: the per-channel
-      // pick if set, else the GEMMA_AGY_CHAT env default, labeled "(env default)".
-      // Mirrors the /gemini model no-arg display path above.
-      if (!value) {
-        const envDefault = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
-        const pick = access.channelFlags(channel.id).engine
-        const effective = pick ?? `${envDefault} (env default)`
-        return interaction.reply({ content: `🔌 <#${channel.id}> chat engine: \`${effective}\``, ephemeral: true })
-      }
-      if (!['agy', 'api', 'default'].includes(value)) {
-        return interaction.reply({ content: `❌ \`engine\` must be one of: agy, api, default (got \`${value}\`)`, ephemeral: true })
-      }
-      try {
-        // 'default' → null sentinel clears the per-channel pick.
-        const patchEngine = value === 'default' ? null : (value as ChatEngine)
-        const previous = access.channelFlags(channel.id).engine ?? (process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api')
-        const updated = await access.setChannelFlags(channel.id, { engine: patchEngine })
-        const envDefault = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
-        const effective = updated.engine ?? `${envDefault} (env default)`
-        return interaction.reply({ content: `${fmtSettingChange('engine', effective, previous)}\n\n${settingsCard(access, channel.id)}`, ephemeral: true })
       } catch (e: any) {
         return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true })
       }

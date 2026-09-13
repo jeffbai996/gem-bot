@@ -3,7 +3,7 @@
 This document provides context for agents working on `gem-bot`.
 
 ## Project Overview
-A standalone Discord bot using Discord.js and the Gemini API (current default `gemini-3.8-flash`, with `gemini-3.1-pro-preview` also selectable via `/gemini model`). It acts as an intelligent assistant with access to Gemini tools (Google Search, Code Execution) and supports full multimodal input (Images, Video, Audio, Documents).
+A standalone Discord bot using Discord.js and the Antigravity CLI for text chat. Text never falls back to the Gemini API. Image generation/editing and voice retain API integrations; background embeddings and summaries are separate from conversational routing. The CLI result and terminal planner response must both confirm completion; interrupted runs resume the same conversation at most twice, then report failure.
 
 ## Core Architecture
 - **Language/Runtime:** TypeScript + Node.js (via `tsx`).

@@ -28,3 +28,22 @@ test('cleanup only uses the bot-owned reaction endpoint', async () => {
   assert.ok(routes.length > 0)
   assert.ok(routes.every(route => route.endsWith('/@me')))
 })
+
+test('terminal cleanup drains pending writes and rejects late tool events', async () => {
+  const { clearAfterDrain } = await import('../src/reactions/lifecycle.ts')
+  const held = new Set<string>()
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  const msg: any = {id:'late',channelId:'channel',client:{user:{id:'bot'},rest:{delete:async (route:string) => { held.delete(decodeURIComponent(route.split('/').at(-2)!)) }}},react:async (emoji:string) => { if(emoji==='🔧') await pending; held.add(emoji) }}
+  const tool = applyLifecycle(msg, 'tooling')
+  await new Promise(resolve => setImmediate(resolve))
+  const done = clearAfterDrain(msg)
+  const late = applyLifecycle(msg, 'thinking')
+  release()
+  await Promise.all([tool, done, late])
+  await applyLifecycle(msg, 'tooling')
+  assert.deepEqual([...held], [])
+  await applyLifecycle(msg, 'received')
+  assert.deepEqual([...held], ['👀'])
+  await clearAfterDrain(msg)
+})

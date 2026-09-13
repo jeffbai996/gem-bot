@@ -127,24 +127,15 @@ The in-process manager keys on `(model, hash(systemText), hash(toolsAndConfig))`
 
 TTL defaults to 2 hours, configurable per channel via `/gemini cache ttl <seconds>` (60–86400). `/gemini cache info` (ephemeral) shows live cache state with size, age, hit count, and lifecycle. Fail-open: any error during cache create falls back to the uncached path.
 
-### Chat engine — `api` (metered) or `agy` (flat sub)
+### Text chat — Antigravity CLI
 
-Each channel can pick which engine answers text turns:
+Text chat always uses `agy`, including channels with legacy API settings. There is no text API fallback or API text-model picker. Image generation/editing and voice retain their API integrations; background embeddings and conversation summaries remain separate from the chat route.
 
-- **`api`** (default) — the metered Gemini API. Full native tooling (`googleSearch`, `codeExecution`, the function-call registry), grounding sources, the verbose usage footer, and the live tool-trace. This is everything described above.
-- **`agy`** — route text turns through the [Antigravity CLI](https://antigravity.google) (`agy`) running under a flat Google subscription instead of the metered API. Cheap, fixed-cost chat. The bot now reconstructs visible thinking/tool trace from agy's trajectory when available, but agy still does not emit Gemini API grounding panels or token usage. The whole turn (persona + recent history + the new message) is flattened into one prompt; `agy` web-searches on its own, so web grounding isn't lost, it is just surfaced differently.
+The bridge requests structured CLI results and verifies the exact conversation's final planner response. A pending tool call, missing answer, or progress-only announcement cannot complete a turn. An interrupted conversation can resume up to twice with its original context; persistent failures produce an explicit stopped-task receipt.
 
-**Tradeoff in one line:** `agy` = flat-sub cheap chat with trajectory-based trace/thinking and no token usage; `api` = full Gemini API tools + grounding + usage.
+The project working directory, configured recall command directories, and attachment inboxes are granted to the sandbox with `--add-dir`. Attachments remain available through `view_file`. Shell access is scoped to the sandbox and does not imply access to host services.
 
-**Long-term-memory aware on both paths.** Like the API path's `search_memory` tool, the `agy` path is told it can shell out to a recall CLI for durable shared context (people, preferences, projects, past decisions) and run it before replying when a message turns on that knowledge. `agy` is spawned with `--add-dir` pointing at that CLI's bin dir so the recall command is reachable from inside its sandbox.
-
-**Routing rules:**
-
-- **Media works on `agy`.** gem-bot keeps the Discord download in the per-message `inbox/`, grants that directory with `--add-dir`, and gives agy the exact local paths so its multimodal `view_file` tool can inspect images, audio, video, and documents. The metered API remains the fail-open fallback if agy itself fails.
-- **Fail-open.** Any `agy` failure (timeout, empty output, spawn error) silently falls back to the metered API — the bot never goes dark because the flat-sub CLI hiccuped.
-- **Resolution order:** the channel's explicit `/gemini engine` pick → else the global `GEMMA_AGY_CHAT` env default (`1` = `agy`, unset/`0` = `api`).
-
-Set per channel with `/gemini engine agy|api|default` (`default` clears the per-channel pick so the env default applies). Configure via env: `GEMMA_AGY_CHAT` (global default), `GEMMA_AGY_BIN` (agy binary path, default `~/.local/bin/agy`), `GEMMA_AGY_MODEL` (exact id from `agy models`, default `gemini-3.8-flash-medium`), `GEMMA_AGY_IDLE_TIMEOUT_MS` (silent-child watchdog; active trajectory/stdout/stderr progress resets it, default 600000), `GEMMA_AGY_CHAT_TIMEOUT_MS` (hard runaway fuse, default 2700000).
+Configure `GEMMA_AGY_BIN` (binary path), `GEMMA_AGY_MODEL` (exact CLI model id), `GEMMA_AGY_IDLE_TIMEOUT_MS` (default 600000), and `GEMMA_AGY_CHAT_TIMEOUT_MS` (default 2700000). `GEMMA_AGY_CHAT` no longer selects a text engine.
 
 ### Persona & shared context
 
@@ -189,9 +180,7 @@ Manage everything from inside Discord — no terminal-side JSON edits required. 
 | `/gemini counter off\|token\|both [#channel]` | Footer counter. `both` includes cached-prefix detail when the API reports it; agy degrades to time-only |
 | `/gemini stats` | Persistent token, cache, engine, model, runtime, and uptime totals |
 | `/gemini mention on\|off [#channel]` | Flip the @-mention gate without re-running `/gemini channel` |
-| `/gemini engine agy\|api\|default [#channel]` | Per-channel chat engine. `agy` = Antigravity CLI / flat sub with trajectory trace and local media ingestion through `view_file`; `api` = metered Gemini API; `default` = clear the pick, use the `GEMMA_AGY_CHAT` env default |
-| `/gemini model api [id]` | Switch the metered Gemini API model (`GEMINI_MODEL`) and auto-restart the bot. Omit `id` to show the current one. Choices: `gemini-3.8-flash` (default), `gemini-3.1-pro-preview` |
-| `/gemini model agy [agy_model]` | Switch the Antigravity CLI flat-sub model (`GEMMA_AGY_MODEL`) and auto-restart the bot. Omit `agy_model` to show the current one. Independent of `/gemini model api` — each only touches its own setting |
+| `/gemini model agy [agy_model]` | Switch the Antigravity CLI flat-sub model (`GEMMA_AGY_MODEL`) and auto-restart the bot. Omit `agy_model` to show the current one. |
 | `/gemini cache on\|off [#channel]` | Toggle server-side context caching |
 | `/gemini cache info` | Live cache details — size, hits, age, TTL, hash |
 | `/gemini cache ttl <seconds> [#channel]` | Per-channel TTL override (60–86400; `0` resets to default) |

@@ -19,9 +19,8 @@ import { buildContextHistory, stripBotMetadata } from './history.ts'
 import { processAttachments, processYouTubeUrls, type InputAttachment } from './attachments.ts'
 import { extractRichMedia, formatRichContext } from './discord-rich-input.ts'
 import { GeminiClient, stripDuplicateCodeBlocks, GeminiRequestRejected, formatGroundingSources, parseResponse, formatSystemPrompt, type ParsedResponse } from './gemini.ts'
-import { respondViaAgy, warmAgy } from './agy-chat.ts'
+import { AgyChatError, respondViaAgy, warmAgy } from './agy-chat.ts'
 import { describeAgyFailure } from './agy-fallback-reason.ts'
-import { checkAgyQuota } from './agy-quota-gate.ts'
 import {
   composeLiveThinkingCard,
   composeThinkingCard,
@@ -722,6 +721,7 @@ async function ingestAndGate(message: Message): Promise<boolean> {
 async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promise<void> {
   if (message.author.bot) return
   if (!client.user) return
+  let lifecycleClosed = false
   const presenceTicket = presenceOwner.request(opts.combinedText ?? message.content)
 
   // Opt-in reply gate removed 2026-05-02. The two-tier classifier (regex +
@@ -847,9 +847,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     }
 
     const flags = access.channelFlags(message.channelId, parentChannelId)
-    const envDefaultEngine = process.env.GEMMA_AGY_CHAT === '1' ? 'agy' : 'api'
-    const resolvedEngine = flags.engine ?? envDefaultEngine
-    const useAgy = resolvedEngine === 'agy'
+    // Text always uses the agent engine, including legacy API channel settings.
 
     const [history, attachmentResult, ytResult] = await Promise.all([
       buildContextHistory(message.channel as any, message.id, gemini, client.user!.id, MAX_HISTORY_TOKENS, sinceMessageId),
@@ -862,7 +860,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           contentType: a.contentType
         })),
         GEMINI_API_KEY,
-        { keepLocalFiles: useAgy },
+        { keepLocalFiles: true },
       ),
       processYouTubeUrls(message.id, message.content, GEMINI_API_KEY)
     ])
@@ -884,9 +882,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     const transientThinking = flags.thinking === 'live' || flags.thinking === 'collapse'
     const transientTrace = flags.trace === 'live' || flags.trace === 'collapse'
 
-    const activeModel = useAgy
-      ? (process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL)
-      : (process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL)
+    const activeModel = process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL
     const modelFriendly = friendlyModelName(activeModel)
     const effort = modelEffort(activeModel)
     const cleanFriendly = modelFriendly.replace(/\s*\(Thinking\)/i, '')
@@ -1110,6 +1106,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // gemini.ts emits start/end pairs per dispatch.
     let activeToolCount = 0
     const onLifecycleEvent = (e: LifecycleEvent) => {
+      if (lifecycleClosed) return
       // A tool start is a safe boundary immediately BEFORE dispatch. Once the
       // tool is running, partial text/thinking events must not abort it; the
       // matching end event clears busy state and performs any pending steer.
@@ -1214,104 +1211,25 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       return ac.signal
     })()
 
-    const apiRespond = () => gemini.respond({
-      systemPrompt,
-      history,
-      userMessageText: userText,
-      userMediaParts: allParts,
-      userName: message.author.username,
-      channelId: message.channelId,
-      userId: message.author.id,
-      thinkingMode: flags.thinking,
-      cacheEnabled: flags.cache,
-      cacheTtlSec: flags.cacheTtlSec ?? undefined,
-    }, (partial) => {
-      if (activeTurns.stopIfPending(message.channelId)) return
-      const visible = extractPresenceDirective(partial.reply)
-      latestParsed = { ...partial, reply: hideImageRequest(visible.reply) ?? null }
-    }, onLifecycleEvent, combinedSignal)
-
-    // OPTIONAL agy chat engine: route turns through the Antigravity CLI
-    // (flat Google sub) instead of the metered Gemini API. Mirrors gpt-bot's
-    // /gpt engine swap. On throw we fall back to the API so the bot never goes
-    // dark. Current-message attachments are exposed as local inbox paths, and
-    // agy reads them through its multimodal view_file tool.
-    //
-    // Engine resolution, in order:
-    //   1. the channel's explicit /gemini engine pick (flags.engine), else
-    //   2. the global GEMMA_AGY_CHAT env default ('1' = agy, else api).
-    // So a channel can opt in/out independently while the env sets the default
-    // for channels that never picked.
     let parsed: typeof latestParsed
     let meta: Awaited<ReturnType<typeof gemini.respond>>['meta']
-    // useAgy is resolved earlier
-    // Set when an intended agy turn silently degraded to the metered API engine
-    // (timeout/empty/exec error). The two engines aren't interchangeable — the
-    // API path has NO shell/filesystem — so a fallback changes what gemma can do.
-    // Surfaced as a footer badge below so the degrade isn't invisible (Jeff
-    // 2026-06-29).
-    let agyFellBack = false
-    let agyFallbackReason = ''
-
-    if (useAgy) {
-      try {
-        throwIfStopped();
-        ({ parsed, meta } = await respondViaAgy({
-          systemPrompt: fullSystemPrompt,
-          history,
-          userMessageText: userText,
-          userName: message.author.username,
-          mediaFiles: attachmentResult.localFiles,
-          channelId: message.channelId,
-          messageId: message.id,
-          onEvent: onLifecycleEvent,
-          signal: combinedSignal,  // /gemini stop → SIGKILLs the agy process group
-        }, parseResponse))
-        // Antigravity exposes tool starts from its trajectory, but completion is
-        // only authoritative once the blocking CLI call returns. Close that busy
-        // window here before honoring steering.
-        activeToolCount = 0
-        activeTurns.clearBusy(message.channelId)
-        throwIfStopped()
-      } catch (e) {
-        // The CLI operation is over even on failure. Release its safety guard
-        // before deciding whether this was steering or a real fallback case.
-        activeToolCount = 0
-        activeTurns.clearBusy(message.channelId)
-        // /gemini stop killed the agy turn — do NOT fall back to the API (that
-        // would answer anyway, defeating the stop). Re-throw as an AbortError so
-        // it hits the clean-exit handler below (deletes the placeholder, silences
-        // the turn) exactly like the API-path abort (Jeff 2026-07-01).
-        if (combinedSignal.aborted) {
-          const abortErr = new Error('agy turn stopped by user')
-          abortErr.name = 'AbortError'
-          throw abortErr
-        }
-        // agy failed (timeout / empty / exec error) — fall back to the metered
-        // API so the user still gets an answer, but FLAG it: the API path can't
-        // shell/read files, so this turn quietly lost those capabilities.
-        console.error('[agy] chat engine failed, falling back to API:', e instanceof Error ? e.message : e)
-        agyFellBack = true
-        agyFallbackReason = e instanceof Error ? e.message : String(e)
-        if (/timeout|timed out|watchdog/i.test(agyFallbackReason)) {
-          agyFallbackReason = await checkAgyQuota(process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL) ?? agyFallbackReason
-        }
-        if (/quota reached|quota exceeded|quota exhausted/i.test(agyFallbackReason)) {
-          await sendReply(message, `⚠️ ${describeAgyFailure(agyFallbackReason)}. Trying Gemini API instead.`)
-        }
-        const skippedBeforeFallback = attachmentResult.skipped.length
-        await attachmentResult.prepareApiParts()
-        allParts = [...attachmentResult.parts, ...ytResult.parts]
-        const fallbackSkipped = attachmentResult.skipped.slice(skippedBeforeFallback)
-        if (fallbackSkipped.length > 0) {
-          await sendReply(message, formatSkippedAttachments(fallbackSkipped, true))
-        }
-        throwIfStopped();
-        ;({ parsed, meta } = await apiRespond())
-      }
-    } else {
-      throwIfStopped();
-      ({ parsed, meta } = await apiRespond())
+    try {
+      throwIfStopped()
+      ;({ parsed, meta } = await respondViaAgy({
+        systemPrompt: fullSystemPrompt,
+        history,
+        userMessageText: userText,
+        userName: message.author.username,
+        mediaFiles: attachmentResult.localFiles,
+        channelId: message.channelId,
+        messageId: message.id,
+        onEvent: onLifecycleEvent,
+        signal: combinedSignal,
+      }, parseResponse))
+      throwIfStopped()
+    } finally {
+      activeToolCount = 0
+      activeTurns.clearBusy(message.channelId)
     }
     const imageRequest = parseImageRequest(parsed.reply)
     if (imageRequest) {
@@ -1334,14 +1252,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       // belongs above the image). `/gemini image` already quoted it this way.
       parsed = { ...parsed, reply: quoteImagePrompt(imageRequest.prompt) }
     }
-    // Keep flushStream's view in sync with the real result. apiRespond's
-    // streaming callback already does this incrementally (line ~917), but the
-    // agy path never touches latestParsed at all — it only returns `parsed`
-    // once, on completion. Without this, the "one last flush" call below
-    // reads a still-null latestParsed.reply, falls into the empty-fallback
-    // branch, and briefly overwrites the just-finished reply with a bare
-    // "💭 Thinking…" before the real final render corrects it a moment later
-    // (Jeff 2026-06-30 — the "Thinking… flash after the reply" bug report).
+    // Publish the validated agent result to the streaming view.
+
     const presenceUpdate = extractPresenceDirective(parsed.reply)
     parsed = { ...parsed, reply: presenceUpdate.reply }
     latestParsed = parsed
@@ -1349,12 +1261,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       presenceOwner.update(presenceTicket, presenceUpdate.presence)
     }
     const respondElapsedMs = Date.now() - respondT0
-    const actualEngine = useAgy && !agyFellBack ? 'agy' : 'api'
+    const actualEngine = 'agy'
     stats.record({
       engine: actualEngine,
-      model: actualEngine === 'agy'
-        ? (process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL)
-        : (process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL),
+      model: process.env.GEMMA_AGY_MODEL || DEFAULT_AGY_MODEL,
       elapsedMs: respondElapsedMs,
       usage: meta.usage,
     })
@@ -1599,13 +1509,6 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       finalFullReply += `\n\n-# ${tokenStr}${safetyStr}`
     }
 
-    // Engine-fallback badge. When an agy turn degrades to the API engine, keep
-    // the user-facing notice terse and name both engines plainly.
-    if (agyFellBack) {
-      finalFullReply = finalFullReply.replace(/\s+$/, '')
-      finalFullReply += `\n\n-# ⚠️ ${describeAgyFailure(agyFallbackReason)} - used Gemini API to answer`
-    }
-
     if (meta.finishReason === 'MAX_TOKENS') {
       finalFullReply += '\n\n-# ⚠️ response hit max-tokens limit (reply may be truncated)'
     } else if (meta.finishReason === 'SAFETY') {
@@ -1799,7 +1702,9 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     applyLifecycle(message, isRateLimit ? 'denied' : 'errored').catch(() => {})
     clearAfterDrain(message).catch(() => {})
     let msg: string
-    if (e instanceof GeminiRequestRejected) {
+    if (e instanceof AgyChatError) {
+      msg = `⚠️ ${describeAgyFailure(e.message)}. Task stopped; no text API fallback.`
+    } else if (e instanceof GeminiRequestRejected) {
       // Surface the actual rejection reason — usually unsupported mime type
       // or malformed part. User can retry without the offending attachment.
       msg = `⚠️ Gemini rejected the request: ${e.reason}`
@@ -1828,6 +1733,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       }
     } catch { /* nothing to do */ }
   } finally {
+    lifecycleClosed = true
+    await clearAfterDrain(message)
     activeTurns.done(message.channelId)
     await Promise.all(generatedImageFiles.map(file => unlink(file).catch(() => {})))
     clearInFlightTurn(message.channelId)

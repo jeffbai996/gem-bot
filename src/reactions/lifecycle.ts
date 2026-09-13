@@ -100,8 +100,12 @@ const PREDECESSORS: Record<LifecycleState, LifecycleState[]> = {
  * a no-op on Discord's side.
  */
 const transitions = new Map<string, Promise<void>>()
+const closed = new WeakSet<Message>()
 
 export function applyLifecycle(message: Message, state: LifecycleState): Promise<void> {
+  if (state === 'received') closed.delete(message)
+  else if (ALL_TRANSIENTS.includes(state) && closed.has(message)) return Promise.resolve()
+  if (!ALL_TRANSIENTS.includes(state)) closed.add(message)
   const key = `${message.channelId}:${message.id}`
   const next = (transitions.get(key) ?? Promise.resolve()).catch(() => {}).then(() => transition(message, state))
   transitions.set(key, next)
@@ -109,23 +113,12 @@ export function applyLifecycle(message: Message, state: LifecycleState): Promise
   return next
 }
 
-/**
- * Chain a full transient sweep onto the per-message transition queue, then
- * retry once after a short delay. Guarantees that no pending `tooling` or
- * `searching` transition can re-add an emoji AFTER the sweep runs — the
- * queue is serial, so this sweep is the last thing to execute.
- *
- * Use this at the END of a turn (success, error, or silence) instead of a
- * bare `clearAllTransients` which races the queue.
- */
+/** Close admission before draining all previously accepted reaction writes. */
 export function clearAfterDrain(message: Message): Promise<void> {
+  closed.add(message)
   const key = `${message.channelId}:${message.id}`
   const next = (transitions.get(key) ?? Promise.resolve())
     .catch(() => {})
-    .then(() => removeAllTransientEmoji(message))
-    // Retry once after 500ms — catches Discord 429s from the preceding
-    // burst of transition REST calls that may not have cleared yet.
-    .then(() => new Promise<void>(r => setTimeout(r, 500)))
     .then(() => removeAllTransientEmoji(message))
   transitions.set(key, next)
   void next.finally(() => { if (transitions.get(key) === next) transitions.delete(key) }).catch(() => {})

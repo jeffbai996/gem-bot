@@ -37,8 +37,9 @@ describe('agy media bridge', () => {
       .filter(Boolean)
 
     assert.ok(promptIndex > 0)
-    assert.equal(granted.length, 1)
-    assert.equal(granted[0], '/tmp/gem/inbox/message-1')
+    assert.equal(granted.length, 2)
+    assert.ok(granted.includes('/tmp/gem/inbox/message-1'))
+    assert.ok(granted.includes(process.cwd()))
     assert.ok(args.indexOf('/tmp/gem/inbox/message-1') < promptIndex)
   })
 })
@@ -266,5 +267,38 @@ describe('agy spawn env hygiene', () => {
     process.env.DISCORD_BOT_TOKEN = 'tok123'
     agySpawnEnv()
     assert.equal(process.env.DISCORD_BOT_TOKEN, 'tok123')
+  })
+})
+
+describe('agy task continuity', () => {
+  test('resumes the exact interrupted conversation without replaying the initial task', async () => {
+    const { respondViaAgy, AgyChatError } = await import('../src/agy-chat.ts')
+    const calls: Array<{prompt:string; conversationId?:string}> = []
+    const result = await respondViaAgy({systemPrompt:'Test',history:[],userMessageText:'unique-continuity-fixture',userName:'Alice'}, text => ({reply:text,thinking:null,react:null}), async (prompt, _event, _before, _fingerprint, _dirs, _signal, conversationId) => {
+      calls.push({prompt,conversationId})
+      if(calls.length === 1) {
+        const error = new AgyChatError('agy stopped with an unfinished tool call', 10)
+        error.conversationId = '00000000-0000-0000-0000-000000000000'
+        throw error
+      }
+      return 'Completed and verified.'
+    })
+    assert.equal(result.parsed.reply, 'Completed and verified.')
+    assert.equal(calls.length, 2)
+    assert.equal(calls[0].conversationId, undefined)
+    assert.equal(calls[1].conversationId, '00000000-0000-0000-0000-000000000000')
+    assert.doesNotMatch(calls[1].prompt, /unique-continuity-fixture/)
+  })
+
+  test('persistent incomplete runs stop after two resumes without an API answer', async () => {
+    const { respondViaAgy, AgyChatError } = await import('../src/agy-chat.ts')
+    let calls = 0
+    await assert.rejects(respondViaAgy({systemPrompt:'Test',history:[],userMessageText:'bounded-continuity-fixture',userName:'Alice'}, text => ({reply:text,thinking:null,react:null}), async () => {
+      calls++
+      const error = new AgyChatError('agy stopped with an unfinished tool call', 10)
+      error.conversationId = '00000000-0000-0000-0000-000000000000'
+      throw error
+    }), /unfinished tool call/)
+    assert.equal(calls, 3)
   })
 })

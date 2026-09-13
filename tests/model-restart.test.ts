@@ -4,6 +4,8 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
+import { DEFAULT_AGY_MODEL } from '../src/models.ts'
+
 import { executeGeminiCommand } from '../src/commands.ts'
 
 const tmp = path.join(os.tmpdir(), `gem-model-restart-${process.pid}`)
@@ -17,16 +19,16 @@ afterEach(async () => {
 
 test('model changes acknowledge Discord before requesting coordinated restart', async () => {
   await fs.mkdir(tmp, { recursive: true })
-  await fs.writeFile(path.join(tmp, '.env'), 'GEMINI_MODEL=old-model\n')
+  await fs.writeFile(path.join(tmp, '.env'), 'GEMMA_AGY_MODEL=old-model\n')
   process.env.DISCORD_STATE_DIR = tmp
 
   const order: string[] = []
   const interaction = {
     user: { id: 'admin' },
     options: {
-      getSubcommand: () => 'api',
+      getSubcommand: () => 'agy',
       getSubcommandGroup: () => 'model',
-      getString: (name: string) => name === 'id' ? 'gemini-test-model' : null,
+      getString: (name: string) => name === 'agy_model' ? DEFAULT_AGY_MODEL : null,
     },
     reply: async () => { order.push('reply') },
   }
@@ -47,5 +49,5 @@ test('model changes acknowledge Discord before requesting coordinated restart', 
   )
 
   assert.deepEqual(order, ['reply', 'restart'])
-  assert.match(await fs.readFile(path.join(tmp, '.env'), 'utf8'), /^GEMINI_MODEL=gemini-test-model$/m)
+  assert.equal((await fs.readFile(path.join(tmp, '.env'), 'utf8')).trim(), `GEMMA_AGY_MODEL=${DEFAULT_AGY_MODEL}`)
 })
