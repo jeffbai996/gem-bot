@@ -90,7 +90,7 @@ export function brainLine(thinking: string): string {
 /** Final compact snapshot for `thinking:live`. Full `thinking:on` remains
  * available separately for deliberate inspection of the complete trace. */
 export function composeLiveThinkingCard(seconds: number, thinking: string): string {
-  return `💭 **Thought for ${seconds}s**\n${thinking.split(/\r?\n/).map(line => `> ${line}`).join('\n')}`
+  return `💭 **Thought for ${seconds}s**\n${thinking.split(/\r?\n/).map(line => `> ${line}`).join('\n')}\n`
 }
 
 /** Compose the full 💭 spinner card: header + one 🧠 headline + the latest
@@ -190,7 +190,11 @@ function timelineThinkingBlock(step: LiveTimelineStep, complete = false): string
     .map(cleanHeadlineLine)
     .filter(Boolean)
     .join(' ')
-  const detail = step.detail?.trim() ?? ''
+  const detail = (step.detail ?? '')
+    .split(/\r?\n/)
+    .map(cleanHeadlineLine)
+    .filter(Boolean)
+    .join(' ')
   const bodyParts = [body, detail && detail !== body ? detail : ''].filter(Boolean)
   const summary = complete ? bodyParts.join(' ') : clipOnWordBoundary(bodyParts.join(' '), TIMELINE_BODY_MAX)
   // Quoted, not bare. A bare `**title**` renders at column 0 in Discord's
@@ -198,7 +202,15 @@ function timelineThinkingBlock(step: LiveTimelineStep, complete = false): string
   // thought split across two visual registers, and a second trace style next
   // to renderThoughtBlock's fully-quoted card. Quoting the heading puts the
   // whole step in one gray block and leaves exactly one trace look.
-  return [title ? `> **${title}**` : '', summary ? `> ${summary}` : ''].filter(Boolean).join('\n')
+  const quoteLines: string[] = []
+  if (title) quoteLines.push(`> **${title}**`)
+  if (summary) {
+    for (const line of summary.split(/\r?\n/)) {
+      quoteLines.push(line.trim() === '' ? '>' : `> ${line}`)
+    }
+  }
+  const quote = quoteLines.join('\n')
+  return quote ? `${quote}\n` : ''
 }
 
 // NO PER-ROW DURATION on this card. It had one for a few hours on 2026-09-10

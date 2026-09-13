@@ -180,6 +180,7 @@ describe('composeLiveThinkingCard', () => {
     assert.match(out, /Checking System Guidelines/)
     assert.match(out, /every instruction/)
     assert.match(out, /implementation detail at length\./)
+    assert.ok(out.endsWith('\n'))
   })
 })
 
@@ -204,6 +205,26 @@ describe('composeTrajectoryTimelineCard', () => {
       ] })
       assert.ok(out.includes('> **Assessing the request**'))
       assert.doesNotMatch(out, /^\*\*Assessing the request\*\*/m)
+    }
+  })
+  it('quotes every line of multi-line thoughts and details without leaking unquoted lines', () => {
+    for (const complete of [false, true]) {
+      const out = composeTrajectoryTimelineCard({
+        label: 'Working',
+        complete,
+        steps: [
+          {
+            kind: 'thinking',
+            text: 'Thinking line one.\nThinking line two.',
+            detail: 'Detail line one.\nDetail line two.',
+          },
+        ],
+      })
+      const lines = out.split('\n').slice(2)
+      for (const line of lines) {
+        if (!line.trim()) continue
+        assert.match(line, /^> /, `line must be quoted: "${line}"`)
+      }
     }
   })
   it('drops a trailing full stop from the heading but keeps ellipsis and ? !', () => {
@@ -342,8 +363,7 @@ describe('composeTrajectoryTimelineCard', () => {
       { kind: 'action', text: 'Read', detail: 'third.ts' },
     ] })
     assert.match(out, /📖 Reading + first\.ts\n📖 Reading + second\.ts\n🌐 Searching + query\n```\n> \*\*Checking results\*\*/)
-    assert.match(out, /Checking results\*\*\n🔧 \*\*Tool call\*\*\n```text\n📖 Reading + third\.ts/)
-    assert.doesNotMatch(out, /\n\n/)
+    assert.match(out, /Checking results\*\*\n\n🔧 \*\*Tool call\*\*\n```text\n📖 Reading + third\.ts/)
     assert.equal((out.match(/^```/gm) ?? []).length, 4)
   })
 
@@ -455,5 +475,28 @@ describe('tool call rows', () => {
       .map(l => displayWidth(l.slice(0, l.indexOf('a '))))
     assert.equal(at.length, 2)
     assert.equal(at[0], at[1])
+  })
+})
+
+describe('completed trajectory delivery', () => {
+  it('keeps long thought paragraphs quoted across Discord message boundaries', async () => {
+    const { chunk } = await import('../src/chunk.ts')
+    const body = 'A sample explanation of the verification result. '.repeat(180)
+    const rendered = composeTrajectoryTimelineCard({label:'Worked',complete:true,steps:[
+      {kind:'thinking',text:`**Reviewing results**\n${body}`,detail:'First detail.\nSecond detail.'},
+      {kind:'action',text:'Read',detail:'example.ts'},
+    ]})
+    const pages = chunk(rendered, 2000)
+    assert.ok(pages.length > 3)
+    for (const [index,page] of pages.entries()) {
+      assert.ok(page.length <= 2000)
+      let fenced = false
+      for(const line of page.split('\n')) {
+        if(line.startsWith('```')) { fenced = !fenced; continue }
+        if(fenced || !line.trim() || /^(💭|🔧|-#)/.test(line)) continue
+        assert.match(line, /^>/, `page ${index + 1} contains unquoted text`)
+      }
+      assert.equal(fenced, false)
+    }
   })
 })

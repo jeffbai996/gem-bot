@@ -50,3 +50,32 @@ describe('Chunking Logic', () => {
     }
   })
 })
+
+describe('quoted paragraph pagination', () => {
+  it('retains the quote prefix on every continuation without losing text', () => {
+    const body = 'A sample explanation with several words. '.repeat(200)
+    const result = chunk(`> ${body}`, 2000)
+    assert.ok(result.length >= 4)
+    for (const page of result) {
+      assert.ok(page.length <= 2000)
+      assert.match(page, /^> /)
+    }
+    assert.equal(result.map(page => page.slice(2)).join(''), body)
+  })
+
+  it('preserves nested quotes but does not quote the following answer', () => {
+    const body = 'Nested explanation. '.repeat(100)
+    const result = chunk(`> > ${body}\n\nFinal answer.`, 400)
+    assert.ok(result.slice(1).every(page => page.startsWith('> > ') || page.startsWith('Final answer.')))
+    assert.ok(result.every(page => page.length <= 400))
+    assert.ok(result.join('\n').endsWith('\n\nFinal answer.'))
+    assert.doesNotMatch(result.join('\n'), /> Final answer/)
+  })
+
+  it('leaves quote-looking lines inside code fences unchanged', () => {
+    const body = `> ${'literal shell output '.repeat(100)}`
+    const result = chunk(`\`\`\`text\n${body}\n\`\`\``, 400)
+    const restored = result.map(page => page.replace(/^```text\n/, '').replace(/\n```$/, '')).join('')
+    assert.equal(restored, body)
+  })
+})

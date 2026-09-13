@@ -66,6 +66,15 @@ export function chunk(text: string, limit: number = 2000, mode: 'length' | 'newl
       // state here so that opener establishes the block instead of incorrectly
       // toggling an already-open state closed on page two.
       inCodeBlock = false
+    } else if (!currentChunk.endsWith('\n')) {
+      // Discord parses each message independently. When a quoted paragraph
+      // wraps mid-line, carry its quote depth into the next message as well.
+      // Complete line breaks already carry their own Markdown in the source.
+      const lastLine = currentChunk.slice(currentChunk.lastIndexOf('\n') + 1)
+      const quotePrefix = lastLine.match(/^(?: {0,3}>[ \t]?)+/)?.[0]
+      if (quotePrefix && quotePrefix.length < effectiveLimit) {
+        nextChunkStart = quotePrefix + nextChunkStart
+      }
     }
 
     chunks.push(currentChunk)
