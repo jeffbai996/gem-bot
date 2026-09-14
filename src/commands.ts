@@ -225,16 +225,6 @@ export const geminiCommand = new SlashCommandBuilder()
       )
       .addStringOption(option =>
         option
-          .setName('model')
-          .setDescription('Image model (default: flash)')
-          .setRequired(false)
-          .addChoices(
-            { name: 'Gemini 3.1 Flash Image (fast, reliable)', value: 'flash' },
-            { name: 'Imagen 3 (legacy / Vertex)', value: 'imagen-3' },
-          )
-      )
-      .addStringOption(option =>
-        option
           .setName('ratio')
           .setDescription('Aspect ratio (default 1:1)')
           .setRequired(false)
@@ -354,12 +344,11 @@ export function formatCacheInfo(
     }
     const prompt = interaction.options.getString('prompt', true)
     const ratio = interaction.options.getString('ratio') ?? undefined
-    const model = interaction.options.getString('model') ?? undefined
 
     await interaction.deferReply()
     try {
       const apiKey = process.env.GEMINI_API_KEY || ''
-      const result = await generateImage(apiKey, prompt, ratio, model)
+      const result = await generateImage(apiKey, prompt, ratio)
       await interaction.editReply({
         content: `> ${prompt}${ratio ? ` (${ratio})` : ''}\n\n${result.footer}`,
         files: result.files,

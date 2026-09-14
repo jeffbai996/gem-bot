@@ -27,30 +27,6 @@ test('forwards the reference image and writes generated image output', async () 
   await fs.unlink(files[0])
 })
 
-test('generates image using Imagen 3 with cost footer', async () => {
-  let request: any
-  const fake = {
-    models: {
-      generateImages: async (value: any) => {
-        request = value
-        return {
-          generatedImages: [
-            { image: { imageBytes: Buffer.from('imagen-art').toString('base64'), mimeType: 'image/jpeg' } },
-          ],
-        }
-      },
-    },
-  }
-  const result = await generateImage('unused', 'a cybernetic eagle', '16:9', 'imagen-3', fake as any)
-  assert.equal(request.model, 'imagen-3.0-generate-002')
-  assert.equal(request.prompt, 'a cybernetic eagle')
-  assert.equal(request.config.aspectRatio, '16:9')
-  assert.equal(await fs.readFile(result.files[0], 'utf8'), 'imagen-art')
-  assert.match(result.footer, /imagen-3\.0-generate-002/)
-  assert.match(result.footer, /\$0\.030/)
-  await fs.unlink(result.files[0])
-})
-
 test('generates image from prompt using flash with token & cost footer', async () => {
   let request: any
   const fake = {
@@ -118,28 +94,24 @@ test('default model is flash when model parameter is omitted', async () => {
   await fs.unlink(result.files[0])
 })
 
-test('Imagen 3 falling back to flash when API returns 404', async () => {
-  let contentRequest: any
+test('calculates cost dynamically with token variations', async () => {
   const fake = {
     models: {
-      generateImages: async () => {
-        const err: any = new Error('models/imagen-3.0-generate-002 is not found for API version v1beta, or is not supported for predict.')
-        err.status = 'NOT_FOUND'
-        throw err
-      },
-      generateContent: async (value: any) => {
-        contentRequest = value
-        return { candidates: [{ content: { parts: [
-          { inlineData: { mimeType: 'image/png', data: Buffer.from('recovered-art').toString('base64') } },
-        ] } }] }
-      },
+      generateContent: async () => ({
+        usageMetadata: { promptTokenCount: 100_000, candidatesTokenCount: 50_000 },
+        candidates: [{ content: { parts: [
+          { inlineData: { mimeType: 'image/png', data: Buffer.from('art').toString('base64') } },
+        ] } }],
+      }),
     },
   }
-  const result = await generateImage('unused', 'a prompt that failed imagen', '1:1', 'imagen-3', fake as any)
-  assert.equal(contentRequest.model, 'gemini-3.1-flash-image')
-  assert.equal(await fs.readFile(result.files[0], 'utf8'), 'recovered-art')
+  const result = await generateImage('unused', 'heavy prompt', '1:1', 'flash', fake as any)
+  // base $0.030 + 100k*0.10/1e6 ($0.010) + 50k*0.40/1e6 ($0.020) = $0.060
+  assert.equal(result.costStr, '$0.060')
+  assert.match(result.footer, /\$0\.060/)
   await fs.unlink(result.files[0])
 })
+
 
 
 test('a quoted image prompt stays inside Discord message limits', () => {

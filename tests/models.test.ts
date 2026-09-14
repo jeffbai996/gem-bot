@@ -20,14 +20,18 @@ test('Gemini 3.8 Flash is the default and first API choice', () => {
   assert.equal(API_MODEL_CHOICES.some(choice => String(choice.value).startsWith('gemini-3.6')), false)
 })
 
-test('Antigravity uses the exact current 3.7 CLI ids', () => {
+test('Antigravity uses the exact current 3.8 CLI ids', () => {
   assert.equal(DEFAULT_AGY_MODEL, 'gemini-3.8-flash-medium')
   assert.equal(AGY_MODEL_CHOICES[0].value, DEFAULT_AGY_MODEL)
   assert.equal(isValidAgyModel('gemini-3.8-flash-high'), true)
   assert.equal(isValidAgyModel('Gemini 3.8 Flash (High)'), false)
   assert.equal(isValidAgyModel('gemini-3.6-flash-high'), false)
+  assert.equal(isValidAgyModel('claude-sonnet-4-6'), true)
+  assert.equal(isValidAgyModel('claude-sonnet-4-6-thinking'), true)
+  assert.equal(isValidAgyModel('claude-opus-4-6-thinking'), true)
   assert.equal(AGY_MODEL_CHOICES.some(choice => String(choice.value).startsWith('gemini-3.5')), false)
   assert.equal(AGY_MODEL_CHOICES.some(choice => String(choice.value).startsWith('gemini-3.6')), false)
+  assert.equal(AGY_MODEL_CHOICES.find(choice => choice.value === 'claude-sonnet-4-6')?.name, 'Sonnet 4.6 (Thinking)')
 })
 
 test('model labels and effort work for API and Antigravity ids', () => {
@@ -37,4 +41,9 @@ test('model labels and effort work for API and Antigravity ids', () => {
   assert.equal(modelEffort('Gemini 3.8 Flash (High)'), 'high')
   // A 3.6 pin persisted before the cutover still renders as a name, not a slug.
   assert.equal(friendlyModelName('gemini-3.6-flash'), 'Gemini 3.6 Flash')
+  // Claude prefix stripping and thinking models
+  assert.equal(friendlyModelName('claude-sonnet-4-6'), 'Sonnet 4.6 (Thinking)')
+  assert.equal(friendlyModelName('Claude Sonnet 4.6 (Thinking)'), 'Sonnet 4.6 (Thinking)')
+  assert.equal(friendlyModelName('claude-sonnet-4-6-thinking'), 'Sonnet 4.6 (Thinking)')
+  assert.equal(friendlyModelName('claude-opus-4-6-thinking'), 'Opus 4.6 (Thinking)')
 })

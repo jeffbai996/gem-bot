@@ -1,8 +1,11 @@
 /**
- * /voice slash commands — minimal v1 surface for gem-voice integration.
+ * /gemini voice slash commands — voice channel integration for Gemma.
  *
- * Just two subcommands: join (bot follows you into your current vc),
- * leave (bot disconnects).
+ * Subcommands under `/gemini voice`:
+ * - call: Live mic↔voice conversation in current VC
+ * - speak: Bot joins VC and reads replies aloud when typed in chat
+ * - leave: Disconnect from the voice channel
+ * - type: Select Gemma's voice preset
  */
 import { SlashCommandBuilder, SlashCommandSubcommandsOnlyBuilder, ChatInputCommandInteraction, GuildMember } from 'discord.js'
 import type { VoiceManager } from './voice.ts'
