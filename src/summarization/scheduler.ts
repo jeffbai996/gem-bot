@@ -1,11 +1,10 @@
-import type { GeminiClient } from '../gemini.ts'
 import type { SummaryStore } from './store.ts'
-import { runSummarization, type SummarizableMessage } from './summarizer.ts'
+import { runSummarization, type SummarizableMessage, type SummaryClient } from './summarizer.ts'
 
 export interface SchedulerDeps {
   store: SummaryStore
   fetchSinceForSummarization: (channelId: string, since: string | null, limit: number) => Promise<SummarizableMessage[]>
-  gemini: Pick<GeminiClient, 'completeText'>
+  client: SummaryClient
   threshold: number
   batchLimit?: number
 }
@@ -61,7 +60,7 @@ export class SummarizationScheduler {
       const { summary, lastMessageId } = await runSummarization(
         existing?.summary ?? null,
         messages,
-        this.deps.gemini
+        this.deps.client
       )
       this.deps.store.upsert(channelId, summary, lastMessageId)
       console.error(`[summarization] updated channel ${channelId}; summarized ${messages.length} new messages`)
@@ -90,7 +89,7 @@ export class SummarizationScheduler {
     const { summary, lastMessageId } = await runSummarization(
       existing?.summary ?? null,
       messages,
-      this.deps.gemini
+      this.deps.client
     )
     this.deps.store.upsert(channelId, summary, lastMessageId)
     console.error(`[summarization] forced rollup for ${channelId}; summarized ${messages.length} messages`)

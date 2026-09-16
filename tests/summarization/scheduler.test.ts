@@ -10,8 +10,8 @@ class FakeStore {
   }
 }
 
-function gemini(returns: string) {
-  return { completeText: async () => returns } as any
+function client(returns: string) {
+  return { completeText: async () => returns }
 }
 
 function makeMessages(ids: string[]) {
@@ -29,7 +29,7 @@ describe('SummarizationScheduler', () => {
     const s = new SummarizationScheduler({
       store: store as any,
       fetchSinceForSummarization: async () => { called = true; return makeMessages(['M1']) },
-      gemini: gemini('x'),
+      client: client('x'),
       threshold: 50
     })
     s.scheduleIfNeeded('C1')
@@ -43,7 +43,7 @@ describe('SummarizationScheduler', () => {
     const s = new SummarizationScheduler({
       store: store as any,
       fetchSinceForSummarization: async () => makeMessages(Array.from({ length: 50 }, (_, i) => `M${i + 1}`)),
-      gemini: gemini('summary text'),
+      client: client('summary text'),
       threshold: 50
     })
     s.scheduleIfNeeded('C1')
@@ -59,7 +59,7 @@ describe('SummarizationScheduler', () => {
     const s = new SummarizationScheduler({
       store: store as any,
       fetchSinceForSummarization: async () => makeMessages(['M1']),
-      gemini: gemini('summary text'),
+      client: client('summary text'),
       threshold: 1
     })
 
@@ -78,7 +78,7 @@ describe('SummarizationScheduler', () => {
     const s = new SummarizationScheduler({
       store: store as any,
       fetchSinceForSummarization: async () => makeMessages(['M1']),
-      gemini: gemini('summary text'),
+      client: client('summary text'),
       threshold: 2
     })
 
@@ -97,7 +97,7 @@ describe('SummarizationScheduler', () => {
     const s = new SummarizationScheduler({
       store: store as any,
       fetchSinceForSummarization: async () => makeMessages(['M1']),
-      gemini: { completeText: async () => { throw new Error('provider down') } } as any,
+      client: { completeText: async () => { throw new Error('provider down') } },
       threshold: 1
     })
 
@@ -119,7 +119,7 @@ describe('SummarizationScheduler', () => {
     const s = new SummarizationScheduler({
       store: store as any,
       fetchSinceForSummarization: async () => { runs++; return fetchPromise },
-      gemini: gemini('x'),
+      client: client('x'),
       threshold: 1
     })
     s.scheduleIfNeeded('C1')
@@ -136,7 +136,7 @@ describe('SummarizationScheduler', () => {
     const s = new SummarizationScheduler({
       store: store as any,
       fetchSinceForSummarization: async (cid) => { calls.push(cid); return makeMessages(['M1']) },
-      gemini: gemini('x'),
+      client: client('x'),
       threshold: 1
     })
     s.scheduleIfNeeded('C1')
@@ -152,7 +152,7 @@ describe('SummarizationScheduler', () => {
     const s = new SummarizationScheduler({
       store: store as any,
       fetchSinceForSummarization: async () => { runs++; return makeMessages(['M1']) },
-      gemini: gemini('x'),
+      client: client('x'),
       threshold: 1
     })
     s.scheduleIfNeeded('C1')
@@ -167,7 +167,7 @@ describe('SummarizationScheduler', () => {
     const s = new SummarizationScheduler({
       store: store as any,
       fetchSinceForSummarization: async () => { throw new Error('db down') },
-      gemini: gemini('x'),
+      client: client('x'),
       threshold: 1
     })
     // Must not throw

@@ -1,10 +1,12 @@
-import type { GeminiClient } from '../gemini.ts'
-
 export interface SummarizableMessage {
   authorName: string
   content: string
   timestamp: string
   messageId: string
+}
+
+export interface SummaryClient {
+  completeText(systemPrompt: string, userPrompt: string): Promise<string>
 }
 
 const SYSTEM_PROMPT = `You are summarizing a Discord channel for context preservation. Produce a tight, factual summary that captures:
@@ -29,7 +31,7 @@ Output ONLY the summary text. No preamble, no metadata.`
 export async function runSummarization(
   oldSummary: string | null,
   newMessages: SummarizableMessage[],
-  gemini: Pick<GeminiClient, 'completeText'>
+  client: SummaryClient
 ): Promise<{ summary: string; lastMessageId: string }> {
   if (newMessages.length === 0) throw new Error('runSummarization called with empty newMessages')
 
@@ -39,7 +41,7 @@ export async function runSummarization(
 
   const userText = `PREVIOUS SUMMARY:\n${oldSummary ?? '(none)'}\n\nNEW MESSAGES SINCE PREVIOUS SUMMARY:\n${formattedMessages}`
 
-  const summary = (await gemini.completeText(SYSTEM_PROMPT, userText)).trim()
+  const summary = (await client.completeText(SYSTEM_PROMPT, userText)).trim()
   const lastMessageId = newMessages[newMessages.length - 1].messageId
   return { summary, lastMessageId }
 }

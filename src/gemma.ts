@@ -53,6 +53,7 @@ import { PinnedFactsStore } from './pinned-facts.ts'
 import { handleReaction } from './reactions/handler.ts'
 import { SummaryStore } from './summarization/store.ts'
 import { SummarizationScheduler } from './summarization/scheduler.ts'
+import { OllamaSummaryClient } from './summarization/ollama-client.ts'
 import { createCompactionObserver } from './compaction-ui.ts'
 import { fetchMessagesSince, recordInFlightTurn, clearInFlightTurn, getAllInFlightTurns } from './db.ts'
 import { DeferredActions } from './deferred-actions.ts'
@@ -261,6 +262,17 @@ const summaryStore = new SummaryStore()
 persona.setSummaryStore(summaryStore)
 const SUMMARIZATION_THRESHOLD = parseInt(process.env.MAX_UNSUMMARIZED_MESSAGES ?? '50', 10)
 const SUMMARIZATION_BATCH_LIMIT = parseInt(process.env.SUMMARIZATION_BATCH_LIMIT ?? '500', 10)
+// Summaries are a background context-preservation chore, not part of gem's
+// normal Gemini reply path. Reuse the host's already-resident Qwen instead of
+// spending Gemini calls or loading another local model.
+const SUMMARIZATION_OLLAMA_URL = process.env.GEM_SUMMARIZATION_OLLAMA_URL ?? 'http://127.0.0.1:11434'
+const SUMMARIZATION_MODEL = process.env.GEM_SUMMARIZATION_MODEL ?? 'qwen3.8:27b'
+const SUMMARIZATION_TIMEOUT_MS = parseInt(process.env.GEM_SUMMARIZATION_TIMEOUT_MS ?? '300000', 10)
+const summaryClient = new OllamaSummaryClient({
+  baseUrl: SUMMARIZATION_OLLAMA_URL,
+  model: SUMMARIZATION_MODEL,
+  timeoutMs: SUMMARIZATION_TIMEOUT_MS,
+})
 const summarizer = new SummarizationScheduler({
   store: summaryStore,
   fetchSinceForSummarization: async (channelId, since, limit) => {
@@ -272,7 +284,7 @@ const summarizer = new SummarizationScheduler({
       messageId: r.id
     }))
   },
-  gemini,
+  client: summaryClient,
   threshold: SUMMARIZATION_THRESHOLD,
   batchLimit: SUMMARIZATION_BATCH_LIMIT
 })
