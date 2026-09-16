@@ -79,8 +79,16 @@ import {
   waitForIdleOrDeadline,
 } from './restart.ts'
 import { RestartInbox } from './restart-inbox.ts'
+import { loadRelayConfig, TrustedRelayVerifier, type TrustedRelay } from './trusted-relay.ts'
+import { TellTurnMarker, isTellPayload } from './tell-turn.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR || path.join(os.homedir(), '.gemini', 'channels', 'discord')
+// Bot-authored messages are dropped at the door, with one exception: a relay
+// the squad helper signed for THIS bot, which carries a message the owner
+// approved on a card. tellTurns marks a turn that arrived that way so the
+// owner's CLI refuses a second hop out of it.
+const trustedRelays = new TrustedRelayVerifier(() => loadRelayConfig(STATE_DIR))
+const tellTurns = new TellTurnMarker(STATE_DIR)
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
 const LIVE_UPDATE_INTERVAL_MS = resolveLiveUpdateInterval(process.env.GEM_LIVE_UPDATE_INTERVAL_MS)
 const deferredActions = new DeferredActions(path.join(STATE_DIR, 'deferred-actions.json'))
@@ -546,6 +554,8 @@ async function generateStartupPresence(prompt: string, signal: AbortSignal): Pro
 
 
 client.once('ready', async () => {
+  // Any tell-originated turn recorded before this process started is dead.
+  tellTurns.reset()
   console.error(`Gem online as ${client.user?.tag} (${client.user?.id})`)
   warmAgy()
   deferredActions.rearm(client)
@@ -653,6 +663,9 @@ interface HandleOpts {
   // rapid-fire messages into ONE batched follow-up turn (one placeholder,
   // one generation) rather than a stack of concurrent "Thinking…" replies.
   combinedText?: string
+  // Set when this turn arrived as a helper-signed relay: it speaks for the
+  // owner who tapped the card, not for the bot that carried it.
+  relay?: TrustedRelay
 }
 
 // Appended to Gemma's system prompt when a message is in /voice speak mode, so
@@ -674,8 +687,20 @@ const SPOKEN_MODE_INSTRUCTION = `
 // called per inbound message BEFORE the turn queue — that way a queued/batched
 // message is still embedded even though only the batch carrier reaches the
 // generation path in handleUserMessage.
-async function ingestAndGate(message: Message): Promise<boolean> {
-  if (message.author.bot || !client.user) return false
+async function ingestAndGate(message: Message, relay?: TrustedRelay): Promise<boolean> {
+  if (!client.user) return false
+  // A verified relay is the owner speaking through the helper, and it is
+  // always addressed here. Its raw ⟦vc-relay:…⟧ transport text is never
+  // embedded as conversation.
+  if (relay) {
+    return access.canHandle({
+      channelId: message.channelId,
+      parentChannelId: message.channel.isThread() ? message.channel.parentId : null,
+      userId: relay.userId,
+      isMention: true,
+    })
+  }
+  if (message.author.bot) return false
 
   const replyContext = await resolveReplyContext(message)
   const parentChannelId = message.channel.isThread() ? message.channel.parentId : null
@@ -719,10 +744,15 @@ async function ingestAndGate(message: Message): Promise<boolean> {
 }
 
 async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promise<void> {
-  if (message.author.bot) return
+  if (message.author.bot && !opts.relay) return
   if (!client.user) return
   let lifecycleClosed = false
-  const presenceTicket = presenceOwner.request(opts.combinedText ?? message.content)
+  const userText = opts.combinedText ?? message.content
+  // A delivered bot-to-bot tell marks this turn for as long as it runs, so a
+  // tell sent from inside it is refused by the owner's CLI (tell-turn.ts).
+  const tellTurn = isTellPayload(userText)
+  if (tellTurn) tellTurns.arm(message.id)
+  const presenceTicket = presenceOwner.request(userText)
 
   // Opt-in reply gate removed 2026-05-02. The two-tier classifier (regex +
   // flash-lite) silenced messages it judged "not for Gemma" — but the UX was
@@ -1736,6 +1766,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     lifecycleClosed = true
     await clearAfterDrain(message)
     activeTurns.done(message.channelId)
+    if (tellTurn) tellTurns.disarm(message.id)
     await Promise.all(generatedImageFiles.map(file => unlink(file).catch(() => {})))
     clearInFlightTurn(message.channelId)
     await stopThinkingAnim()
@@ -1825,7 +1856,7 @@ async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<
   // produces a placeholder, so it must not be queued or batched — just embed
   // it (done inside ingestAndGate) and drop it. Only gated-IN messages flow
   // into the serializer below.
-  if (!(await ingestAndGate(message))) return
+  if (!(await ingestAndGate(message, opts.relay))) return
 
   const cid = message.channelId
   const steered = channelTurns.isRunning(cid)
@@ -1843,9 +1874,16 @@ async function runChannelTurn(message: Message, opts: HandleOpts = {}): Promise<
 }
 
 async function dispatchInboundMessage(message: Message): Promise<void> {
-  if (message.author.bot) return
-  const replyContext = await resolveReplyContext(message)
-  if (client.user && isAddressedToAnotherBot(
+  const relayInput = {
+    messageId: message.id,
+    channelId: message.channelId,
+    authorId: message.author.id,
+    content: message.content,
+  }
+  const relay = message.author.bot ? trustedRelays.verify(relayInput, false) : null
+  if (message.author.bot && !relay) return
+  const replyContext = relay ? null : await resolveReplyContext(message)
+  if (!relay && client.user && isAddressedToAnotherBot(
     client.user.id,
     message.mentions.users.values(),
     message.content,
@@ -1854,13 +1892,13 @@ async function dispatchInboundMessage(message: Message): Promise<void> {
 
   const release = shutdownGate.enter()
   if (!release) {
-    const isMention = client.user
+    const isMention = relay ? true : client.user
       ? message.mentions.users.has(client.user.id) || replyContext?.authorId === client.user.id
       : false
     const mine = access.canHandle({
       channelId: message.channelId,
       parentChannelId: message.channel.isThread() ? message.channel.parentId : null,
-      userId: message.author.id,
+      userId: relay?.userId ?? message.author.id,
       isMention,
     })
     if (!mine) return
@@ -1870,13 +1908,21 @@ async function dispatchInboundMessage(message: Message): Promise<void> {
   }
 
   try {
-    await handleInboundMessage(message)
+    // Consume on the second pass: the first was a look, this is the take, so
+    // a message that never reaches a turn is not marked as already delivered.
+    const acceptedRelay = relay ? trustedRelays.verify(relayInput) ?? undefined : undefined
+    if (relay && !acceptedRelay) return
+    await handleInboundMessage(message, acceptedRelay)
   } finally {
     release()
   }
 }
 
-async function handleInboundMessage(message: Message): Promise<void> {
+async function handleInboundMessage(message: Message, relay?: TrustedRelay): Promise<void> {
+  if (relay) {
+    await runChannelTurn(message, { relay, combinedText: relay.payload })
+    return
+  }
   const parentChannelId = message.channel.isThread() ? message.channel.parentId : null
   if (!message.author.bot && access.isAllowedAndEnabled(message.author.id, message.channelId, parentChannelId)) {
     // Lone ❌ / X message: hard-kill the in-flight turn and swallow the message.
