@@ -43,8 +43,11 @@ import { shouldEmbed } from './embed-throttle.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
 import { PendingEditsStore } from './reactions/pending-edits.ts'
 import { applyLifecycle, clearAllTransients, clearAfterDrain } from './reactions/lifecycle.ts'
+import { reportTurnError } from './error-report.ts'
 import { activeTurns } from './active-turns.ts'
 import { ChannelTurnRunner } from './channel-turns.ts'
+import { GlobalTurnAdmission } from './global-turn-admission.ts'
+import { readSelfCgroupMemoryBytes } from './cgroup-memory.ts'
 import { renderSteeredMessage } from './steering.ts'
 import { frameSteeredMessages } from './steer-context.ts'
 import { isHardStopMessage } from './stop-command.ts'
@@ -521,6 +524,10 @@ function installGracefulShutdown(): void {
       shutdownGate.waitForIdle(),
       activeTurns.waitForIdle(),
       channelTurns.waitForIdle(),
+      // A turn parked in the global queue is still work this process owes the
+      // user. Without this the drain calls itself idle while turns sit waiting
+      // for a slot, and the deploy eats them.
+      globalTurns.waitForIdle(),
     ])
     waitForIdleOrDeadline(idle, timeoutMs)
       .then(reason => {
@@ -1755,25 +1762,21 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     } else {
       msg = "something broke reaching Gemini. check logs."
     }
-    try {
-      // If a streaming placeholder ("💭 Thinking...") is already up, edit it
-      // in place rather than posting a new error message. Avoids the
-      // orphaned-placeholder UX where the user sees a frozen Thinking line
-      // above the actual error.
-      if (activeMessages.length > 0) {
-        await activeMessages[0].edit(msg).catch(() => {})
-        // Delete any extra streaming chunks beyond the first.
-        for (const extra of activeMessages.slice(1)) {
-          await extra.delete().catch(() => {})
-        }
-        for (const traceMessage of liveTraceMessages) {
-          await traceMessage.delete().catch(() => {})
-        }
-        liveTraceMessages = []
-      } else {
-        await sendReply(message, msg)
-      }
-    } catch { /* nothing to do */ }
+    // Editing the placeholder in place is the nice path -- it avoids leaving a
+    // frozen "💭 Thinking…" above the error -- but it is not the only one. The
+    // previous version ended that edit with `.catch(() => {})`, so a card that
+    // could not be written to (already deleted, or the spinner interval
+    // mid-write on the same message) swallowed the error whole: ❌ landed, no
+    // text, nothing logged (Jeff 2026-09-16). reportTurnError falls back to a
+    // new message and says so out loud.
+    await reportTurnError(msg, {
+      active: activeMessages,
+      traces: liveTraceMessages,
+      send: async text => { await sendReply(message, text) },
+      log: (what, err) => console.error('[turn-error]', what, err),
+    })
+    liveTraceMessages = []
+    activeMessages = []
   } finally {
     lifecycleClosed = true
     await clearAfterDrain(message)
@@ -1806,6 +1809,31 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 // active generation per channel. Cross-channel turns still run concurrently.
 interface QueuedChannelTurn { message: Message; opts: HandleOpts; steered: boolean }
 const QUEUE_SETTLE_MS = Number(process.env.GEM_QUEUE_SETTLE_MS) || 0
+
+// Process-wide ceiling on turns that are actually talking to a model. Until
+// 2026-09-16 there was none: per-channel FIFO was the only limit, so N busy
+// channels meant N concurrent Gemini calls and N turns' worth of host memory,
+// with 429s and an OOM as the only backstops. Cross-channel parallelism is
+// still the point — this caps it at 5 rather than removing it (Jeff: "raise
+// each's cap to 5 and we'll call it at that for now"). Per-channel ordering is
+// untouched and still owned by ChannelTurnRunner.
+function boundedTurnLimit(raw: string | undefined, fallback: number, hardMax: number): number {
+  const parsed = Number(raw)
+  return Number.isSafeInteger(parsed) && parsed > 0 ? Math.min(parsed, hardMax) : fallback
+}
+const MAX_GLOBAL_TURNS = boundedTurnLimit(process.env.GEMMA_MAX_GLOBAL_TURNS, 5, 8)
+const gemHighWater = Number(process.env.GEMMA_MEMORY_HIGH_WATER_MB)
+const gemLowWater = Number(process.env.GEMMA_MEMORY_LOW_WATER_MB)
+const MEMORY_HIGH_WATER_BYTES = (Number.isFinite(gemHighWater) && gemHighWater > 0
+  ? gemHighWater : 3_200) * 1024 * 1024
+const MEMORY_LOW_WATER_BYTES = (Number.isFinite(gemLowWater) && gemLowWater >= 0
+  ? gemLowWater : 2_600) * 1024 * 1024
+const globalTurns = new GlobalTurnAdmission({
+  maxActive: MAX_GLOBAL_TURNS,
+  highWaterBytes: MEMORY_HIGH_WATER_BYTES,
+  lowWaterBytes: Math.min(MEMORY_LOW_WATER_BYTES, MEMORY_HIGH_WATER_BYTES - 1),
+  memoryBytes: readSelfCgroupMemoryBytes,
+})
 const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
   async (channelId, batch) => {
     const messages = batch.map(item => item.message)
@@ -1824,11 +1852,21 @@ const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
     const combined = batch.some(item => item.steered)
       ? frameSteeredMessages(texts)
       : texts.join('\n')
-    await handleUserMessage(
-      carrier,
-      batch.length === 1 && !batch[0].steered
-        ? carrierItem.opts
-        : { ...carrierItem.opts, combinedText: combined || undefined },
+    // Waiting for a global slot is not the same as being ignored, and this
+    // batch has already eaten its 🕗 for the intra-channel queue. ⏳ is the
+    // "seen, waiting on the box" mark used elsewhere in this file, so reuse it
+    // rather than invent a third hourglass.
+    await globalTurns.run(
+      channelId,
+      () => handleUserMessage(
+        carrier,
+        batch.length === 1 && !batch[0].steered
+          ? carrierItem.opts
+          : { ...carrierItem.opts, combinedText: combined || undefined },
+      ),
+      {
+        onQueued: () => { void carrier.react('⏳').catch(() => {}) },
+      },
     )
   },
   channelId => activeTurns.consumeStopped(channelId),
@@ -1840,6 +1878,7 @@ const restartCoordinator = new RestartCoordinator(
     shutdownGate.waitForIdle(),
     activeTurns.waitForIdle(),
     channelTurns.waitForIdle(),
+    globalTurns.waitForIdle(),
   ]).then(() => {}),
   () => scheduleSelfRestart('gemma', 250),
   () => shutdownGate.beginDrain(),
@@ -1942,7 +1981,11 @@ async function handleInboundMessage(message: Message, relay?: TrustedRelay): Pro
     // another queued prompt and only "works" after the turn finally unwinds.
     if (isHardStopMessage(message.content)) {
       message.delete().catch(() => {})
-      const killed = activeTurns.stop(message.channelId)
+      // Cancel BEFORE the in-flight kill: a turn holding a global slot is
+      // killed by activeTurns, but one still waiting for a slot is invisible to
+      // it and would start generating moments after the user said stop.
+      const dequeued = globalTurns.cancel(message.channelId)
+      const killed = activeTurns.stop(message.channelId) || dequeued > 0
       if (killed) {
         const ch = message.channel as any
         const m = await ch.send?.('🛑  Stopped. React 🔁 on my last message to retry.')
