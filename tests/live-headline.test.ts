@@ -354,6 +354,14 @@ describe('composeTrajectoryTimelineCard', () => {
     assert.equal((out.match(/^```/gm) ?? []).length, 2)
   })
 
+  it('leaves a visual gap between the gray step counter and the first tool call', () => {
+    const out = composeTrajectoryTimelineCard({ label: 'Working', steps: [
+      { kind: 'action', text: 'Read', detail: 'renderer.ts' },
+    ] })
+
+    assert.match(out, /-# 1 step\n\n🔧 \*\*Tool call\*\*/)
+  })
+
   it('labels every consecutive call and starts a new block after thinking', () => {
     const out = composeTrajectoryTimelineCard({ label: 'Working', steps: [
       { kind: 'action', text: 'Read', detail: 'first.ts' },

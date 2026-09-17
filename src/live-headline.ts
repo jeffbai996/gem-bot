@@ -289,13 +289,13 @@ export function composeTrajectoryTimelineCard(opts: {
   const { label, glyph = '✻', dots = '…', steps } = opts
   const header = `💭 ${glyph} **${label}${dots}**\n-# ${steps.length} step${steps.length === 1 ? '' : 's'}`
   // The final renderer paginates this body; only the live preview needs a cap.
-  if (opts.complete) return `${header}\n${timelineBlocks(steps, true)}`
+  if (opts.complete) return `${header}\n\n${timelineBlocks(steps, true)}`
   let result = header
   // Re-render the retained tail so its first tool row always has its action
   // label and every grouped fence closes, even when older rows are dropped.
   for (let index = steps.length - 1; index >= 0; index--) {
     const marker = index > 0 ? `\n-# ↑ ${index} earlier steps omitted` : ''
-    const candidate = `${header}${marker}\n${timelineBlocks(steps.slice(index))}`
+    const candidate = `${header}${marker}\n\n${timelineBlocks(steps.slice(index))}`
     if (candidate.length > TIMELINE_CARD_MAX) break
     result = candidate
   }
