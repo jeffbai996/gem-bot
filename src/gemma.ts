@@ -43,6 +43,7 @@ import { shouldEmbed } from './embed-throttle.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
 import { PendingEditsStore } from './reactions/pending-edits.ts'
 import { applyLifecycle, clearAllTransients, clearAfterDrain } from './reactions/lifecycle.ts'
+import { reportTurnError } from './error-report.ts'
 import { activeTurns } from './active-turns.ts'
 import { ChannelTurnRunner } from './channel-turns.ts'
 import { renderSteeredMessage } from './steering.ts'
@@ -1755,25 +1756,21 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     } else {
       msg = "something broke reaching Gemini. check logs."
     }
-    try {
-      // If a streaming placeholder ("💭 Thinking...") is already up, edit it
-      // in place rather than posting a new error message. Avoids the
-      // orphaned-placeholder UX where the user sees a frozen Thinking line
-      // above the actual error.
-      if (activeMessages.length > 0) {
-        await activeMessages[0].edit(msg).catch(() => {})
-        // Delete any extra streaming chunks beyond the first.
-        for (const extra of activeMessages.slice(1)) {
-          await extra.delete().catch(() => {})
-        }
-        for (const traceMessage of liveTraceMessages) {
-          await traceMessage.delete().catch(() => {})
-        }
-        liveTraceMessages = []
-      } else {
-        await sendReply(message, msg)
-      }
-    } catch { /* nothing to do */ }
+    // Editing the placeholder in place is the nice path -- it avoids leaving a
+    // frozen "💭 Thinking…" above the error -- but it is not the only one. The
+    // previous version ended that edit with `.catch(() => {})`, so a card that
+    // could not be written to (already deleted, or the spinner interval
+    // mid-write on the same message) swallowed the error whole: ❌ landed, no
+    // text, nothing logged (Jeff 2026-09-16). reportTurnError falls back to a
+    // new message and says so out loud.
+    await reportTurnError(msg, {
+      active: activeMessages,
+      traces: liveTraceMessages,
+      send: async text => { await sendReply(message, text) },
+      log: (what, err) => console.error('[turn-error]', what, err),
+    })
+    liveTraceMessages = []
+    activeMessages = []
   } finally {
     lifecycleClosed = true
     await clearAfterDrain(message)
