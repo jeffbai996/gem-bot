@@ -59,6 +59,8 @@ import { SummarizationScheduler } from './summarization/scheduler.ts'
 import { OllamaSummaryClient } from './summarization/ollama-client.ts'
 import { createCompactionObserver } from './compaction-ui.ts'
 import { fetchMessagesSince, recordInFlightTurn, clearInFlightTurn, getAllInFlightTurns } from './db.ts'
+import { allSummaries, channelActivity, searchAllMessages } from './db.ts'
+import { crossChannelEnabled, formatCrossChannelContext } from './cross-channel.ts'
 import { DeferredActions } from './deferred-actions.ts'
 import { LiveProgressBuffer, resolveLiveUpdateInterval } from './live-update.ts'
 import { LiveTimelineBuffer, visibleTimelineSteps } from './live-timeline.ts'
@@ -493,6 +495,44 @@ process.on('SIGHUP', async () => {
 
 process.on('unhandledRejection', err => console.error('unhandledRejection:', err))
 process.on('uncaughtException', err => console.error('uncaughtException:', err))
+
+/** Human-readable name for a channel id — "#dev", "a DM", or the bare id when
+ *  the channel isn't cached. Used to label cross-channel context so the model
+ *  says "in #ops" instead of quoting a snowflake. */
+function channelLabel(channelId: string): string {
+  const channel = client.channels.cache.get(channelId)
+  if (!channel) return `channel ${channelId}`
+  if (channel.isDMBased()) return 'a DM'
+  const name = (channel as { name?: string }).name
+  return name ? `#${name}` : `channel ${channelId}`
+}
+
+/** Read-only context from the bot's OTHER channels: a recent-activity digest
+ *  plus semantic matches for this turn. Sessions stay per-channel; only this
+ *  crosses. Never throws — a failure just means no extra context. */
+async function buildCrossChannelText(channelId: string, userText: string): Promise<string> {
+  if (!crossChannelEnabled() || !userText.trim()) return ''
+  try {
+    let hits: ReturnType<typeof searchAllMessages> = []
+    try {
+      const queryEmbedding = await gemini.embed(userText)
+      if (queryEmbedding?.length) hits = searchAllMessages(queryEmbedding, 32)
+    } catch (e) {
+      console.error('[cross-channel] embed failed:', e instanceof Error ? e.message : e)
+    }
+    return formatCrossChannelContext({
+      activity: channelActivity(channelId, 20),
+      summaries: new Map(allSummaries().map(row => [row.channel_id, row.summary])),
+      hits,
+      visibleChannelIds: access.enabledChannelIds(),
+      currentChannelId: channelId,
+      label: id => channelLabel(id),
+    })
+  } catch (e) {
+    console.error('[cross-channel] context build failed:', e instanceof Error ? e.message : e)
+    return ''
+  }
+}
 
 const client = new Client({
   intents: [
@@ -1145,7 +1185,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     const quotedReplyText = opts.combinedText === undefined ? formatReplyContext(replyContext) : ''
     const threadText = opts.combinedText === undefined ? formatThreadContext(threadContext) : ''
     const richText = opts.combinedText === undefined ? formatRichContext(message) : ''
-    const contextualText = [quotedReplyText, threadText, richText, baseText].filter(Boolean).join('\n\n')
+    const crossChannelText = await buildCrossChannelText(message.channelId, baseText)
+    const contextualText = [quotedReplyText, threadText, richText, crossChannelText, baseText].filter(Boolean).join('\n\n')
     const userText = opts.expansion
       ? `[The user wants you to expand on your previous reply with more depth and detail.]\n\n${contextualText}`
       : contextualText

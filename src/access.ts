@@ -342,4 +342,14 @@ export class AccessManager {
       requireMention: channel?.requireMention ?? false,
     }
   }
+
+  /** Channels the bot is actually live in — the visibility scope for
+   *  cross-channel context. A channel that was disabled stops contributing. */
+  enabledChannelIds(): Set<string> {
+    const ids = new Set<string>()
+    for (const [channelId, config] of Object.entries(this.data.channels)) {
+      if (config.enabled) ids.add(channelId)
+    }
+    return ids
+  }
 }

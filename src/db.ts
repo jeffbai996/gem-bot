@@ -181,6 +181,50 @@ export function searchMessages(channelId: string, queryEmbedding: number[], limi
   return searchStmt.all(queryJson, limit, channelId) as SearchResult[]
 }
 
+// Same search with no channel filter — cross-channel awareness reads this and
+// drops the rows its caller is not allowed to see.
+const searchAllStmt = db.prepare(`
+  SELECT m.id, m.channel_id, m.author_name, m.content, m.timestamp, v.distance
+  FROM vss_messages v
+  JOIN messages m ON v.rowid = m.rowid
+  WHERE vss_search(v.embedding, vss_search_params(?, ?))
+`)
+
+/** Nearest stored messages across EVERY channel. Callers must scope the result. */
+export function searchAllMessages(queryEmbedding: number[], limit: number = 10): SearchResult[] {
+  const queryJson = JSON.stringify(queryEmbedding)
+  return searchAllStmt.all(queryJson, limit) as SearchResult[]
+}
+
+export interface ChannelActivityRow {
+  channel_id: string
+  author_name: string
+  content: string
+  timestamp: string
+  message_count: number
+}
+
+// Newest message per channel plus that channel's total, for the other-channels
+// digest. Snowflake ids are monotonic, so MAX(id) is the newest row without
+// trusting the stored timestamp's format.
+const channelActivityStmt = db.prepare(`
+  SELECT m.channel_id, m.author_name, m.content, m.timestamp, newest.n AS message_count
+  FROM messages m
+  JOIN (
+    SELECT channel_id, MAX(CAST(id AS INTEGER)) AS max_id, COUNT(*) AS n
+    FROM messages GROUP BY channel_id
+  ) newest
+    ON newest.channel_id = m.channel_id AND CAST(m.id AS INTEGER) = newest.max_id
+  WHERE m.channel_id != ?
+  ORDER BY CAST(m.id AS INTEGER) DESC
+  LIMIT ?
+`)
+
+/** Newest message + message count per channel, excluding one channel. */
+export function channelActivity(excludeChannelId: string, limit: number = 20): ChannelActivityRow[] {
+  return channelActivityStmt.all(excludeChannelId, limit) as ChannelActivityRow[]
+}
+
 // Fetch raw messages for summarization, in chronological order. `since` is a
 // Discord message ID; only messages with id > since are returned. Cast to
 // INTEGER for proper numeric ordering of snowflake IDs.
@@ -224,6 +268,16 @@ export interface SummaryRow {
   summary: string
   last_summarized_message_id: string
   updated_at: string
+}
+
+const allSummariesStmt = db.prepare(`
+  SELECT channel_id, summary, last_summarized_message_id, updated_at
+  FROM conversation_summaries
+`)
+
+/** Every channel's rolling summary, for the cross-channel digest. */
+export function allSummaries(): SummaryRow[] {
+  return allSummariesStmt.all() as SummaryRow[]
 }
 
 export function upsertSummary(channelId: string, summary: string, lastMessageId: string): void {
