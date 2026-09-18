@@ -3,7 +3,7 @@
 This document provides context for agents working on `gem-bot`.
 
 ## Project Overview
-A standalone Discord bot using Discord.js and the Antigravity CLI for text chat. Text never falls back to the Gemini API. Image generation/editing and voice retain API integrations; background embeddings and summaries are separate from conversational routing. The CLI result and terminal planner response must both confirm completion; interrupted runs resume the same conversation at most twice, then report failure.
+A standalone Discord bot using Discord.js and the Antigravity CLI for text chat. Text never falls back to the Gemini API. Image generation/editing and voice retain API integrations; background embeddings and summaries are separate from conversational routing. The CLI result and terminal planner response must both confirm completion; interrupted runs resume the same conversation at most 3 times, then report failure.
 
 ## Core Architecture
 - **Language/Runtime:** TypeScript + Node.js (via `tsx`).

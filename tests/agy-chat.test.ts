@@ -290,7 +290,7 @@ describe('agy task continuity', () => {
     assert.doesNotMatch(calls[1].prompt, /unique-continuity-fixture/)
   })
 
-  test('persistent incomplete runs stop after two resumes without an API answer', async () => {
+  test('persistent incomplete runs stop after three resumes without an API answer', async () => {
     const { respondViaAgy, AgyChatError } = await import('../src/agy-chat.ts')
     let calls = 0
     await assert.rejects(respondViaAgy({systemPrompt:'Test',history:[],userMessageText:'bounded-continuity-fixture',userName:'Alice'}, text => ({reply:text,thinking:null,react:null}), async () => {
@@ -299,7 +299,7 @@ describe('agy task continuity', () => {
       error.conversationId = '00000000-0000-0000-0000-000000000000'
       throw error
     }), /unfinished tool call/)
-    assert.equal(calls, 3)
+    assert.equal(calls, 4)
   })
 })
 

@@ -131,7 +131,7 @@ TTL defaults to 2 hours, configurable per channel via `/gemini cache ttl <second
 
 Text chat always uses `agy`, including channels with legacy API settings. There is no text API fallback or API text-model picker. Image generation/editing and voice retain their API integrations; background embeddings and conversation summaries remain separate from the chat route.
 
-The bridge requests structured CLI results and verifies the exact conversation's final planner response. A pending tool call, missing answer, or progress-only announcement cannot complete a turn. An interrupted conversation can resume up to twice with its original context; persistent failures produce an explicit stopped-task receipt.
+The bridge requests structured CLI results and verifies the exact conversation's final planner response. A pending tool call, missing answer, or progress-only announcement cannot complete a turn. An interrupted conversation can resume up to 3 times with its original context; persistent failures produce an explicit stopped-task receipt.
 
 The project working directory, configured recall command directories, and attachment inboxes are granted to the sandbox with `--add-dir`. Attachments remain available through `view_file`. Shell access is scoped to the sandbox and does not imply access to host services.
 

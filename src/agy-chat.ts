@@ -1063,7 +1063,8 @@ export async function respondViaAgy(
   // run's trajectory live and stream tool_call_start events as agy works.
   let text = ''
   let conversationId: string | undefined
-  for (let attempt = 0; attempt < 3; attempt++) {
+  const MAX_RESUME_ATTEMPTS = 3
+  for (let attempt = 0; attempt <= MAX_RESUME_ATTEMPTS; attempt++) {
     try {
       text = await run(
         conversationId
@@ -1073,7 +1074,7 @@ export async function respondViaAgy(
       )
       break
     } catch (error) {
-      if (input.signal?.aborted || !(error instanceof AgyChatError) || !error.conversationId || !/unfinished|no final answer|progress-only|STEP_LIMIT|MAX_STEPS|INCOMPLETE|network issue|connection (?:timed out|reset)|ECONNRESET|stream.*(?:closed|timeout)|temporarily unavailable/i.test(error.message) || attempt === 2) throw error
+      if (input.signal?.aborted || !(error instanceof AgyChatError) || !error.conversationId || !/unfinished|no final answer|progress-only|STEP_LIMIT|MAX_STEPS|INCOMPLETE|network issue|connection (?:timed out|reset)|ECONNRESET|stream.*(?:closed|timeout)|temporarily unavailable/i.test(error.message) || attempt >= MAX_RESUME_ATTEMPTS) throw error
       conversationId = error.conversationId
       console.error(`[agy] channel=${input.channelId} message=${input.messageId} resuming conversation=${conversationId}: ${error.message}`)
       input.onEvent?.({ type: 'agy_progress', thinking: '', detail: 'AGY connection interrupted or run incomplete; resuming the same task.' })

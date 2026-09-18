@@ -47,11 +47,11 @@ console.log(JSON.stringify({conversation_id:id,status:'SUCCESS'}));
     writeFileSync(join(dir,'attempts'),'')
     await assert.rejects(respondViaAgy(input,text=>({reply:text,thinking:null,react:null}),runner),/network issue/)
     assert.equal(readFileSync(join(dir,'attempts'),'utf8').trim().split('\n').length,1)
-    // A persistently unavailable provider stops after exactly two continuations.
+    // A persistently unavailable provider stops after exactly three continuations.
     process.env.GEM_TEST_MODE = 'persistent'
     writeFileSync(join(dir,'attempts'),'')
     await assert.rejects(respondViaAgy(input,text=>({reply:text,thinking:null,react:null}),runner),/network issue/)
-    assert.equal(readFileSync(join(dir,'attempts'),'utf8').trim().split('\n').length,3)
+    assert.equal(readFileSync(join(dir,'attempts'),'utf8').trim().split('\n').length,4)
     // A stop arriving during recovery prevents the next process from spawning.
     delete process.env.GEM_TEST_MODE
     writeFileSync(join(dir,'attempts'),'')
