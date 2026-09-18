@@ -1,4 +1,6 @@
 import { completedAgyAnswer, parseAgyPrintResult } from './agy-completion.ts'
+import { setTimeout as delay } from 'node:timers/promises'
+import { redactTraceSensitiveData } from './tool-trace.ts'
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { readdirSync, statSync, readFileSync, realpathSync } from 'node:fs'
@@ -326,7 +328,7 @@ function emptyMeta(): RespondMetadata {
 // the child runs and fire tool_call_start as each new tool step appears — driving
 // gemma's live 🔧 trace so the user SEES progress. trajBefore + fingerprint let us
 // pin THIS run's trajectory mid-flight (same disambiguation as the post-hoc read).
-async function runAgy(
+export async function runAgy(
   prompt: string,
   onEvent?: (e: LifecycleEvent) => void,
   trajBefore?: Map<string, number>,
@@ -334,9 +336,10 @@ async function runAgy(
   additionalDirs: string[] = [],
   signal?: AbortSignal,
   conversationId?: string,
+  quotaCheck: typeof checkAgyQuota = checkAgyQuota,
 ): Promise<string> {
   const t0 = Date.now()
-  const quotaFailure = await checkAgyQuota(agyModel())
+  const quotaFailure = await quotaCheck(agyModel())
   if (signal?.aborted) { const error = new Error('agy stopped'); error.name = 'AbortError'; throw error }
   if (quotaFailure) throw new AgyChatError(quotaFailure, Date.now() - t0)
   // Flags MUST precede the `-p` positional: agy uses Go's flag parser, which
@@ -352,6 +355,19 @@ async function runAgy(
   const args = buildAgyArgs(additionalDirs, prompt)
   if (conversationId) args.unshift('--conversation', conversationId)
 
+  let pinnedPath = conversationId
+    ? join(AGY_BRAIN_DIR, conversationId, '.system_generated', 'logs', 'transcript_full.jsonl') : null
+  const locate = () => pinnedPath ??= trajBefore ? findAgyTrajectory(trajBefore, fingerprint) : null
+  const failure = (message: string) => {
+    const error = new AgyChatError(message, Date.now() - t0)
+    const path = locate()
+    if (path) error.conversationId = path.split('/').at(-4)
+    return error
+  }
+  let previousRows = 0
+  if (pinnedPath) {
+    try { previousRows = readFileSync(pinnedPath, 'utf8').trim().split('\n').length } catch { /* not created yet */ }
+  }
   return new Promise<string>((resolve, reject) => {
     let child
     try {
@@ -419,22 +435,29 @@ async function runAgy(
     // still retains the full trajectory for the opt-in completed thought card;
     // only the live surface is compact.
     const emittedTools = new Set<string>()
+    const completedTools = new Set<string>()
     let lastEmittedProgress = ''
     let livePoll: ReturnType<typeof setInterval> | null = null
     if (onEvent && trajBefore) {
       livePoll = setInterval(() => {
         try {
-          const tp = findAgyTrajectory(trajBefore, fingerprint)
+          const tp = locate()
           if (!tp) return
-          const traj = parseAgyTrajectory(tp)
+          const traj = parseAgyTrajectoryText(readFileSync(tp, 'utf8').trim().split('\n').slice(previousRows).join('\n'))
           for (let i = 0; i < traj.tools.length; i++) {
             // Key by index+name so re-parsing the growing file doesn't re-emit
             // already-seen calls (same call always lands at the same index).
             const key = `${i}:${traj.tools[i].name}`
-            if (emittedTools.has(key)) continue
-            emittedTools.add(key)
-            markActivity()
-            try { onEvent({ type: 'tool_call_start', name: traj.tools[i].name }) } catch { /* ignore */ }
+            if (!emittedTools.has(key)) {
+              emittedTools.add(key)
+              markActivity()
+              try { onEvent({ type: 'tool_call_start', name: traj.tools[i].name }) } catch { /* UI callback */ }
+            }
+            const tool = traj.tools[i]
+            if (tool.completed && !completedTools.has(key)) {
+              completedTools.add(key)
+              try { onEvent({ type: 'tool_call_end', ...tool, failed: tool.failed ?? false }) } catch { /* UI callback */ }
+            }
           }
           const progressKey = JSON.stringify([traj.liveThinking, traj.liveProgress, traj.timeline])
           if ((traj.liveThinking || traj.liveProgress) && progressKey !== lastEmittedProgress) {
@@ -455,6 +478,7 @@ async function runAgy(
     const stopPoll = () => { if (livePoll) { clearInterval(livePoll); livePoll = null } }
     const endEmittedTools = (failed: boolean) => {
       for (const key of emittedTools) {
+        if (completedTools.has(key)) continue
         try { onEvent?.({ type: 'tool_call_end', name: key.slice(key.indexOf(':') + 1), failed }) } catch { /* UI callback */ }
       }
       emittedTools.clear()
@@ -495,7 +519,7 @@ async function runAgy(
         // stops hiding the cause (Jeff 2026-06-30: agy dying mid-flight, code 1, no
         // stderr — undiagnosable). Prefer stderr, fall back to the stdout tail.
         const detail = err.trim().slice(0, 300) || out.trim().slice(-400) || '(no output)'
-        return reject(new AgyChatError(`agy exited ${why}: ${detail}`, Date.now() - t0))
+        return reject(failure(`agy exited ${why}: ${detail}`))
       }
       let text: string
       try {
@@ -503,15 +527,15 @@ async function runAgy(
         // confirm completion. stdout narration alone is never a final answer.
         const result = parseAgyPrintResult(out.trim())
         const transcript = join(AGY_BRAIN_DIR, result.conversation_id, '.system_generated', 'logs', 'transcript_full.jsonl')
-        text = completedAgyAnswer(readFileSync(transcript, 'utf8'))
+        text = completedAgyAnswer(readFileSync(transcript, 'utf8').trim().split('\n').slice(previousRows).join('\n'))
       } catch (cause) {
         endEmittedTools(true)
-        const failure = new AgyChatError(cause instanceof Error ? cause.message : String(cause), Date.now() - t0)
+        const completionFailure = failure(cause instanceof Error ? cause.message : String(cause))
         try {
           const id = JSON.parse(out.trim()).conversation_id
-          if (/^[a-f0-9-]{36}$/i.test(id ?? '')) failure.conversationId = id
+          if (/^[a-f0-9-]{36}$/i.test(id ?? '')) completionFailure.conversationId = id
         } catch { /* invalid or empty structured output */ }
-        return reject(failure)
+        return reject(completionFailure)
       }
 
       // A successful run used to log NOTHING. Failures carried a duration in
@@ -555,6 +579,7 @@ interface AgyTrajStep {
   thinking?: string
   tool_calls?: Array<{ name?: string; args?: Record<string, unknown> }>
   content?: string
+  status?: string
   created_at?: string
 }
 
@@ -577,7 +602,7 @@ interface AgyTrajParse {
   // content (CodeContent) but no unified diff, so we synthesize an all-additions
   // diff (every content line as a '+') — what a Claude-style new-file write looks
   // like. Leaving it undefined renders the call as a plain row.
-  tools: Array<{ name: string; durationMs: number; diff?: string }>
+  tools: Array<{ name: string; durationMs: number; diff?: string; resultPreview?: string; failed?: boolean; completed?: boolean }>
   // The FINAL planner step's content — agy's actual answer text. On a multi-step
   // agentic turn, agy's stdout can carry the running "I'll do X" action narration
   // from every intermediate step (a wall — see Jeff's 2026-06-29 screenshot). The
@@ -768,10 +793,8 @@ function snapshotAgyTrajectories(): Map<string, number> {
   return out
 }
 
-// Find THIS run's transcript_full.jsonl: a path that's NEW since the pre-launch
-// snapshot, or whose mtime advanced. Falls back to the globally-freshest if
-// nothing looks new. Mirrors operator_agent._agy_find_trajectory. Returns null
-// when the brain dir holds no trajectories at all.
+// Match the unique turn marker in a changed transcript. Never use another
+// channel's freshly written trajectory as a fallback.
 function findAgyTrajectory(before: Map<string, number>, fingerprint?: string): string | null {
   const now = snapshotAgyTrajectories()
   // Candidate set: ONLY files that are new or whose mtime advanced since the
@@ -797,9 +820,8 @@ function findAgyTrajectory(before: Map<string, number>, fingerprint?: string): s
       } catch { /* unreadable — skip */ }
     }
   }
-  // No fingerprint match (or none provided) → freshest changed file. Still
-  // restricted to the since-snapshot set, so the blast radius is small.
-  return changed[0][0]
+  // Never borrow another channel's trajectory when our marker is absent.
+  return null
 }
 
 // Parse a run's trajectory JSONL into { thinking, toolNames }, ordered by
@@ -875,7 +897,7 @@ export function parseAgyTrajectoryText(raw: string): AgyTrajParse {
 
   const thinkingChunks: string[] = []
   const timeline: LiveTimelineStep[] = []
-  const tools: Array<{ name: string; durationMs: number; diff?: string }> = []
+  const tools: AgyTrajParse['tools'] = []
   const writtenFiles: string[] = []
   let answer: string | null = null
   let liveThinking: string | null = null
@@ -916,6 +938,12 @@ export function parseAgyTrajectoryText(raw: string): AgyTrajParse {
         liveProgress = s.content.trim()
       }
       const dur = stepMs(i)
+      // AGY writes one GENERIC execution record per dispatched call, in order.
+      const results: AgyTrajStep[] = []
+      for (let j = i + 1; j < steps.length && steps[j].type !== 'PLANNER_RESPONSE' && steps[j].source === 'MODEL'; j++) {
+        if (steps[j].type === 'GENERIC') results.push(steps[j])
+      }
+      let callIndex = 0
       for (const tc of s.tool_calls ?? []) {
         if (!tc || typeof tc !== 'object') continue
         // write_to_file → attach a synthesized all-additions diff so the trace
@@ -926,7 +954,17 @@ export function parseAgyTrajectoryText(raw: string): AgyTrajParse {
           if (typeof abs === 'string' && abs.trim()) writtenFiles.push(abs.trim())
         }
         const displayName = agyToolDisplayName(tc.name ?? '', tc.args)
+        const result = results[callIndex++]
+        const output = result?.content?.replace(/^Created At:.*\n|^Completed At:.*\n/gm, '').trim() ?? ''
+        const exitCode = /command exited with code (\d+)/.exec(output)?.[1]
         tools.push({
+          ...(result && result.status !== 'RUNNING' ? {
+            completed: true,
+            failed: /ERROR|FAILED/.test(result.status ?? '') || (exitCode !== undefined && exitCode !== '0'),
+            resultPreview: redactTraceSensitiveData(exitCode !== undefined
+              ? `exit ${exitCode}: ${output.split(/Output:\s*\n/).slice(1).join('\n').trim() || '(no output)'}`
+              : output).slice(0, 800),
+          } : {}),
           name: displayName,
           durationMs: dur,
           ...(diff ? { diff } : {}),
@@ -1018,7 +1056,8 @@ export async function respondViaAgy(
   // THIS run's transcript afterward (Operator's approach — see the block above).
   const trajBefore = snapshotAgyTrajectories()
 
-  const prompt = buildAgyPrompt(input)
+  const turnMarker = `gem-turn-${randomBytes(16).toString('hex')}`
+  const prompt = `${buildAgyPrompt(input)}\n\nTurn reference: ${turnMarker}`
   const mediaDirs = [...new Set((input.mediaFiles ?? []).map(file => dirname(file.path)))]
   // Pass trajBefore + the user message as fingerprint so runAgy can tail THIS
   // run's trajectory live and stream tool_call_start events as agy works.
@@ -1030,14 +1069,15 @@ export async function respondViaAgy(
         conversationId
           ? 'Continue the unfinished task in this conversation. Preserve completed work, do not repeat mutations, and finish verification. Return a final result or concrete blocker, not an action announcement.'
           : prompt,
-        input.onEvent, trajBefore, input.userMessageText, mediaDirs, input.signal, conversationId,
+        input.onEvent, trajBefore, turnMarker, mediaDirs, input.signal, conversationId,
       )
       break
     } catch (error) {
-      if (input.signal?.aborted || !(error instanceof AgyChatError) || !error.conversationId || !/unfinished|no final answer|progress-only|STEP_LIMIT|MAX_STEPS|INCOMPLETE/.test(error.message) || attempt === 2) throw error
+      if (input.signal?.aborted || !(error instanceof AgyChatError) || !error.conversationId || !/unfinished|no final answer|progress-only|STEP_LIMIT|MAX_STEPS|INCOMPLETE|network issue|connection (?:timed out|reset)|ECONNRESET|stream.*(?:closed|timeout)|temporarily unavailable/i.test(error.message) || attempt === 2) throw error
       conversationId = error.conversationId
       console.error(`[agy] channel=${input.channelId} message=${input.messageId} resuming conversation=${conversationId}: ${error.message}`)
-      input.onEvent?.({ type: 'agy_progress', thinking: '', detail: 'AGY stopped early; resuming the same task.' })
+      input.onEvent?.({ type: 'agy_progress', thinking: '', detail: 'AGY connection interrupted or run incomplete; resuming the same task.' })
+      if (/network|connection|ECONNRESET|unavailable/i.test(error.message)) await delay(1500 * (attempt + 1), undefined, { signal: input.signal })
     }
   }
   let parsed = parse(text)
@@ -1090,18 +1130,17 @@ export async function respondViaAgy(
   // We ALSO materialize the trajectory tool names into meta.toolCalls so the
   // dedicated 🔧 Tool-trace card renders on agy turns, not just native ones (the
   // card reads meta.toolCalls, the single trace surface). agy `-p`
-  // gives no per-call timing/args/output — it's a post-hoc trajectory — so each
-  // entry carries empty args, durationMs:0 (the card omits the [Nms] badge when
-  // <=0), no resultPreview, failed:false (no failure signal in the trajectory).
+  // Execution records supply bounded result previews and exit status; names
+  // already contain an argument digest and timing remains approximate.
   const toolCalls: ToolCall[] = []
   let writtenFiles: string[] = []
   try {
-    const trajPath = findAgyTrajectory(trajBefore, input.userMessageText)
+    const trajPath = findAgyTrajectory(trajBefore, turnMarker)
     if (trajPath) {
       const traj = parseAgyTrajectory(trajPath)
       // Final metadata only: replaying starts would duplicate live tool events.
-      for (const { name, durationMs, diff } of traj.tools) {
-        toolCalls.push({ name, args: {}, durationMs, resultPreview: '', failed: false, ...(diff ? { diff } : {}) })
+      for (const { name, durationMs, diff, resultPreview, failed } of traj.tools) {
+        toolCalls.push({ name, args: {}, durationMs, resultPreview: resultPreview ?? '', failed: failed ?? false, ...(diff ? { diff } : {}) })
       }
       writtenFiles = traj.writtenFiles
       // Restore the real reasoning. Prefer the trajectory's thinking (the model's

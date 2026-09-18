@@ -31,6 +31,7 @@ function clipOnWordBoundary(text: string, max: number): string {
 function cleanHeadlineLine(line: string): string {
   return line
     .replace(/^>\s*/, '')
+    .replace(/^(?:💭\s*)?\*{0,2}Thought for \d+s\*{0,2}\s*/i, '')
     .replace(/^#{1,6}\s+/, '')
     .replace(/^🧠\s*/, '')
     .replace(/^\*\*(.+)\*\*$/, '$1')
@@ -84,13 +85,14 @@ export function compactLiveDetail(text: string): string {
  * thinking has no usable line yet. Lowercased to match gpt-bot's look. */
 export function brainLine(thinking: string): string {
   const headline = latestThinkingHeadline(thinking)
-  return headline ? `\n> 🧠 *${headline.toLocaleLowerCase('en-US')}*` : ''
+  return headline ? `\n> *${headline.toLocaleLowerCase('en-US')}*` : ''
 }
 
 /** Final compact snapshot for `thinking:live`. Full `thinking:on` remains
  * available separately for deliberate inspection of the complete trace. */
 export function composeLiveThinkingCard(seconds: number, thinking: string): string {
-  return `💭 **Thought for ${seconds}s**\n${thinking.split(/\r?\n/).map(line => `> ${line}`).join('\n')}\n`
+  const headline = latestThinkingHeadline(thinking).replace(/\*/g, '')
+  return headline ? `💭 **${seconds > 0 ? `Thought for ${seconds}s` : 'Thought'}**\n> *${headline}*\n` : ''
 }
 
 /** Compose the full 💭 spinner card: header + one 🧠 headline + the latest
@@ -114,7 +116,7 @@ export function composeThinkingCard(opts: {
     narrationTrace = [],
   } = opts
   const trace = thinkingTraceLines(reasoningTrace)
-    .map(line => `> 🧠 *${line.toLocaleLowerCase('en-US')}*`)
+    .map(line => `> *${line.toLocaleLowerCase('en-US')}*`)
   const cleanDetail = narrationTrace.length
     ? narrationTrace.map(part => part.trim()).filter(Boolean).join('\n\n')
     : compactLiveDetail(detail)

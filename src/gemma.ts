@@ -1,3 +1,4 @@
+import { TurnOutput } from './turn-output.ts'
 import { PresenceOwner } from './presence-owner.ts'
 import { imageConversationInstruction, parseImageRequest, hideImageRequest, selectImageReference } from './image-conversation.ts'
 import { installLogTimestamps } from './log-timestamps.ts'
@@ -24,7 +25,6 @@ import { describeAgyFailure } from './agy-fallback-reason.ts'
 import {
   composeLiveThinkingCard,
   composeThinkingCard,
-  composeTrajectoryTimelineCard,
 } from './live-headline.ts'
 import {
   DEFAULT_AGY_MODEL,
@@ -224,7 +224,7 @@ function quoteBlock(t: string): string {
   return t
     .replace(/\s+$/, '')
     .split('\n')
-    .map(line => line.trim() === '' ? '' : `> ${line}`)
+    .map(line => line.trim() === '' ? '' : `> *${line.replace(/\*/g, '')}*`)
     .join('\n')
 }
 
@@ -806,6 +806,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   if (message.author.bot && !opts.relay) return
   if (!client.user) return
   let lifecycleClosed = false
+  const output = new TurnOutput()
   const userText = opts.combinedText ?? message.content
   // A delivered bot-to-bot tell marks this turn for as long as it runs, so a
   // tell sent from inside it is refused by the owner's CLI (tell-turn.ts).
@@ -883,6 +884,17 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
   // pending one — else a timer that fires after an error/return would post an
   // orphan "Thinking…" bubble with no turn behind it.
   let placeholderTimer: ReturnType<typeof setTimeout> | null = null
+  const closeOutput = async () => {
+    lifecycleClosed = true
+    if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
+    if (streamInterval) { clearInterval(streamInterval); streamInterval = null }
+    if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
+    if (thinkingAnim) { clearInterval(thinkingAnim); thinkingAnim = null }
+    await output.close()
+    // An admitted placeholder may have started its spinner while we drained.
+    await stopThinkingAnim()
+    if (liveTraceRehomeTask) await liveTraceRehomeTask.catch(() => {})
+  }
   // Register before the first awaited pre-processing call. Stops sent while
   // history/media ingestion is still running must abort this turn before it
   // reaches Gemini/agy, not get queued behind it.
@@ -1008,13 +1020,9 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         : latestParsed.thinking ? [latestParsed.thinking] : []
 
     const visibleTimeline = () => visibleTimelineSteps(timeline.snapshot(), flags.trace)
-    const trajectoryOwnsTrace = (): boolean =>
-      flags.thinking === 'live' && flags.trace !== 'on'
-      && visibleTimeline().some(step => step.kind === 'action')
 
     const liveTraceCards = (): string[] => {
       if (flags.trace === 'off' || liveToolCalls.length === 0) return []
-      if (trajectoryOwnsTrace()) return []
       return renderTraceCards(buildTraceLines(liveToolCalls), flags.trace)
     }
 
@@ -1082,28 +1090,22 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         // One render owner, one latest snapshot. Replacing this card in place
         // is the important bit; no stale planner lines queue behind it.
         const live = liveThinkingText()
-        const timelineSteps = visibleTimeline()
-        const content = flags.thinking === 'live' && timelineSteps.length > 0
-          ? composeTrajectoryTimelineCard({
-              label: thinkingLabel,
-              glyph: sp,
-              dots: d,
-              steps: timelineSteps,
-            })
-          : composeThinkingCard({
-              label: thinkingLabel, glyph: sp, dots: d,
-              thinking: flags.thinking === 'off' ? '' : live,
-              reasoningTrace: flags.thinking === 'collapse' ? liveThinkingTrace() : [],
-              detail: liveAgyProgress.value(),
-              narrationTrace: flags.thinking === 'collapse' ? liveAgyNarrationTrace : [],
-            })
-        spinnerEditPromise = target.edit(content).catch(() => {})
+        const content = composeThinkingCard({
+          label: thinkingLabel, glyph: sp, dots: d,
+          thinking: flags.thinking === 'off' ? '' : live,
+          reasoningTrace: flags.thinking === 'collapse' ? liveThinkingTrace() : [],
+          detail: liveAgyProgress.value(),
+          narrationTrace: flags.thinking === 'collapse' ? liveAgyNarrationTrace : [],
+        })
+        if (spinnerEditPromise) return
+        spinnerEditPromise = output.run(async () => { await target.edit(content) }).catch(() => {})
+        void spinnerEditPromise.finally(() => { spinnerEditPromise = null })
       }, LIVE_UPDATE_INTERVAL_MS)
     }
 
     // Post the placeholder bubble + start the spinner, once. No-op if a message
     // already occupies activeMessages[0] (timer + flushStream may both call it).
-    const postPlaceholder = async () => {
+    const postPlaceholder = () => output.run(async () => {
       if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
       if (activeMessages.length > 0) { startSpinner(); return }
       const initialMsg = await sendReply(message, `💭 **${thinkingLabel}…**`)
@@ -1113,7 +1115,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         if (transientThinking) scheduleCollapseFailsafe(initialMsg as Message, 'thinking')
       }
       startSpinner()
-    }
+    })
 
     if (opts.editTarget) {
       // Regenerate: reuse the existing bot message immediately, spinner on.
@@ -1131,8 +1133,8 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
 
     let isFlushing = false
     let currentFlushPromise: Promise<void> | null = null
-    const flushStream = async () => {
-      if (isFlushing) return currentFlushPromise
+    const flushStream = () => output.run(async () => {
+      if (isFlushing) { await currentFlushPromise; return }
       isFlushing = true
       let resolveFlush: () => void = () => {}
       currentFlushPromise = new Promise((resolve) => { resolveFlush = resolve })
@@ -1143,14 +1145,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           fullReply += headingsToBold(latestParsed.reply)
         }
 
-        // No real content yet. During the deferred-placeholder window there's
-        // no bubble at all (the typing dots are carrying the wait), so just
-        // return and let the dots / pending timer continue. If the spinner is
-        // already running it owns activeMessages[0] — also return. Only synthesize
-        // a static placeholder line if neither dots-window nor spinner applies.
+        // Only the placeholder producer owns empty-state output. A stream
+        // flush must never create a second Thinking card after a terminal error.
         if (!fullReply) {
-          if (placeholderTimer || thinkingAnim) return
-          fullReply = '💭 **Thinking…**'
+          return
         }
 
         // Real content has arrived. Cancel the pending placeholder timer (a fast
@@ -1177,9 +1175,9 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         currentFlushPromise = null
         resolve()
       }
-    }
+    })
 
-    streamInterval = setInterval(() => { flushStream() }, 2000)
+    streamInterval = setInterval(() => { flushStream().catch(e => console.error('[stream]', e)) }, 2000)
 
     const baseText = opts.combinedText ?? message.content
     const quotedReplyText = opts.combinedText === undefined ? formatReplyContext(replyContext) : ''
@@ -1380,6 +1378,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       await currentFlushPromise
     }
     await flushStream()
+    await closeOutput()
 
     // Usage metadata — one line per turn for cost tracking
     if (meta.usage) {
@@ -1457,9 +1456,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     const traceExtras = { searchQueries: meta.searchQueries, codeArtifacts: meta.codeArtifacts }
     const showTrace = flags.trace !== 'off'
       && (meta.toolCalls.length > 0 || meta.searchQueries.length > 0 || meta.codeArtifacts.length > 0)
-    const finalTraceCards = trajectoryOwnsTrace()
-      ? []
-      : showTrace
+    const finalTraceCards = showTrace
       ? renderTraceCards(buildAllTraceLines(meta.toolCalls, traceExtras), flags.trace)
       : []
 
@@ -1492,23 +1489,13 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       const timelineSteps = visibleTimeline()
       const lastTimelineThought = timelineSteps.filter(step => step.kind === 'thinking').at(-1)?.text
       const finalThinking = parsed.thinking || meta.nativeThoughts || lastTimelineThought
-      if (flags.thinking === 'live' && timelineSteps.length > 0) {
-        thinkingMessage += composeTrajectoryTimelineCard({
-          label: `Worked for ${thoughtSecs}s`,
-          complete: true,
-          glyph: '✓',
-          dots: '',
-          steps: timelineSteps,
-        }) + '\n\n'
-      } else if (finalThinking) {
+      if (finalThinking) {
         // Live finishes on the same compact latest headline the user watched.
         // Collapse and on retain the full trace; collapse removes it after the
         // configured linger while on keeps it.
         thinkingMessage += flags.thinking === 'live'
           ? composeLiveThinkingCard(thoughtSecs, finalThinking) + '\n\n'
           : renderThoughtBlock(header, finalThinking) + '\n\n'
-      } else {
-        thinkingMessage += header + '\n\n'
       }
     }
     thinkingMessage = thinkingMessage.replace(/\s+$/, '')
@@ -1754,6 +1741,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     )
 
   } catch (e: any) {
+    await closeOutput()
     // Barge-in: this turn was deliberately aborted because a newer /voice speak
     // message arrived. Not an error — exit clean. Strip the transient lifecycle
     // reactions + the "💭 Thinking..." placeholder so no orphan is left behind;
@@ -1810,15 +1798,17 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     // mid-write on the same message) swallowed the error whole: ❌ landed, no
     // text, nothing logged (Jeff 2026-09-16). reportTurnError falls back to a
     // new message and says so out loud.
+    for (const card of [...activeMessages, ...liveTraceMessages]) deferredActions.cancel(card.id)
     await reportTurnError(msg, {
       active: activeMessages,
       traces: liveTraceMessages,
-      send: async text => { await sendReply(message, text) },
+      send: async text => { if (!await sendReply(message, text)) throw new Error('Discord returned no error receipt') },
       log: (what, err) => console.error('[turn-error]', what, err),
     })
     liveTraceMessages = []
     activeMessages = []
   } finally {
+    await closeOutput()
     lifecycleClosed = true
     await clearAfterDrain(message)
     activeTurns.done(message.channelId)

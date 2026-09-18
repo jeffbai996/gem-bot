@@ -63,3 +63,19 @@ describe('DeferredActions', () => {
     await fs.rm(dir, { recursive: true, force: true })
   })
 })
+
+test('a transient card promoted to an error receipt survives its scheduled cleanup', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gemma-deferred-cancel-'))
+  const file = path.join(dir, 'actions.json')
+  let deleted = false
+  const client = { channels: { fetch: async () => ({ isTextBased: () => true, messages: {
+    fetch: async () => ({ delete: async () => { deleted = true } }),
+  } }) } } as any
+  const actions = new DeferredActions(file)
+  actions.schedule(client, {channelId:'c',messageId:'m',action:'delete',dueAt:Date.now()+10})
+  actions.cancel('m')
+  await wait(30)
+  assert.equal(deleted, false)
+  assert.equal(await fs.readFile(file,'utf8'), '[]')
+  await fs.rm(dir,{recursive:true,force:true})
+})

@@ -21,12 +21,18 @@ export class DeferredActions {
     try { writeFileSync(this.file, JSON.stringify(this.items)) } catch { /* best-effort */ }
   }
 
+  cancel(messageId: string): void {
+    this.items = this.items.filter(item => item.messageId !== messageId)
+    this.flush()
+  }
+
   private async run(client: Client, d: Deferred): Promise<void> {
+    if (!this.items.includes(d)) return
     try {
       const ch = await client.channels.fetch(d.channelId)
       if (ch && ch.isTextBased()) {
         const msg = await ch.messages.fetch(d.messageId)
-        if (d.action === 'delete') await msg.delete()
+        if (this.items.includes(d) && d.action === 'delete') await msg.delete()
       }
     } catch { /* message gone / no access */ }
     this.items = this.items.filter(x => !(x.messageId === d.messageId && x.action === d.action))

@@ -24,6 +24,7 @@ export function describeAgyFailure(raw: string): string {
       ? `antigravity quota exhausted, resets in ${reset[1]}`
       : 'antigravity quota exhausted'
   }
+  if (/network issue|connection (?:timed out|reset)|ECONNRESET|temporarily unavailable/i.test(msg)) return 'antigravity connection failed'
   if (/idle watchdog|print-timeout|timeout waiting for response|timed out/i.test(msg)) {
     return 'antigravity timed out'
   }

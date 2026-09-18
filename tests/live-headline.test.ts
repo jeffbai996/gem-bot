@@ -71,7 +71,7 @@ describe('compactLiveDetail', () => {
 
 describe('brainLine', () => {
   it('renders the quoted italic brain line, lowercased', () => {
-    assert.equal(brainLine('Checking The Numbers'), '\n> 🧠 *checking the numbers*')
+    assert.equal(brainLine('Checking The Numbers'), '\n> *checking the numbers*')
   })
 
   it('is empty when there is no thinking yet', () => {
@@ -79,7 +79,7 @@ describe('brainLine', () => {
   })
 
   it('passes CJK through untouched', () => {
-    assert.equal(brainLine('检查蛋宝的血糖记录'), '\n> 🧠 *检查蛋宝的血糖记录*')
+    assert.equal(brainLine('检查蛋宝的血糖记录'), '\n> *检查蛋宝的血糖记录*')
   })
 })
 
@@ -101,7 +101,7 @@ describe('composeThinkingCard', () => {
     })
     assert.equal(
       out,
-      '💭 ✢ **Thinking with high effort..**\n> 🧠 *weighing the margin math*\nChecking the live renderer.',
+      '💭 ✢ **Thinking with high effort..**\n> *weighing the margin math*\nChecking the live renderer.',
     )
   })
 
@@ -135,7 +135,7 @@ describe('composeThinkingCard', () => {
     })
     assert.equal(
       out,
-      '💭 ✻ **Thinking…**\n> 🧠 *inspecting the renderer*\nI will inspect the current edit owner.',
+      '💭 ✻ **Thinking…**\n> *inspecting the renderer*\nI will inspect the current edit owner.',
     )
   })
 
@@ -151,9 +151,9 @@ describe('composeThinkingCard', () => {
       out,
       [
         '💭 ✻ **Thinking…**',
-        '> 🧠 *checking the first failure mode*',
-        '> 🧠 *comparing the second failure mode*',
-        '> 🧠 *fixing the actual edit owner*',
+        '> *checking the first failure mode*',
+        '> *comparing the second failure mode*',
+        '> *fixing the actual edit owner*',
       ].join('\n'),
     )
   })
@@ -169,18 +169,10 @@ describe('thinkingTraceLines', () => {
 })
 
 describe('composeLiveThinkingCard', () => {
-  it('preserves all supplied text on the completed card', () => {
-    const out = composeLiveThinkingCard(42, [
-      '**Checking System Guidelines**',
-      'I am reviewing every instruction in a long internal paragraph.',
-      '**Fixing The Renderer**',
-      'I am now reasoning through every implementation detail at length.',
-    ].join('\n'))
-    assert.match(out, /Thought for 42s/)
-    assert.match(out, /Checking System Guidelines/)
-    assert.match(out, /every instruction/)
-    assert.match(out, /implementation detail at length\./)
-    assert.ok(out.endsWith('\n'))
+  it('keeps only the latest italic headline at completion', () => {
+    const out = composeLiveThinkingCard(42, '**Old Heading**\n' + 'Long earlier prose. '.repeat(500) + '\n**Fixing The Renderer**\nLong latest prose.')
+    assert.equal(out, '💭 **Thought for 42s**\n> *Fixing The Renderer*\n')
+    assert.doesNotMatch(composeLiveThinkingCard(0, '💭 **Thought for 0s** Checking formatting.'), /0s/)
   })
 })
 

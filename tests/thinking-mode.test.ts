@@ -12,16 +12,17 @@ test('live replaces one thought while collapse accumulates and both disappear', 
   assert.match(source, /const collapsingThinking = transientThinking && replyStart > 0/)
 })
 
-test('both engines render one bounded trajectory timeline and hide duplicate transient tool cards', async () => {
+test('live thinking and tool results retain independent compact surfaces', async () => {
   const source = await readFile(new URL('../src/gemma.ts', import.meta.url), 'utf8')
 
   assert.match(source, /new LiveTimelineBuffer\(\)/)
-  assert.match(source, /composeTrajectoryTimelineCard\(/)
+  assert.doesNotMatch(source, /composeTrajectoryTimelineCard\(/)
+  assert.match(source, /composeThinkingCard\(/)
   assert.match(source, /timeline\.pushThought\(e\.text\)/)
   assert.match(source, /timeline\.startTool\(e\.name, e\.args/)
   assert.match(source, /timeline\.finishTool\(e\.name/)
-  assert.match(source, /if \(trajectoryOwnsTrace\(\)\) return \[\]/)
-  assert.match(source, /const finalTraceCards = trajectoryOwnsTrace\(\)/)
+  assert.doesNotMatch(source, /trajectoryOwnsTrace/)
+  assert.match(source, /const finalTraceCards = showTrace/)
 })
 
 test('live Gem edit events carry diffs into the rolling trace', async () => {
@@ -37,7 +38,7 @@ test('rolling live trace is reposted beneath newer streamed output without dupli
   const start = source.indexOf('const rehomeLiveTraceAtBottom')
   const end = source.indexOf('\n    const flushLiveTrace', start)
   const helper = source.slice(start, end)
-  const flushStart = source.indexOf('const flushStream = async () =>')
+  const flushStart = source.indexOf('const flushStream = () => output.run(')
   const flushEnd = source.indexOf('\n    streamInterval =', flushStart)
   const flush = source.slice(flushStart, flushEnd)
 

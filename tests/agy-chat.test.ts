@@ -302,3 +302,16 @@ describe('agy task continuity', () => {
     assert.equal(calls, 3)
   })
 })
+
+test('execution records feed bounded redacted result previews and real failure status', () => {
+  const rows = [
+    {source:'MODEL',type:'PLANNER_RESPONSE',tool_calls:[{name:'run_command',args:{CommandLine:'fixture-test'}}]},
+    {source:'MODEL',type:'GENERIC',content:'Created At: now\nCompleted At: later\nThe command exited with code 2.\nOutput:\nFailed assertion; token=secretfixture'},
+    {source:'MODEL',type:'PLANNER_RESPONSE',content:'The fixture failed.'},
+  ]
+  const result = parseAgyTrajectoryText(rows.map((r,step_index)=>JSON.stringify({...r,step_index})).join('\n'))
+  assert.equal(result.tools.length,1)
+  assert.equal(result.tools[0].failed,true)
+  assert.match(result.tools[0].resultPreview!,/Failed assertion/)
+  assert.doesNotMatch(result.tools[0].resultPreview!,/secretfixture|Created At/)
+})
