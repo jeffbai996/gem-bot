@@ -107,4 +107,76 @@ describe('mcpSchemaToGemini', () => {
       required: []
     })
   })
+
+  // --- Pydantic nullable union (anyOf: [T, null]) ---
+  test('anyOf nullable string unwraps to STRING', () => {
+    assert.deepEqual(
+      mcpSchemaToGemini({ anyOf: [{ type: 'string' }, { type: 'null' }] }),
+      { type: Type.STRING }
+    )
+  })
+
+  test('anyOf nullable string preserves description', () => {
+    assert.deepEqual(
+      mcpSchemaToGemini({ anyOf: [{ type: 'string' }, { type: 'null' }], description: 'optional sym' }),
+      { type: Type.STRING, description: 'optional sym' }
+    )
+  })
+
+  test('anyOf nullable object unwraps to OBJECT', () => {
+    const out = mcpSchemaToGemini({
+      anyOf: [
+        { type: 'object', properties: { x: { type: 'string' } }, required: ['x'] },
+        { type: 'null' }
+      ]
+    })
+    assert.deepEqual(out, {
+      type: Type.OBJECT,
+      properties: { x: { type: Type.STRING } },
+      required: ['x']
+    })
+  })
+
+  // --- $ref resolution (IBKR pattern: params: {$ref: "#/$defs/Foo"}) ---
+  test('$ref resolves against $defs at root', () => {
+    const schema = {
+      $defs: {
+        QuoteInput: {
+          type: 'object',
+          properties: {
+            symbols: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'comma-separated' },
+            currency: { type: 'string', default: 'USD' }
+          },
+          required: []
+        }
+      },
+      type: 'object',
+      properties: {
+        params: { $ref: '#/$defs/QuoteInput' }
+      },
+      required: ['params']
+    }
+    const out = mcpSchemaToGemini(schema)
+    assert.deepEqual(out, {
+      type: Type.OBJECT,
+      properties: {
+        params: {
+          type: Type.OBJECT,
+          properties: {
+            symbols: { type: Type.STRING, description: 'comma-separated' },
+            currency: { type: Type.STRING }
+          },
+          required: []
+        }
+      },
+      required: ['params']
+    })
+  })
+
+  test('unknown $ref returns null', () => {
+    assert.equal(
+      mcpSchemaToGemini({ $ref: '#/$defs/Missing' }),
+      null
+    )
+  })
 })
