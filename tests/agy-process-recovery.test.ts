@@ -34,7 +34,7 @@ console.log(JSON.stringify({conversation_id:id,status:'SUCCESS'}));
   try {
     const {respondViaAgy,runAgy} = await import('../src/agy-chat.ts')
     const events: unknown[] = []
-    const result = await respondViaAgy({systemPrompt:'Test',history:[],userMessageText:'fix it',userName:'Tester',onEvent:e=>events.push(e)}, text=>({reply:text,thinking:null,react:null}), (...args)=>runAgy(...args,async()=>null))
+    const result = await respondViaAgy({systemPrompt:'Test',history:[],userMessageText:'fix it',userName:'Tester',onEvent:e=>events.push(e)}, text=>({reply:text,thinking:null,react:null}), (prompt,event,before,fp,dirs,signal,id)=>runAgy(prompt,event,before,fp,dirs,signal,id,async()=>null))
     assert.equal(result.parsed.reply, 'Completed and verified the fixture.')
     assert.equal(readFileSync(join(dir,'brain','mutations'),'utf8'),'write-once\n')
     assert.equal(result.meta.toolCalls.length,1)
