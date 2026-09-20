@@ -63,12 +63,30 @@ export function thinkingTraceLines(parts: string[]): string[] {
  * long private-reasoning paragraph, so prefer the latest explicit heading.
  * Generic/native streams without headings retain the gpt-bot behavior of using
  * their latest non-empty line. */
+// A streamed line can be cut mid-sentence, and a bare list marker ("2.")
+// reads as a finished one. Neither belongs in the headline when an earlier
+// line said something whole (Jeff 2026-09-20: "We need to" and a thought of
+// just "2"). Deliberately permissive: this only chooses BETWEEN candidate
+// lines, so a single short line is still shown rather than blanking the card.
+function hasSubstance(line: string): boolean {
+  const clean = cleanHeadlineLine(line)
+  if (!/[\p{L}]{2}/u.test(clean)) return false
+  if (/[.!?\u2026]["'\u201d\u2019)\]]?$/.test(clean)) return true
+  return !TRAILING_FUNCTION_WORD.test(clean)
+}
+
+const TRAILING_FUNCTION_WORD =
+  /\b(?:the|an?|to|of|for|with|and|or|but|because|that|whether|if|in|on|at|by|from|as|into|about|its?|this|these|those|we|i|he|she|they|you|need|needs|let|should|will|would|can|could|may|might|must|is|are|was|were|be|been|being|has|have|had|does|do|did|so|than|then|when|while|which|who|what|how|not|no)$/i
+
 export function latestThinkingHeadline(text: string): string {
   const lines = text.split(/\r?\n/).map(p => p.trim()).filter(Boolean)
   const explicit = lines.filter(line =>
     /^\*\*.+\*\*$/.test(line) || /^#{1,6}\s+\S/.test(line)
   ).at(-1)
-  const clean = cleanHeadlineLine(explicit ?? lines.at(-1) ?? '')
+  // Newest line with substance, else the newest line at all — one line of
+  // input must still render, which is what the single-line cases rely on.
+  const latest = lines.filter(hasSubstance).at(-1) ?? lines.at(-1) ?? ''
+  const clean = cleanHeadlineLine(explicit ?? latest)
   return clipOnWordBoundary(clean, HEADLINE_MAX)
 }
 

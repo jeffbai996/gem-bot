@@ -51,6 +51,22 @@ describe('latestThinkingHeadline', () => {
     assert.equal(latestThinkingHeadline(''), '')
     assert.equal(latestThinkingHeadline('\n\n  \n'), '')
   })
+  it('prefers an earlier whole thought over a streamed crumb', () => {
+    // The stream is cumulative, so the newest line is often half a sentence.
+    // A bare list marker counts as a crumb too: "2." is not a thought
+    // (Jeff 2026-09-20).
+    assert.equal(
+      latestThinkingHeadline('Reading the handler.\nWe need to'),
+      'Reading the handler.',
+    )
+    assert.equal(
+      latestThinkingHeadline('Checking the config.\n2.'),
+      'Checking the config.',
+    )
+    // With nothing better available a short line still renders: blanking the
+    // card is worse than showing the only thing the model has said.
+    assert.equal(latestThinkingHeadline('- bullet thought'), 'bullet thought')
+  })
 })
 
 describe('compactLiveDetail', () => {
