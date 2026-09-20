@@ -3,7 +3,7 @@ import { searchMemoryTool } from './search-memory.ts'
 import { searchSquadMemoryTool } from './search-squad-memory.ts'
 import { readSquadFileTool } from './read-squad-file.ts'
 import { fetchUrlTool } from './fetch-url.ts'
-import { connectMcpClient } from './mcp-client.ts'
+import { connectMcpClient, withReconnect } from './mcp-client.ts'
 import { listSquadTodosTool } from './list-squad-todos.ts'
 import { squadWriteTools } from './write-shared-memory.ts'
 import { loadIbkrTools } from './ibkr-tools.ts'
@@ -30,7 +30,7 @@ export async function buildDefaultRegistry(): Promise<ToolRegistry> {
   // default silently fell back to the unreachable-stub on every boot.
   const ibkrUrl = process.env.IBKR_MCP_URL || 'http://127.0.0.1:8001/mcp'
   try {
-    const client = await connectMcpClient(ibkrUrl)
+    const client = withReconnect(await connectMcpClient(ibkrUrl), ibkrUrl)
     const tools = await loadIbkrTools(client)
     for (const t of tools) r.register(t)
     // Hand the registry the live client so its transport can be closed on
@@ -51,7 +51,7 @@ export async function buildDefaultRegistry(): Promise<ToolRegistry> {
   // to reach.
   const vecgrepUrl = process.env.VECGREP_MCP_URL || 'http://127.0.0.1:8765/mcp'
   try {
-    const vg = await connectMcpClient(vecgrepUrl)
+    const vg = withReconnect(await connectMcpClient(vecgrepUrl), vecgrepUrl)
     const vgTools = await loadMcpTools(vg, { skip: isMutatingTool })
     for (const t of vgTools) r.register(t)
     r.setMcpClient(vg)
@@ -72,7 +72,7 @@ export async function buildDefaultRegistry(): Promise<ToolRegistry> {
   // for being an official server.
   const context7Url = process.env.CONTEXT7_MCP_URL || 'https://mcp.context7.com/mcp'
   try {
-    const c7 = await connectMcpClient(context7Url)
+    const c7 = withReconnect(await connectMcpClient(context7Url), context7Url)
     const c7Tools = await loadMcpTools(c7, { skip: isMutatingTool })
     for (const t of c7Tools) r.register(t)
     r.setMcpClient(c7)

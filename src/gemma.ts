@@ -1607,7 +1607,11 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
     if (meta.finishReason === 'SAFETY') terminalState = 'blocked'
     else if (meta.finishReason === 'MAX_TOKENS') terminalState = 'truncated'
     applyLifecycle(message, terminalState).catch(() => {})
-    await syncTraceMessages(finalTraceCards)
+    // NOTE: syncTraceMessages(finalTraceCards) is called AFTER reply messages
+    // below. Posting trace before reply would put the trace card above the answer
+    // in Discord. For trace=live the old live cards are edited in-place (already
+    // exist above); rehomeLiveTraceAtBottom moves them below the reply afterward.
+    // For trace=on/collapse, new sends must come after the reply, not before.
 
     if (finalFullReply) {
       // Two-message render (Jeff 2026-06-28): the 💭/🧠 reasoning becomes its own
@@ -1646,6 +1650,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           await m.delete().catch(err => console.error(`excess delete failed (cosmetic):`, err))
         }
       }
+      // Sync trace AFTER reply so cards post below the answer, not above it.
+      // live-mode cards were already edited in-place above; rehome below moves
+      // them back under the reply when Discord re-ordered them mid-stream.
+      await syncTraceMessages(finalTraceCards)
       await rehomeLiveTraceAtBottom(activeMessages.at(-1) ?? null)
 
       // Collapse (Jeff 2026-06-25, reworked 2026-06-28 for the split). After a
@@ -1694,6 +1702,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
         const excess = activeMessages.splice(thinkingPieces.length)
         for (const m of excess) await m.delete().catch(() => {})
       }
+      await syncTraceMessages(finalTraceCards)
       await rehomeLiveTraceAtBottom(activeMessages.at(-1) ?? null)
       // Honor both transient modes here too — delete the thought message(s)
       // after the linger, same as the main path.
@@ -1707,6 +1716,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
       }
     } else {
       // Truly empty (react-only, no reasoning): delete the placeholder messages.
+      await syncTraceMessages(finalTraceCards)
       for (const m of activeMessages) await m.delete().catch(() => {})
     }
 
