@@ -3,7 +3,7 @@ import type { GeminiClient } from '../gemini.ts'
 import type { AccessManager } from '../access.ts'
 import type { PersonaLoader } from '../persona.ts'
 import type { PendingEditsStore } from './pending-edits.ts'
-import type { PinnedFactsStore } from '../pinned-facts.ts'
+import type { PinnedFactsStore } from 'squad-bot-kit/pinned-facts.ts'
 
 export interface ActionContext {
   message: Message

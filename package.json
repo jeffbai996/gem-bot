@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "tsx src/gemma.ts",
-    "test": "DISCORD_STATE_DIR=.test-state node --test --import tsx tests/*.test.ts tests/*/*.test.ts"
+    "test": "SQUAD_BOT_ENV_PREFIX=GEMINI,GEMMA,GEM DISCORD_STATE_DIR=.test-state node --test --import tsx tests/*.test.ts tests/*/*.test.ts"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
@@ -27,7 +27,8 @@
     "opusscript": "^0.0.8",
     "sqlite-vss": "^0.1.2",
     "tsx": "^4.19.2",
-    "undici": "^6.28.0"
+    "undici": "^6.28.0",
+    "squad-bot-kit": "file:../squad-bot-kit"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

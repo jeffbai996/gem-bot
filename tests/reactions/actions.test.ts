@@ -5,7 +5,7 @@ import path from 'path'
 import os from 'os'
 import { pin, deleteMessage, mute, unmute, markForEdit, regenerate, expand } from '../../src/reactions/actions.ts'
 import { PendingEditsStore } from '../../src/reactions/pending-edits.ts'
-import { PinnedFactsStore } from '../../src/pinned-facts.ts'
+import { PinnedFactsStore } from 'squad-bot-kit/pinned-facts.ts'
 
 function makeMessage(overrides: Record<string, any> = {}): any {
   const reactionsAdded: string[] = []

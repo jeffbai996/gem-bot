@@ -5,7 +5,7 @@ import { spawn } from 'child_process'
 import { GoogleGenAI } from '@google/genai'
 import { extensionMime, extractLocalText, isLocallyExtractable, officeParserType } from './attachment-text.ts'
 import { parseOffice } from 'officeparser'
-import { animationContactSheet } from './animation-frames.ts'
+import { animationContactSheet } from 'squad-bot-kit/animation-frames.ts'
 
 const MAX_BYTES = 20 * 1024 * 1024
 // Resolve yt-dlp path at call time (not module-load) so tests can override via env

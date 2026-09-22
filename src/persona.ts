@@ -1,7 +1,7 @@
 import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
-import { PinnedFactsStore } from './pinned-facts.ts'
+import { PinnedFactsStore } from 'squad-bot-kit/pinned-facts.ts'
 import type { SummaryStore } from './summarization/store.ts'
 
 const DEFAULT_PERSONA = `You are Gemma, a Discord bot backed by Google's Gemini model. Be helpful, concise, and match the channel's tone. You can respond with text, an emoji reaction, or both.`
