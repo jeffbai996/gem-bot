@@ -7,6 +7,8 @@ test('live replaces one thought while collapse accumulates and both disappear', 
 
   assert.match(source, /const transientThinking = flags\.thinking === 'live' \|\| flags\.thinking === 'collapse'/)
   assert.match(source, /reasoningTrace:\s*flags\.thinking === 'collapse'/)
+  assert.match(source, /narrationTrace:\s*transientThinking \? liveAgyNarrationTrace : \[\]/)
+  assert.match(source, /flags\.thinking !== 'off' && liveAgyNarrationTrace\.length/)
   assert.match(source, /thinking:\s*flags\.thinking === 'off' \? ''/)
   assert.match(source, /flags\.thinking === 'live'\s*\?\s*composeLiveThinkingCard/)
   assert.match(source, /const collapsingThinking = transientThinking && replyStart > 0/)

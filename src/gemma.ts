@@ -1096,7 +1096,7 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           thinking: flags.thinking === 'off' ? '' : live,
           reasoningTrace: flags.thinking === 'collapse' ? liveThinkingTrace() : [],
           detail: liveAgyProgress.value(),
-          narrationTrace: flags.thinking === 'collapse' ? liveAgyNarrationTrace : [],
+          narrationTrace: transientThinking ? liveAgyNarrationTrace : [],
         })
         if (spinnerEditPromise) return
         spinnerEditPromise = output.run(async () => { await target.edit(content) }).catch(() => {})
@@ -1498,6 +1498,10 @@ async function handleUserMessage(message: Message, opts: HandleOpts = {}): Promi
           ? composeLiveThinkingCard(thoughtSecs, finalThinking) + '\n\n'
           : renderThoughtBlock(header, finalThinking) + '\n\n'
       }
+    }
+    if (flags.thinking !== 'off' && liveAgyNarrationTrace.length) {
+      const narration = liveAgyNarrationTrace.map(part => part.trim()).filter(Boolean).join('\n\n')
+      if (narration) thinkingMessage += `${thinkingMessage ? '\n\n' : ''}${narration}`
     }
     thinkingMessage = thinkingMessage.replace(/\s+$/, '')
 

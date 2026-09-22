@@ -207,6 +207,7 @@ export function buildAgyPrompt(input: AgyChatInput): string {
     'For implementation requests, make the edits, run focused verification, and report the completed result. ' +
     'Do not substitute a tutorial or a promise to check logs for execution. ' +
     'Keep working until the task is complete or a concrete blocker prevents progress. ' +
+    "Keep public progress and action narration in the user's language; when the user writes Chinese, emit those updates in Chinese too. " +
     'Preserve the original task across side questions. Do not repeat a search or read unless new evidence changes the next action. ' +
     'Batch independent reads, keep edits scoped, and verify changes. There is no three-tool stopping rule. ' +
     'Use the explicit workspace directory provided below; the default AGY brain directory is not the project. ' +

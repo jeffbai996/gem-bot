@@ -134,6 +134,21 @@ describe('composeThinkingCard', () => {
     ].join('\n'))
   })
 
+  it('preserves accumulated Chinese progress as plain text', () => {
+    const out = composeThinkingCard({
+      label: 'Thinking',
+      thinking: '检查服务状态',
+      narrationTrace: ['正在读取日志。', '正在运行测试。'],
+    })
+    assert.equal(out, [
+      '💭 ✻ **Thinking…**',
+      '> *检查服务状态*',
+      '正在读取日志。',
+      '',
+      '正在运行测试。',
+    ].join('\n'))
+  })
+
   it('does not render the cumulative reasoning body', () => {
     const out = composeThinkingCard({
       label: 'Thinking',

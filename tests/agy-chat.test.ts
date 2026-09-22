@@ -44,6 +44,20 @@ describe('agy media bridge', () => {
   })
 })
 
+describe('agy progress language', () => {
+  test('asks public progress narration to follow the user language', () => {
+    const prompt = buildAgyPrompt({
+      systemPrompt: 'You are Gemma.',
+      history: [],
+      userMessageText: '检查一下服务',
+      userName: 'Alice',
+    })
+
+    assert.match(prompt, /public progress and action narration in the user's language/i)
+    assert.match(prompt, /Chinese/i)
+  })
+})
+
 describe('agy shared-memory mutations', () => {
   test('keeps mutations unavailable until a shared-memory command is configured', () => {
     const prompt = buildAgyPrompt({
